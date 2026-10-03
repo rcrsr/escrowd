@@ -114,7 +114,7 @@ One-time dev host setup: `sudo apt install qemu-system-x86 qemu-utils`, `sudo us
 
 ### Ubuntu user-namespace restriction
 
-Ubuntu 24.04 and later set `kernel.apparmor_restrict_unprivileged_userns=1`. An unconfined process still creates a user namespace, but lands in the `unprivileged_userns` profile, which denies every capability, so bwrap cannot mount. Ubuntu 24.04 ships no profile for `/usr/bin/bwrap`; 25.04 and later enable `bwrap-userns-restrict`, which covers only `/usr/bin/bwrap`. Sources: [24.04 release notes](https://discourse.ubuntu.com/t/noble-numbat-release-notes/39890), [bwrap-userns-restrict](https://gitlab.com/apparmor/apparmor/-/raw/master/profiles/apparmor/profiles/extras/bwrap-userns-restrict).
+Ubuntu 24.04 and later set `kernel.apparmor_restrict_unprivileged_userns=1`. An unconfined process still creates a user namespace, but lands in the `unprivileged_userns` profile, which denies every capability. Measured on 24.04.4 (kernel 6.8.0-134): bwrap fails even earlier, at `setting up uid map: Permission denied` ([0.1 results](../spikes/results/0.1-host-matrix.md)). Ubuntu 24.04 ships no profile for `/usr/bin/bwrap`; 25.04 and later enable `bwrap-userns-restrict`, which covers only `/usr/bin/bwrap`. Sources: [24.04 release notes](https://discourse.ubuntu.com/t/noble-numbat-release-notes/39890), [bwrap-userns-restrict](https://gitlab.com/apparmor/apparmor/-/raw/master/profiles/apparmor/profiles/extras/bwrap-userns-restrict).
 
 Approach, so one install works on 24.04 LTS and later:
 

@@ -5,3 +5,10 @@ base:
 cpus: 2
 memory: 2GiB
 disk: 20GiB
+provision:
+- mode: system
+  script: |
+    #!/bin/sh
+    set -eu
+    command -v bwrap >/dev/null && command -v fusermount3 >/dev/null && exit 0
+    dnf install -y bubblewrap fuse3

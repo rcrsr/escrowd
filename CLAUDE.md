@@ -29,7 +29,7 @@ Architecture as planned (proposal "Architecture" and "Isolation"):
 ## Verified constraints (do not re-derive or contradict without new evidence)
 
 - **FUSE kernel passthrough needs `CAP_SYS_ADMIN`** in the initial user namespace (`fuse_backing_open()`). The default design is plain FUSE with unprivileged init flags (writeback cache, async read, parallel dirops, cache symlinks, no opendir), as AgentFS does. Passthrough is a root-helper fallback only.
-- **Ubuntu 24.04+ AppArmor userns restriction**: an unconfined bwrap gets a capability-less namespace and cannot mount. Plan: ship our own bwrap at a fixed path with an AppArmor profile, and run its children under a capability-denying child profile (a bare `flags=(unconfined) { userns, }` profile leaks to children). Never recommend setting the sysctl to 0.
+- **Ubuntu 24.04+ AppArmor userns restriction**: an unconfined bwrap gets a capability-less namespace and fails at uid-map setup (measured, `spikes/results/0.1-host-matrix.md`). Plan: ship our own bwrap at a fixed path with an AppArmor profile, and run its children under a capability-denying child profile (a bare `flags=(unconfined) { userns, }` profile leaks to children). Never recommend setting the sysctl to 0.
 - The daemon must never access its own FUSE view path (deadlock). A daemon restart leaves the sandbox's bind mount stale (ENOTCONN).
 - Minimum kernel 6.8 (Ubuntu 24.04 GA). WSL2 is the dev host only; targets are general Linux, then macOS (phase 7).
 
