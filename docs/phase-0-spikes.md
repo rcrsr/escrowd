@@ -38,7 +38,7 @@ flowchart LR
 | 0.3 | Copy-on-write semantics | Write, rename, delete (whiteout) and mkdir inside the view leave the real project byte-identical; `stat` inode numbers stay stable across copy-up; `git status` and an editor save behave as on native | Spike binary; test script |
 | 0.4 | Per-scope routing and read gating | Two virtual roots `/escrow/<a>/` and `/escrow/<b>/` stage writes separately; two concurrent asyncio tasks on one thread, via a Python `contextvars` path-rewrite shim, land every write in the right scope; a denied read returns EACCES synchronously and is logged; with the writeback cache on, a flush delivers every dirty page before a close | Spike binary; Python shim; test script |
 | 0.5 | Snapshot at open | A scope opened before another scope's commit does not see that commit; mechanism chosen: reflink (XFS, btrfs), btrfs subvolume snapshot, or per-file version check at commit | Decision note with timings per mechanism |
-| 0.6 | Overhead benchmark | Wall time for `git clone`, `npm ci` and `npm test` of express `v5.2.1` measured native, plain FUSE with the cache flags below, and (optionally) FUSE with kernel passthrough through a privileged helper; plain FUSE compared with the proposal's 1.5× target for phase 2 | Benchmark script; results table |
+| 0.6 | Overhead benchmark | Wall time for `git clone`, `pnpm install --frozen-lockfile --offline` and `pnpm test` of express `v5.2.1` measured native, plain FUSE with the cache flags below, and (optionally) FUSE with kernel passthrough through a privileged helper; plain FUSE compared with the proposal's 1.5× target for phase 2 | Benchmark script; results table |
 | 0.7 | AgentFS embed decision | `agentfs_sdk::OverlayFS` (crate `agentfs-sdk`), wrapped in our own fuser adapter, either passes 0.3's test script behind our store interface, or is rejected with reasons | Decision note |
 
 ### Kernel passthrough needs privilege
@@ -61,6 +61,17 @@ Passthrough is a fallback only if plain FUSE misses the 1.5× target: the daemon
 
 The overlay is a library type, `agentfs_sdk::OverlayFS`, in [`agentfs-sdk`](https://github.com/tursodatabase/agentfs) 0.6.4 on crates.io (MIT, beta). It joins a read-only base with a SQLite-backed delta, and keeps whiteouts and a copy-up inode origin table. Its FUSE and NFS front ends live only in the CLI crate, on a vendored copy of `fuser`. Embedding it means writing our own FUSE adapter over its `FileSystem` trait. Overlay inode numbers come from an in-memory counter, so stability across remounts is untested; 0.3's script checks it.
 
+## Environment
+
+`mise.toml` at the repo root pins every tool; `mise install` reproduces the environment on any host, and spikes run through `mise exec` or the mise shims. pnpm replaces npm, and uv manages the Python shim's dependencies.
+
+Rules for the 0.6 benchmark:
+
+- **Lockfile.** express ships no lockfile, so `spikes/06-bench/pnpm-lock.yaml` is generated once and committed; every run installs from it with `--frozen-lockfile`.
+- **Offline.** The pnpm store is filled with `pnpm fetch` before timing, so no run touches the network.
+- **Same import method.** pnpm hardlinks from its store by default, but a hardlink from the store into the FUSE view crosses devices and falls back to copying. Every run, native included, sets `package-import-method=copy` so both sides write the same files.
+- **Store outside the view.** The pnpm store and mise's install directory stay outside `$PROJECT`; the sandbox binds them read-only, so their writes during `pnpm fetch` never enter escrow.
+
 ## Code layout
 
 Spike code lives in this repo under `spikes/`, one Cargo workspace member per sub-phase. It is throwaway: phase 1 rewrites what passes into `escrowd`, so nothing outside `spikes/` depends on it.
@@ -70,9 +81,9 @@ spikes/
 ├── Cargo.toml          # workspace
 ├── 02-fuse-bwrap/
 ├── 03-cow/
-├── 04-routing/         # + python/ for the contextvars shim
+├── 04-routing/         # + python/ for the contextvars shim (uv project)
 ├── 05-snapshot/
-├── 06-bench/
+├── 06-bench/           # + pnpm-lock.yaml for express v5.2.1
 ├── 07-agentfs/
 └── results/            # run logs and benchmark tables cited by the go/no-go report
 ```
@@ -112,7 +123,7 @@ Approach, so one install works on 24.04 LTS and later:
 | libfuse | fusermount3 3.14.0; `/dev/fuse` mode 0666 | None |
 | Project filesystem | ext4 | No reflink; 0.5 needs an XFS or btrfs test volume, or the per-file version check |
 | XFS and btrfs tools | xfsprogs 6.6.0, btrfs-progs 6.6.3 | Loopback images can be made; mounting them needs sudo once per boot |
-| Toolchains | Rust (cargo 1.93.1) installed; Go not installed | Rust spikes need no setup |
+| Toolchains | Pinned in `mise.toml`: Rust 1.93.1, Node 24.21.0, pnpm 12.7.0, Python 3.14.8, uv 0.12.19 | `mise install` sets up any host |
 
 ## Open questions
 
@@ -121,5 +132,5 @@ Approach, so one install works on 24.04 LTS and later:
 - [ ] Which native Linux machines or VMs run the 0.1 matrix, and which distributions must pass? Ubuntu 24.04 and 25.10 at minimum.
 - [ ] Is a root helper for FUSE passthrough acceptable? Only asked if plain FUSE misses the 1.5× target in 0.6.
 - [ ] Protocol: gRPC over a Unix socket is recommended. grpc-go, grpcio, grpc-js and tonic all support Unix sockets, and one schema generates every SDK. JSON-RPC avoids protobuf but needs hand-rolled framing in Rust and Python.
-- [x] Benchmark repo for 0.6: [express](https://github.com/expressjs/express) at tag `v5.2.1`, decided Oct 3, 2026. It has the heaviest small-file load of the candidates. Steps: `git clone`, `npm ci` (stands in for the build), `npm test`. The npm cache is pre-warmed so runs are offline. Dev host has Node 24.18.0 and npm 11.16.0.
+- [x] Benchmark repo for 0.6: [express](https://github.com/expressjs/express) at tag `v5.2.1`, decided Oct 3, 2026. It has the heaviest small-file load of the candidates. Steps: `git clone`, `pnpm install --frozen-lockfile --offline` (stands in for the build), `pnpm test`.
 - [x] XFS and btrfs tools installed Oct 3, 2026. 0.5 creates 2 GB loopback images of each outside the repo (`~/escrowd-volumes/`) and mounts them with sudo.
