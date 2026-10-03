@@ -6,14 +6,14 @@ Oct 3, 2026 · @André Bremer
 
 The goal is to enforce code policies and standards on every LLM request, not at Git commit time. Hooks on the Write tool already do this, but they miss mutations made through bash, heredocs or Python scripts.
 
-The fix is to stop watching tools and start watching the filesystem. The developer wraps work in a scope, the atomic boundary: every write inside it is captured by a FUSE layer and held in escrow until the scope closes and one decision commits or discards the whole change set. Reads can't be held back, so each one is checked and recorded as it happens. Code inside a scope sees a normal machine and never knows its writes are pending.
+The fix is to stop watching tools and start watching the filesystem. The developer wraps work in a scope, the atomic boundary: every write inside it is captured by a FUSE layer and held in escrow until the scope closes and one decision commits or discards the whole change set. Reads are escrowed in the opposite direction: their data is held until the gate releases it to the caller, decided one read at a time because the caller is waiting. Code inside a scope sees a normal machine and never knows its writes are pending.
 
 The plan starts small (a scope gate proved by a CLI test app) and grows into decision models, an audit log, SDKs in more languages, host adapters and network escrow.
 
 ## Core concepts
 
 - **Scope = atomic boundary.** The developer defines the unit of work: a tool call, a turn or a whole request. Every side effect inside it is decided together, once.
-- **Escrow.** Side effects are staged, not committed. A write returns success, and reading it back shows the new data, but nothing reaches the real filesystem (or network) until an auditor releases it. Copy-on-write for reality. Reads are inspected but not escrowed: their data reaches the caller at once, so the gate allows or denies each read when it happens.
+- **Escrow.** Side effects are staged, not committed. A write returns success, and reading it back shows the new data, but nothing reaches the real filesystem (or network) until an auditor releases it. Copy-on-write for reality. Escrow runs both ways: writes are held on the way out until the scope's decision; reads are held on the way in until the gate releases their data to the caller. A blocked caller can't wait for the scope to close, so each read is decided when it happens.
 - **Transparency.** The calling system, and the LLM, cannot tell the data is in escrow. It behaves like a normal virtual machine.
 - **No special cases.** A Write tool call, a bash redirect, a Python heredoc and a `git commit` are all just mutations. All of them go into escrow.
 - **Transitivity (deferred).** With flat scopes, no scope builds on another's uncommitted changes, so there is nothing to release in order. It returns if nested scopes do.
@@ -89,7 +89,7 @@ Everything between open and close is captured; the single decision at close pick
 - **One decision on close.** The decision function gets the change set (diff, reads, labels) and returns commit, discard, hold (LLM or human escalation) or return to agent (with reasons, so the agent can fix it and the scope continues).
 - **Atomic commit.** Commit applies the whole change set to disk through a journal (record, apply, recover after a crash), so the project gets all of it or none.
 - **Conflicts at commit.** Concurrent scopes are independent transactions. If anything a scope wrote has changed on disk since its snapshot, the conflict policy applies; the default is discard.
-- **Reads are the exception.** Their data reaches the caller at once, so each read is allowed or denied when it happens, and logged for the decision.
+- **Reads are escrowed inbound.** Their data is held until the gate releases it; the caller is blocked, so each read is decided when it happens rather than at close, and logged for the decision.
 
 IO outside any scope is the developer's choice, set once at `escrow.init(unscoped=…)`:
 

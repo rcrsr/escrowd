@@ -11,7 +11,12 @@ escrowd is pre-code. The repo holds the design and the phase 0 plan; no daemon, 
 
 ## What escrowd is
 
-A local daemon that captures every filesystem write a host application makes inside a developer-defined **scope**, holds it in escrow, and applies or discards the whole change set atomically when the scope closes. Reads are not escrowed; they are allowed or denied as they happen. Code inside a scope must not be able to tell its writes are pending.
+A local daemon that captures every filesystem write a host application makes inside a developer-defined **scope**, holds it in escrow, and applies or discards the whole change set atomically when the scope closes. Escrow runs in both directions:
+
+- **Writes, outbound**: held until the scope's single close-time decision; nothing reaches the real filesystem before it.
+- **Reads, inbound**: held until the gate releases the data to the caller. The caller is blocked on the result, so each read is decided synchronously, one at a time, and logged for the close-time decision.
+
+Code inside a scope must not be able to tell its writes are pending.
 
 It works with any application, but it is built for LLM agent harnesses: a scope maps to a tool call, a turn or a prompt, and the close-time decision (software policy, LLM auditor, human) can return reasons to the agent so it fixes its own change.
 
