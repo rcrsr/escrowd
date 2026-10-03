@@ -188,7 +188,7 @@ Policy files hold software rules that run in the daemon, identical across langua
 | Native code or `mmap` doing its own IO | Falls to the `unscoped` mode; run that work in a subprocess for full capture |
 | Long-lived processes outliving a scope (dev server, watcher) | Stopped when the scope closes; give them their own scope if they must run longer |
 | Shared state outside the project (`~/.cache`, `.git/index.lock`, ports) | Route those paths through FUSE too, and a network namespace per scope |
-| FUSE overhead on every operation | Kernel FUSE passthrough (Linux 6.9+) for reads after open; measure in the POC |
+| FUSE overhead on every operation | Unprivileged cache flags (writeback cache, async read, parallel dirops) by default; kernel FUSE passthrough (Linux 6.9+) needs `CAP_SYS_ADMIN`, so only through a root helper if needed; measure in phase 0 |
 | Network effects outside capture | `--unshare-net` per scope, or a proxy that tags connections with the scope ID |
 | FUSE writeback cache holds writes past the end of a scope | Flush every open handle of the scope before its decision runs |
 | Inode numbers change on copy-up, confusing git, editors and build tools | Keep an origin-inode table so a file keeps its inode number after copy-up |
