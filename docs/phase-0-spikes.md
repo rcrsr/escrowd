@@ -85,6 +85,7 @@ spikes/
 ├── 05-snapshot/
 ├── 06-bench/           # + pnpm-lock.yaml for express v5.2.1
 ├── 07-agentfs/
+├── lima/               # one VM template per matrix host, plus the 0.6 benchmark VM
 └── results/            # run logs and benchmark tables cited by the go/no-go report
 ```
 
@@ -98,7 +99,18 @@ The FUSE crate is [`fuser`](https://github.com/cberner/fuser) 0.18.0 (July 2026,
 | Target 1 | General Linux distributions | Every go/no-go must hold on native Linux, not only on WSL2 |
 | Target 2 | macOS | Out of phase 0 runs; capture and containment come in phase 7. Phase 0 records any choice that would block macOS |
 
-General Linux widens 0.1: the host matrix covers the distributions users run, not one kernel. The minimum kernel is 6.9; older kernels are out of scope.
+General Linux widens 0.1: the host matrix covers the distributions users run, not one kernel. The minimum kernel is 6.8, Ubuntu 24.04's GA kernel. Plain FUSE needs nothing newer; the passthrough fallback needs 6.9 or later.
+
+| Host | Kernel | Why it is in the matrix |
+| --- | --- | --- |
+| Ubuntu 24.04 LTS | 6.8 GA; HWE newer | AppArmor restriction with no bwrap profile: the hardest case |
+| Ubuntu 26.04 LTS | Current | `bwrap-userns-restrict` enabled by default |
+| Debian 13 | 6.12 | No AppArmor userns restriction |
+| Fedora 44 | Newest | SELinux instead of AppArmor; newest kernels |
+
+The matrix runs as local VMs under [Lima](https://lima-vm.io), pinned in `mise.toml`, using KVM inside WSL2. Templates in `spikes/lima/` size each matrix VM at 2 CPUs, 2 GiB and a 20 GiB disk ceiling; the 0.6 benchmark VM (`bench-ubuntu-24.04.yaml`) gets 4 CPUs and 4 GiB. Spike binaries are built on the host and reach the VMs through Lima's read-only home mount, so matrix VMs need no toolchain. The benchmark VM installs mise and runs `mise install` for Node and pnpm. Containers do not count: they share the WSL2 kernel. CI runs the same checks on GitHub Actions `ubuntu-24.04` runners, which are VMs with AppArmor on and passwordless sudo for installing the profile.
+
+One-time dev host setup: `sudo apt install qemu-system-x86 qemu-utils`, `sudo usermod -aG kvm $USER`, then `wsl --shutdown` from Windows.
 
 ### Ubuntu user-namespace restriction
 
@@ -111,7 +123,7 @@ Approach, so one install works on 24.04 LTS and later:
 3. Children may still create a user namespace, but it has no capabilities, so they cannot mount over the FUSE view. This meets the proposal's tamper-resistance goal.
 4. Any user who can run `/usr/lib/escrowd/bwrap` gets the same permission; the profile must stay as narrow as bwrap's needs.
 5. Never ask users to set the sysctl to 0: it removes the protection system-wide.
-6. 0.2 verifies this on stock Ubuntu 24.04 and 25.10: with the profile, the bind mount works and a sandboxed `unshare -Urm mount` fails; without it, bwrap fails to mount.
+6. 0.2 verifies this on stock Ubuntu 24.04 and 26.04: with the profile, the bind mount works and a sandboxed `unshare -Urm mount` fails; without it, bwrap fails to mount.
 
 ## Current dev host (measured Oct 3, 2026)
 
@@ -123,13 +135,14 @@ Approach, so one install works on 24.04 LTS and later:
 | libfuse | fusermount3 3.14.0; `/dev/fuse` mode 0666 | None |
 | Project filesystem | ext4 | No reflink; 0.5 needs an XFS or btrfs test volume, or the per-file version check |
 | XFS and btrfs tools | xfsprogs 6.6.0, btrfs-progs 6.6.3 | Loopback images can be made; mounting them needs sudo once per boot |
-| Toolchains | Pinned in `mise.toml`: Rust 1.93.1, Node 24.21.0, pnpm 12.7.0, Python 3.14.8, uv 0.12.19 | `mise install` sets up any host |
+| Toolchains | Pinned in `mise.toml`: Rust 1.93.1, Node 24.21.0, pnpm 12.7.0, Python 3.14.8, uv 0.12.19, Lima 2.2.0 | `mise install` sets up any host |
 
 ## Open questions
 
 - [x] Is WSL2 a target host? No: WSL2 is the dev host; targets are general Linux, then macOS.
 - [x] Daemon language: Rust, decided Oct 3, 2026. It matches AgentFS for 0.7, and `fuser` covers passthrough and writeback cache.
-- [ ] Which native Linux machines or VMs run the 0.1 matrix, and which distributions must pass? Ubuntu 24.04 and 25.10 at minimum.
+- [x] Test hosts for 0.1: Lima VMs for Ubuntu 24.04, Ubuntu 26.04, Debian 13 and Fedora 44; GitHub Actions `ubuntu-24.04` for CI. Decided Oct 3, 2026.
+- [ ] Does GitHub Actions offer an `ubuntu-26.04` runner? Add it to CI if so.
 - [ ] Is a root helper for FUSE passthrough acceptable? Only asked if plain FUSE misses the 1.5× target in 0.6.
 - [ ] Protocol: gRPC over a Unix socket is recommended. grpc-go, grpcio, grpc-js and tonic all support Unix sockets, and one schema generates every SDK. JSON-RPC avoids protobuf but needs hand-rolled framing in Rust and Python.
 - [x] Benchmark repo for 0.6: [express](https://github.com/expressjs/express) at tag `v5.2.1`, decided Oct 3, 2026. It has the heaviest small-file load of the candidates. Steps: `git clone`, `pnpm install --frozen-lockfile --offline` (stands in for the build), `pnpm test`.

@@ -1,0 +1,7 @@
+# Phase 0 host matrix VM. Start: limactl start --name=escrow-ubuntu-24.04 spikes/lima/ubuntu-24.04.yaml
+minimumLimaVersion: 2.0.0
+base:
+- template:ubuntu-24.04
+cpus: 2
+memory: 2GiB
+disk: 20GiB

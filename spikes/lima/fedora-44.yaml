@@ -1,0 +1,7 @@
+# Phase 0 host matrix VM. Start: limactl start --name=escrow-fedora-44 spikes/lima/fedora-44.yaml
+minimumLimaVersion: 2.0.0
+base:
+- template:fedora-44
+cpus: 2
+memory: 2GiB
+disk: 20GiB

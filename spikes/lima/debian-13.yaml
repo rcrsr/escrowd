@@ -1,0 +1,7 @@
+# Phase 0 host matrix VM. Start: limactl start --name=escrow-debian-13 spikes/lima/debian-13.yaml
+minimumLimaVersion: 2.0.0
+base:
+- template:debian-13
+cpus: 2
+memory: 2GiB
+disk: 20GiB

@@ -1,0 +1,8 @@
+# Phase 0.6 benchmark VM: larger so pnpm install and the express tests run without memory pressure.
+# Start: limactl start --name=escrow-bench spikes/lima/bench-ubuntu-24.04.yaml
+minimumLimaVersion: 2.0.0
+base:
+- template:ubuntu-24.04
+cpus: 4
+memory: 4GiB
+disk: 20GiB
