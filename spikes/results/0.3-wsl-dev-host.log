@@ -1,0 +1,16 @@
+host: Ubuntu 24.04.4 LTS, kernel 6.18.40.1-microsoft-standard-WSL2, bwrap 0.9.0
+PASS  mount copy-on-write view
+PASS  inode equals lower inode
+PASS  inode stable across copy-up
+PASS  inode stable across rename
+PASS  scenario runs in view
+PASS  git status matches native
+PASS  tree matches native
+PASS  git log matches native
+PASS  deleted lower file hidden
+PASS  recreated dir hides lower contents
+PASS  mv of lower directory (EXDEV fallback)
+PASS  base byte-identical (incl. .git, mtimes)
+PASS  upper holds staged changes
+PASS  upper has no copy of untouched files
+result: 0 failed

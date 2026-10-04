@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["02-fuse-bwrap"]
+members = ["02-fuse-bwrap", "03-cow"]
 
 [workspace.package]
 edition = "2024"

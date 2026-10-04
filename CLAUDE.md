@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-escrowd has no product code yet: the repo holds the design, the phase 0 plan and throwaway spikes (Cargo workspace in `spikes/`). 0.1 and 0.2 are done.
+escrowd has no product code yet: the repo holds the design, the phase 0 plan and throwaway spikes (Cargo workspace in `spikes/`). 0.1, 0.2 and 0.3 are done.
 
 - `docs/escrowd-proposal.md`: the design (scopes, escrow, FUSE capture, bwrap isolation, roadmap phases 0–8).
 - `docs/phase-0-spikes.md`: the active plan. Sub-phases 0.1–0.7, each with a go/no-go goal, plus host matrix, environment rules and open questions. Update it when a decision is made or an open question closes (tick the box, add the date).
@@ -33,6 +33,7 @@ Architecture as planned (proposal "Architecture" and "Isolation"):
 - **Ubuntu 26.04 confines `fusermount3`** to mountpoints under `$HOME`, `/mnt`, `/run/user/<uid>`, `/media`, `/tmp`; views live under `$XDG_RUNTIME_DIR`.
 - Sandboxes use bwrap `--disable-userns` on every host; on Ubuntu the AppArmor child profile blocks nested namespaces as well (both verified in 0.2).
 - The daemon must never access its own FUSE view path (deadlock). A daemon restart leaves the sandbox's bind mount stale (ENOTCONN).
+- **Inode numbers**: lower-backed entries use the lower st_ino as the FUSE inode (stable through copy-up and rename); upper-only entries use 2^56 and up. A path-keyed inode table must keep an inode alive while any hard link names it (git links then unlinks temp objects).
 - Minimum kernel 6.8 (Ubuntu 24.04 GA). WSL2 is the dev host only; targets are general Linux, then macOS (phase 7).
 
 ## Environment
@@ -53,6 +54,6 @@ limactl shell escrow-ubuntu-24.04
 
 Build spikes with `cd spikes && cargo build --release`; each spike has a `run.sh` that prints PASS/FAIL per check (`spikes/02-fuse-bwrap/run.sh`, with `BWRAP=/usr/lib/escrowd/bwrap` on Ubuntu after `install-ubuntu.sh`). Run in a VM with `limactl shell escrow-<host> $PWD/spikes/<spike>/run.sh` and save output to `spikes/results/`.
 
-Spike binaries are built on the host and reach VMs via Lima's read-only home mount. The Ubuntu 26.04 VM's home mount is 9p with `cache=loose` and serves stale files after host edits: run `sudo sh -c 'sync; echo 3 > /proc/sys/vm/drop_caches'` in it first. Loopback XFS/btrfs volumes for 0.5 live in `~/escrowd-volumes/`, never in the repo.
+Spike binaries are built on the host and reach VMs via Lima's read-only home mount. Lima home mounts (9p `cache=loose` on Ubuntu 26.04, sshfs elsewhere) serve stale or half-updated files after host edits: run `limactl shell escrow-<host> sudo sysctl -q vm.drop_caches=3` before every run. Loopback XFS/btrfs volumes for 0.5 live in `~/escrowd-volumes/`, never in the repo.
 
 The 0.6 benchmark is express `v5.2.1`: `git clone`, `pnpm install --frozen-lockfile --offline`, `pnpm test`, with a committed `spikes/06-bench/pnpm-lock.yaml`, a pre-filled store (`pnpm fetch`) and `package-import-method=copy` on every run, native included.
