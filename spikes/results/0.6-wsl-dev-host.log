@@ -1,0 +1,21 @@
+host: Ubuntu 24.04.4 LTS, kernel 6.18.40.1-microsoft-standard-WSL2, 28 CPUs, node v24.21.0, pnpm 12.7.0, runs 5
+run=1 mode=native workload=A clone=0.338837 install=0.344512 test=15.1315 passing=1238
+run=1 mode=fuse workload=A clone=0.777054 install=3.0635 test=16.1052 passing=1238
+run=1 mode=native workload=B status=0.00611019 readall=0.144718 test=15.0423 passing=1238
+run=1 mode=fuse workload=B status=0.11891 readall=3.53259 test=15.8293 passing=1238
+run=2 mode=fuse workload=A clone=0.789272 install=3.10397 test=16.1822 passing=1238
+run=2 mode=native workload=A clone=0.343478 install=0.344882 test=15.7904 passing=1238
+run=2 mode=fuse workload=B status=0.135412 readall=2.18347 test=18.216 passing=1238
+run=2 mode=native workload=B status=0.00940442 readall=0.196359 test=18.7944 passing=1238
+run=3 mode=native workload=A clone=0.342865 install=0.351343 test=15.4777 passing=1238
+run=3 mode=fuse workload=A clone=0.790863 install=3.08479 test=16.474 passing=1238
+run=3 mode=native workload=B status=0.00654292 readall=0.152945 test=15.1835 passing=1238
+run=3 mode=fuse workload=B status=0.112902 readall=3.45375 test=15.9443 passing=1238
+run=4 mode=fuse workload=A clone=0.80045 install=3.07532 test=16.6101 passing=1238
+run=4 mode=native workload=A clone=0.333192 install=0.336738 test=15.6647 passing=1238
+run=4 mode=fuse workload=B status=0.110976 readall=3.53992 test=16.2583 passing=1238
+run=4 mode=native workload=B status=0.00632119 readall=0.154499 test=15.3135 passing=1238
+run=5 mode=native workload=A clone=0.325562 install=0.336615 test=15.458 passing=1238
+run=5 mode=fuse workload=A clone=1.02075 install=3.46056 test=16.3728 passing=1238
+run=5 mode=native workload=B status=0.0067637 readall=0.143649 test=15.5107 passing=1238
+run=5 mode=fuse workload=B status=0.118158 readall=3.5261 test=16.3022 passing=1238

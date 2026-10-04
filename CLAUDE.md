@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-escrowd has no product code yet: the repo holds the design, the phase 0 plan and throwaway spikes (Cargo workspace in `spikes/`). 0.1 to 0.4 are done.
+escrowd has no product code yet: the repo holds the design, the phase 0 plan and throwaway spikes (Cargo workspace in `spikes/`). 0.1 to 0.4 and 0.6 are done.
 
 - `docs/escrowd-proposal.md`: the design (scopes, escrow, FUSE capture, bwrap isolation, roadmap phases 0–8).
 - `docs/phase-0-spikes.md`: the active plan. Sub-phases 0.1–0.7, each with a go/no-go goal, plus host matrix, environment rules and open questions. Update it when a decision is made or an open question closes (tick the box, add the date).
@@ -36,6 +36,8 @@ Architecture as planned (proposal "Architecture" and "Isolation"):
 - **Inode numbers**: lower-backed entries use the lower st_ino as the FUSE inode (stable through copy-up and rename); upper-only entries use 2^56 and up. A path-keyed inode table must keep an inode alive while any hard link names it (git links then unlinks temp objects).
 - **Flush before decision = fsync every open file of the scope.** `syncfs` on a plain FUSE mount does not wait for the daemon (measured incomplete in 3 of 10 runs); `fsync` and `close` do.
 - **One mount, many scopes**: inode numbers are per scope (scope index << 48 | lower st_ino), or the kernel shares page cache between scopes.
+- **Overhead (0.6)**: plain FUSE meets 1.5× on the test suite and agent pipeline; cold metadata/read-heavy operations cost 5–30× per operation in any FUSE (bindfs too). No root helper needed.
+- Package stores (pnpm) are writable shared state outside the project; pnpm 12 fails offline with a read-only store.
 - Minimum kernel 6.8 (Ubuntu 24.04 GA). WSL2 is the dev host only; targets are general Linux, then macOS (phase 7).
 
 ## Environment
@@ -58,4 +60,4 @@ Build spikes with `cd spikes && cargo build --release`; each spike has a `run.sh
 
 Spike binaries are built on the host and reach VMs via Lima's read-only home mount. Lima home mounts (9p `cache=loose` on Ubuntu 26.04, sshfs elsewhere) serve stale or half-updated files after host edits: run `limactl shell escrow-<host> sudo sysctl -q vm.drop_caches=3` before every run. Loopback XFS/btrfs volumes for 0.5 live in `~/escrowd-volumes/`, never in the repo.
 
-The 0.6 benchmark is express `v5.2.1`: `git clone`, `pnpm install --frozen-lockfile --offline`, `pnpm test`, with a committed `spikes/06-bench/pnpm-lock.yaml`, a pre-filled store (`pnpm fetch`) and `package-import-method=copy` on every run, native included.
+The 0.6 benchmark: `TOOLS_PATH="$(dirname $(mise which node)):$(dirname $(mise which pnpm))" RUNS=5 MODES="native fuse" spikes/06-bench/run.sh > log; python3 spikes/06-bench/summarize.py < log`. Run long benchmarks with `nohup … &` and wait on the PID (`kill -0`), not `pgrep -f`, which matches its own command line.

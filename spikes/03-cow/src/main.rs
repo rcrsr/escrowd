@@ -32,7 +32,24 @@ use fuser::{
     ReplyStatfs, ReplyWrite, Request, TimeOrNow, WriteFlags,
 };
 
-const TTL: Duration = Duration::from_secs(1);
+/// FOPEN_KEEP_CACHE on every open when ESCROW_KEEP_CACHE=1 (spike 0.6 tuning). Safe here: the
+/// lower is immutable while mounted and only this daemon writes the upper.
+fn open_flags() -> FopenFlags {
+    static K: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *K.get_or_init(|| std::env::var("ESCROW_KEEP_CACHE").map(|v| v == "1").unwrap_or(false)) {
+        FopenFlags::FOPEN_KEEP_CACHE
+    } else {
+        FopenFlags::empty()
+    }
+}
+
+/// Kernel entry/attr cache time; ESCROW_TTL_SECS overrides (spike 0.6 tuning).
+fn ttl() -> &'static Duration {
+    static T: std::sync::OnceLock<Duration> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        Duration::from_secs(std::env::var("ESCROW_TTL_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(1))
+    })
+}
 const ROOT: u64 = 1;
 const UPPER_INO_BASE: u64 = 1 << 56;
 
@@ -239,7 +256,7 @@ impl Overlay {
 
     fn entry(&self, rel: &Path, reply: ReplyEntry) {
         match self.locate(rel) {
-            Ok((_, m)) => reply.entry(&TTL, &attr_of(self.ino_for(rel), &m), Generation(0)),
+            Ok((_, m)) => reply.entry(ttl(), &attr_of(self.ino_for(rel), &m), Generation(0)),
             Err(e) => reply.error(e),
         }
     }
@@ -464,7 +481,7 @@ impl Filesystem for Overlay {
 
     fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
         match self.rel(ino).and_then(|rel| self.locate(&rel)) {
-            Ok((_, m)) => reply.attr(&TTL, &attr_of(ino.0, &m)),
+            Ok((_, m)) => reply.attr(ttl(), &attr_of(ino.0, &m)),
             Err(e) => reply.error(e),
         }
     }
@@ -488,7 +505,7 @@ impl Filesystem for Overlay {
         reply: ReplyAttr,
     ) {
         match self.rel(ino).and_then(|rel| self.do_setattr(&rel, mode, uid, gid, size, atime, mtime, fh)) {
-            Ok(m) => reply.attr(&TTL, &attr_of(ino.0, &m)),
+            Ok(m) => reply.attr(ttl(), &attr_of(ino.0, &m)),
             Err(e) => reply.error(e),
         }
     }
@@ -602,7 +619,7 @@ impl Filesystem for Overlay {
             Self::open_options(flags.0).open(path).map_err(errno)
         })();
         match r {
-            Ok(f) => reply.opened(self.add_file(f), FopenFlags::empty()),
+            Ok(f) => reply.opened(self.add_file(f), open_flags()),
             Err(e) => reply.error(e),
         }
     }
@@ -745,7 +762,7 @@ impl Filesystem for Overlay {
         match r {
             Ok((rel, f, m)) => {
                 let attr = attr_of(self.ino_for(&rel), &m);
-                reply.created(&TTL, &attr, Generation(0), self.add_file(f), FopenFlags::empty())
+                reply.created(ttl(), &attr, Generation(0), self.add_file(f), open_flags())
             }
             Err(e) => reply.error(e),
         }
@@ -790,6 +807,11 @@ fn main() -> io::Result<()> {
     };
 
     let mut config = Config::default();
+    // Request threads; ESCROW_THREADS overrides (spike 0.6 tuning).
+    if let Some(n) = std::env::var("ESCROW_THREADS").ok().and_then(|v| v.parse().ok()) {
+        config.n_threads = Some(n);
+        config.clone_fd = true;
+    }
     config.mount_options = vec![
         MountOption::FSName("escrow-spike".into()),
         MountOption::Subtype("escrow".into()),
