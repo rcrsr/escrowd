@@ -123,8 +123,9 @@ message Outcome {
 message SpawnRequest {
   string scope_id = 1;
   repeated string argv = 2;
-  // The caller's working directory; a path in the project or under /escrow/<scope_id>/
-  // maps to the same place in the sandbox, anything else to the project root.
+  // The caller's working directory; a path in the project or in the scope's view
+  // (/escrow/<scope_id>/ in the app's sandbox, <mount>/<scope_id>/ on the host) maps
+  // to the same place in the sandbox, anything else to the project root.
   string cwd = 3;
   map<string, string> env = 4;
 }

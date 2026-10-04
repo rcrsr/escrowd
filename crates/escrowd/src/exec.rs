@@ -231,9 +231,11 @@ impl ExecServer {
     /// The caller's cwd inside the scope's sandbox.
     fn chdir(&self, scope: &str, cwd: &str) -> PathBuf {
         let cwd = Path::new(cwd);
-        let view = Path::new("/escrow").join(scope);
-        if let Ok(rest) = cwd.strip_prefix(&view) {
-            return self.project.join(rest);
+        // The view as the app's sandbox sees it, and as a caller on the host sees it.
+        for view in [Path::new("/escrow").join(scope), self.mount.join(scope)] {
+            if let Ok(rest) = cwd.strip_prefix(&view) {
+                return self.project.join(rest);
+            }
         }
         if cwd.starts_with(&self.project) {
             return cwd.to_path_buf();
