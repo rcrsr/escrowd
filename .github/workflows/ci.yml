@@ -41,6 +41,7 @@ jobs:
             python:
               - 'sdk/python/**'
               - 'tests/**'
+              - 'examples/**'
               - 'proto/**'
               - '.python-version'
               - '.github/**'
@@ -49,6 +50,7 @@ jobs:
               - 'proto/**'
               - 'sdk/python/**'
               - 'tests/**'
+              - 'examples/**'
               - 'packaging/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
@@ -149,8 +151,14 @@ jobs:
       - name: Build
         run: cargo build --locked
 
-      - name: Conformance suite
-        run: uv run --project sdk/python --frozen pytest -v tests/conformance
+      # Exit criterion: 10 consecutive passing runs; the job fails on the first failed run.
+      - name: Conformance suite, 10 consecutive runs
+        run: |
+          for i in $(seq 1 10); do
+            echo "::group::run $i of 10"
+            uv run --project sdk/python --frozen pytest -v tests/conformance
+            echo "::endgroup::"
+          done
 
   lockfiles:
     name: Lockfiles

@@ -4,7 +4,8 @@ Each check runs a small app as its own Python process. `escrow.init()` finds no
 `ESCROW_SOCKET`, re-executes the app under `escrow run` (binding the interpreter and
 sys.path read-only into the sandbox), and the app then uses `escrow.scope` with plain
 `open`, pathlib and subprocess calls. The app prints JSON; the checks read it, the
-project and the ledger.
+project and the ledger. The exit tests themselves run through the test app
+(`test_app.py`); these checks cover the rest of the SDK's API.
 """
 
 import json
@@ -80,86 +81,6 @@ def test_init_reexecutes_under_escrow_run(sdk):
         out["views"] = sorted(os.listdir("/escrow"))
     """)
     assert out == {"socket": "/run/escrowd/escrow.sock", "views": ["unscoped"]}
-
-
-def test_scope_writes_stay_escrowed_until_commit(sdk):
-    """Exit test 1: writes, reads, renames and deletes inside a scope leave the project
-    unchanged until the scope commits."""
-    (sdk.project / "old.txt").write_text("old\n")
-    (sdk.project / "gone.txt").write_text("gone\n")
-    out = sdk.run("""
-        with escrow.scope("work") as s:
-            (P / "README.md").write_text("# Demo\\n")
-            out["own_read"] = open("README.md").read()
-            os.rename("old.txt", "new.txt")
-            os.remove(P / "gone.txt")
-            os.makedirs(P / "docs" / "api")
-            with escrow.scope("peek", decide=lambda cs: escrow.discard()):
-                out["other_scope_sees"] = sorted(os.listdir(P))
-        out["status"], out["paths"] = s.outcome.status, sorted(s.outcome.paths)
-    """)
-    assert out["own_read"] == "# Demo\n"
-    assert out["other_scope_sees"] == ["gone.txt", "old.txt"]
-    assert out["status"] == "committed"
-    assert out["paths"] == ["README.md", "docs", "docs/api", "gone.txt", "new.txt"]
-    assert sorted(os.listdir(sdk.project)) == ["README.md", "docs", "new.txt"]
-    assert (sdk.project / "new.txt").read_text() == "old\n"
-
-
-def test_concurrent_async_scopes_on_one_thread(sdk):
-    """Exit test 3: two async scopes on one thread each write a file and run bash -c to
-    write another; all four writes land in the right scopes."""
-    out = sdk.run("""
-        import threading
-
-        async def work(name):
-            async with escrow.scope(name) as s:
-                out.setdefault("threads", []).append(threading.get_ident())
-                (P / f"{name}.txt").write_text(name)
-                await asyncio.sleep(0.05)
-                p = await asyncio.create_subprocess_exec(
-                    "bash", "-c", f"echo {name} > {name}-sub.txt", cwd=P)
-                await p.wait()
-                await asyncio.sleep(0.05)
-                out[name + "_reads"] = (P / f"{name}-sub.txt").read_text()
-            return s
-
-        async def main():
-            a, b = await asyncio.gather(work("a"), work("b"))
-            out["a"] = [a.id, sorted(a.outcome.paths)]
-            out["b"] = [b.id, sorted(b.outcome.paths)]
-
-        asyncio.run(main())
-        out["one_thread"] = len(set(out.pop("threads"))) == 1
-    """)
-    assert out["one_thread"]
-    assert (out["a_reads"], out["b_reads"]) == ("a\n", "b\n")
-    (a, a_paths), (b, b_paths) = out["a"], out["b"]
-    assert (a_paths, b_paths) == (["a-sub.txt", "a.txt"], ["b-sub.txt", "b.txt"])
-    for sid, name in ((a, "a"), (b, "b")):
-        mine = [line for line in sdk.ledger if f" scope={sid} " in line and "op=create" in line]
-        assert sorted(line.split()[3] for line in mine) == [
-            f"path={name}-sub.txt",
-            f"path={name}.txt",
-        ]
-    assert sorted(os.listdir(sdk.project)) == ["a-sub.txt", "a.txt", "b-sub.txt", "b.txt"]
-
-
-def test_denied_read_fails_and_is_reported(sdk):
-    """Exit test 6: a denied read fails with EACCES and appears in the outcome and ledger."""
-    (sdk.project / ".env").write_text("SECRET=1\n")
-    out = sdk.run("""
-        with escrow.scope("leaky") as s:
-            try:
-                open(".env").read()
-            except PermissionError as e:
-                out["errno"] = e.errno
-        out["reads"] = [[r.path, r.allowed] for r in s.outcome.reads]
-        out["id"] = s.id
-    """)
-    assert out["errno"] == 13
-    assert out["reads"] == [[".env", False]]
-    assert any(f" scope={out['id']} op=read path=.env decision=deny" in x for x in sdk.ledger)
 
 
 def test_decide_discards_with_reasons(sdk):

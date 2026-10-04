@@ -203,6 +203,15 @@ As built (Oct 4, 2026):
 
 `examples/test-app/` is a small CLI that does each exit test's IO with ordinary Python file and subprocess calls; the pytest suite drives it and checks the base, the change sets and the ledger. CI runs the suite 10 times in a row in one job on each of `ubuntu-24.04` and `ubuntu-26.04`; the job fails on the first failed run. Each Lima host runs it once with `limactl shell escrow-<host>` (after `vm.drop_caches=3`), and its log goes to `tests/conformance/results/`. Matrix VMs have no toolchain: they use the host's mise-installed uv and Python through the read-only home mount, as the 0.6 benchmark used Node, with the virtualenv under `/var/tmp`.
 
+As built (Oct 4, 2026):
+
+- `examples/test-app/app.py` runs one check per call: `escrowed` (exit test 1), `child` (2), `concurrent` (3), `discarded` and `atomic` (4), `conflict` (5), `denied-read` (6), `unscoped` (7, once per mode) and `snapshot` (check 8). It uses only `open`, pathlib, `os` and `subprocess`/asyncio under `escrow.init` and `escrow.scope`.
+- `tests/conformance/test_app.py` drives it: 17 checks. Exit test 1 and the commit check compare the project with the tree from replaying the app's `mutate` natively on a copy. The atomic check commits once cleanly and once per injected fault (`journal`, `preimage`, two `apply` steps, `done`); each fault leaves the project byte-identical.
+- **Misattribution check**: the app reports the path prefixes each scope id used, and every scope keeps its IO and content under its own prefix. After each run the suite fails on any ledger entry that names an unknown scope or a path outside that scope's prefixes. A unit check proves it flags foreign entries. Its first run flagged the decide callback's unscoped listing, which the app now declares.
+- `test_sdk.py` drops its copies of exit tests 1, 3 and 6; it keeps the rest of the SDK's API. Suite: 121 checks.
+- CI runs the suite 10 times in a row in one job per runner and fails on the first failed run (about 4 min per runner).
+- `tests/conformance/lima.sh <host>` runs check 9: drop caches, run `lima-guest.sh` in the VM (Ubuntu: `packaging/ubuntu/install.sh` first), log to `tests/conformance/results/<host>.log`. uv and Python go by resolved paths, since Debian 13's sshfs home mount fails `readlink` with EPERM.
+
 ## Carried limits
 
 Out of phase 1, by design:
