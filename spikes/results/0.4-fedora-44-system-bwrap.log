@@ -1,0 +1,20 @@
+host: Fedora Linux 44 (Cloud Edition), kernel 6.19.10-300.fc44.x86_64, bwrap 0.12.0, python 3.14.3
+PASS  mount routing view
+PASS  two tasks ran on one thread
+PASS  each scope reads its own README (page cache not shared)
+PASS  each scope reads its own subprocess output
+PASS  scope a staged README, notes-a, build.log
+PASS  scope b staged README, notes-b, build.log
+PASS  no cross-scope writes
+PASS  same lower file has a different inode per scope
+PASS  base README untouched
+PASS  in-process read of .env denied (EACCES)
+PASS  subprocess read of .env denied
+PASS  allowed read still works
+PASS  both denials in the ledger with scope
+PASS  subprocess writes attributed by path in the ledger
+INFO  daemon had 2797568 of 4194304 bytes before any flush, 4194304 after syncfs alone
+PASS  scope flush (fsync open files) delivers every byte while the file is open
+PASS  close() alone delivers every byte
+result: 0 failed
+PASS  base byte-identical

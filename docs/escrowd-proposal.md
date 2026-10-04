@@ -190,7 +190,7 @@ Policy files hold software rules that run in the daemon, identical across langua
 | Shared state outside the project (`~/.cache`, `.git/index.lock`, ports) | Route those paths through FUSE too, and a network namespace per scope |
 | FUSE overhead on every operation | Unprivileged cache flags (writeback cache, async read, parallel dirops) by default; kernel FUSE passthrough (Linux 6.9+) needs `CAP_SYS_ADMIN`, so only through a root helper if needed; measure in phase 0 |
 | Network effects outside capture | `--unshare-net` per scope, or a proxy that tags connections with the scope ID |
-| FUSE writeback cache holds writes past the end of a scope | Flush every open handle of the scope before its decision runs |
+| FUSE writeback cache holds writes past the end of a scope | fsync every open handle of the scope before its decision runs; `syncfs` alone is not a barrier on plain FUSE (spike 0.4) |
 | Inode numbers change on copy-up, confusing git, editors and build tools | Keep an origin-inode table so a file keeps its inode number after copy-up |
 | Reads of a live base see other scopes' commits mid-scope | Snapshot at open (reflink or btrfs), or record each file's version on first read and check it at commit |
 

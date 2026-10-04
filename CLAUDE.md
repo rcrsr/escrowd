@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-escrowd has no product code yet: the repo holds the design, the phase 0 plan and throwaway spikes (Cargo workspace in `spikes/`). 0.1, 0.2 and 0.3 are done.
+escrowd has no product code yet: the repo holds the design, the phase 0 plan and throwaway spikes (Cargo workspace in `spikes/`). 0.1 to 0.4 are done.
 
 - `docs/escrowd-proposal.md`: the design (scopes, escrow, FUSE capture, bwrap isolation, roadmap phases 0–8).
 - `docs/phase-0-spikes.md`: the active plan. Sub-phases 0.1–0.7, each with a go/no-go goal, plus host matrix, environment rules and open questions. Update it when a decision is made or an open question closes (tick the box, add the date).
@@ -34,6 +34,8 @@ Architecture as planned (proposal "Architecture" and "Isolation"):
 - Sandboxes use bwrap `--disable-userns` on every host; on Ubuntu the AppArmor child profile blocks nested namespaces as well (both verified in 0.2).
 - The daemon must never access its own FUSE view path (deadlock). A daemon restart leaves the sandbox's bind mount stale (ENOTCONN).
 - **Inode numbers**: lower-backed entries use the lower st_ino as the FUSE inode (stable through copy-up and rename); upper-only entries use 2^56 and up. A path-keyed inode table must keep an inode alive while any hard link names it (git links then unlinks temp objects).
+- **Flush before decision = fsync every open file of the scope.** `syncfs` on a plain FUSE mount does not wait for the daemon (measured incomplete in 3 of 10 runs); `fsync` and `close` do.
+- **One mount, many scopes**: inode numbers are per scope (scope index << 48 | lower st_ino), or the kernel shares page cache between scopes.
 - Minimum kernel 6.8 (Ubuntu 24.04 GA). WSL2 is the dev host only; targets are general Linux, then macOS (phase 7).
 
 ## Environment

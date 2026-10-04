@@ -49,6 +49,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fuse-routing-spike"
+version = "0.0.0"
+dependencies = [
+ "fuser",
+ "libc",
+]
+
+[[package]]
 name = "fuser"
 version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
