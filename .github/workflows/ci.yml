@@ -1,7 +1,7 @@
 name: CI
 
 # Pull requests only. `changes` gates each job on the paths it covers (every
-# job runs when .github/ changes); `CI Gate` is the one check to require.
+# job runs when this file changes); `CI Gate` is the one check to require.
 
 on:
   pull_request:
@@ -37,14 +37,14 @@ jobs:
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - 'rustfmt.toml'
-              - '.github/**'
+              - '.github/workflows/ci.yml'
             python:
               - 'sdk/python/**'
               - 'tests/**'
               - 'examples/**'
               - 'proto/**'
               - '.python-version'
-              - '.github/**'
+              - '.github/workflows/ci.yml'
             conformance:
               - 'crates/**'
               - 'proto/**'
@@ -56,7 +56,7 @@ jobs:
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - '.python-version'
-              - '.github/**'
+              - '.github/workflows/ci.yml'
 
   check-rust:
     name: Rust
