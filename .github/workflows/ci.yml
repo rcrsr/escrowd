@@ -1,5 +1,8 @@
 name: CI
 
+# Pull requests only. `changes` gates each job on the paths it covers (every
+# job runs when .github/ changes); `CI Gate` is the one check to require.
+
 on:
   pull_request:
     types: [opened, synchronize, reopened]
