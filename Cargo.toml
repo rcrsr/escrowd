@@ -26,3 +26,5 @@ globset = "0.4.20"
 libc = "0.2"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 rustix = { version = "1.1.5", features = ["fs"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde-saphyr = "1.3.0"

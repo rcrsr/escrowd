@@ -20,12 +20,30 @@ class Client:
     def ping(self, timeout: float = 5.0) -> escrow_pb2.PingResponse:
         return self._stub.Ping(escrow_pb2.PingRequest(), timeout=timeout)
 
-    def open_scope(self, name: str = "", timeout: float = 5.0) -> escrow_pb2.OpenScopeResponse:
-        return self._stub.OpenScope(escrow_pb2.OpenScopeRequest(name=name), timeout=timeout)
+    def open_scope(
+        self, name: str = "", labels: dict[str, str] | None = None, timeout: float = 5.0
+    ) -> escrow_pb2.OpenScopeResponse:
+        req = escrow_pb2.OpenScopeRequest(name=name, labels=labels or {})
+        return self._stub.OpenScope(req, timeout=timeout)
 
-    def discard(self, scope_id: str, timeout: float = 5.0) -> escrow_pb2.Outcome:
-        req = escrow_pb2.DecideRequest(scope_id=scope_id, verdict=escrow_pb2.VERDICT_DISCARD)
+    def close_scope(self, scope_id: str, timeout: float = 30.0) -> escrow_pb2.ChangeSet:
+        """Freeze the scope and return its change set. Fsync the scope's open files first."""
+        return self._stub.CloseScope(
+            escrow_pb2.CloseScopeRequest(scope_id=scope_id), timeout=timeout
+        )
+
+    def decide(
+        self,
+        scope_id: str,
+        verdict: escrow_pb2.Verdict,
+        reasons: list[str] | None = None,
+        timeout: float = 30.0,
+    ) -> escrow_pb2.Outcome:
+        req = escrow_pb2.DecideRequest(scope_id=scope_id, verdict=verdict, reasons=reasons or [])
         return self._stub.Decide(req, timeout=timeout)
+
+    def discard(self, scope_id: str, timeout: float = 30.0) -> escrow_pb2.Outcome:
+        return self.decide(scope_id, escrow_pb2.VERDICT_DISCARD, timeout=timeout)
 
     def close(self) -> None:
         self._channel.close()

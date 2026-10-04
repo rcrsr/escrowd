@@ -39,16 +39,18 @@ class Daemon:
     """`escrow daemon` with its socket, project, state and mount under one work directory."""
 
     def __init__(self, bin: Path, work: Path, deny_read=(".env",), project: Path | None = None):
+        """`deny_read` becomes the policy file's read.deny list."""
         self.work = work
         self.socket = work / "escrow.sock"
         self.project = project or work / "proj"
         self.state = work / "state"
         self.mount = work / "mnt"
         self.project.mkdir(parents=True, exist_ok=True)
+        self.policy = work / "policy.yaml"
+        deny = ", ".join(f"'{g}'" for g in deny_read)
+        self.policy.write_text(f"version: 1\nread:\n  deny: [{deny}]\n")
         args = [bin, "daemon", "--socket", self.socket, "--project", self.project]
-        args += ["--state", self.state, "--mount", self.mount]
-        for g in deny_read:
-            args += ["--deny-read", g]
+        args += ["--state", self.state, "--mount", self.mount, "--policy", self.policy]
         self.log = open(work / "daemon.log", "ab")
         self.proc = subprocess.Popen(args, stderr=self.log)
         self.wait_ready()

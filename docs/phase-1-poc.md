@@ -2,7 +2,7 @@
 
 Oct 3, 2026 · Andre Bremer · Draft
 
-**Status, Oct 3, 2026: 1.1 done** (12 / 12 checks on the dev host and in CI on `ubuntu-24.04` and `ubuntu-26.04`, [PR #1](https://github.com/rcrsr/escrowd/pull/1)). **1.2 done**, Oct 4, 2026: 52 / 52 checks on the dev host (5 repeat runs clean) and in CI on both runners, including the 0.3 (14) and 0.4 (17) spike checks ported to the daemon ([PR #3](https://github.com/rcrsr/escrowd/pull/3)). Next: 1.3.
+**Status, Oct 3, 2026: 1.1 done** (12 / 12 checks on the dev host and in CI on `ubuntu-24.04` and `ubuntu-26.04`, [PR #1](https://github.com/rcrsr/escrowd/pull/1)). **1.2 done**, Oct 4, 2026: 52 / 52 checks on the dev host (5 repeat runs clean) and in CI on both runners, including the 0.3 (14) and 0.4 (17) spike checks ported to the daemon ([PR #3](https://github.com/rcrsr/escrowd/pull/3)). **1.3 built**, Oct 4, 2026: 66 / 66 checks on the dev host, 5 repeat runs clean; CI run pending.
 
 Phase 1 delivers escrowd, a minimal Python SDK and a CLI test app. Together they prove the scope model from the [escrowd proposal](escrowd-proposal.md) on Linux. Phase 0 cleared every mechanic this phase relies on ([go/no-go report](../spikes/results/phase-0-report.md)). Phase 1 turns the spikes into product code and adds the parts phase 0 never built: the RPC socket, the journal, commit, conflicts, the launcher and unscoped modes.
 
@@ -58,7 +58,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | 1.1 | Skeleton, protocol and CI (**done**, Oct 3, 2026) | Workspace builds; the protocol schema exists; a Python client completes a `ping` round trip to the daemon over the Unix socket; CI on `ubuntu-24.04` and `ubuntu-26.04` installs escrowd's bwrap and AppArmor profile and runs an empty suite | None |
 | 1.2 | Overlay store and router (**done**, Oct 4, 2026) | One FUSE mount serves many scopes, created and dropped over RPC instead of `mkdir`; whiteouts, opaque directories and the per-scope version table persist in each scope's store; the 0.3 (14) and 0.4 (17) spike checks pass when ported to the new daemon | 1 (staging half) |
-| 1.3 | Scope lifecycle, gate and ledger | `open_scope`, `close_scope` and `decide` work end to end: close flushes and returns the change set (diff, reads, labels); discard drops the store; read rules load from a policy file; every operation lands in the ledger with its scope | 1, 6 |
+| 1.3 | Scope lifecycle, gate and ledger (**built**, Oct 4, 2026; CI run pending) | `open_scope`, `close_scope` and `decide` work end to end: close flushes and returns the change set (diff, reads, labels); discard drops the store; read rules load from a policy file; every operation lands in the ledger with its scope | 1, 6 |
 | 1.4 | Journal, commit, conflicts, pre-images | Commit applies the whole change set through the journal, or none of it if any step fails; a changed base file triggers the conflict policy (default discard); open scopes keep their snapshot through the pre-image layer; a fault injected at each apply step leaves the base byte-identical; the daemon rolls back an unfinished journal on start | 4, 5, 8 |
 | 1.5 | Launcher, sandbox, unscoped modes | `escrow run --project P -- cmd` starts the daemon and runs `cmd` in bwrap with the unscoped view over `$PROJECT`; the spawn helper starts a scope's child in its own sandbox with ordinary `Popen` semantics; `passthrough`, `implicit` and `deny` behave as the proposal's table says | 2, 7 |
 | 1.6 | Python SDK | `escrow.init`, `escrow.scope(...)` as an async context manager and decide callbacks work; scopes live in `contextvars`; wrapped `open`, `os.*`, `pathlib` and `subprocess` attribute IO by path; `s.outcome` reports status, paths and reasons | 3, 6 |
@@ -102,6 +102,13 @@ The store ports spike 0.4's router (itself built on 0.3's overlay), keeping ever
 4. The daemon builds the change set from the scope's store and ledger, then returns it.
 
 `decide` then commits (1.4), discards (drop the store) or returns reasons to the caller and reopens the scope. Hold needs escalation and waits for phase 6. The read gate takes deny globs from a YAML policy file instead of the spike's hard-coded `.env` rule. Ledger lines keep the spike format (`scope=… op=… path=… decision=…`) in an append-only file next to the scope stores, readable by `escrow log`.
+
+As built (Oct 4, 2026):
+
+- **Freeze**: a closed scope answers new opens, creates and changes with EROFS; a handle opened before close gets EBADF when its data reaches the daemon (with the writeback cache, at fsync or close). Metadata reads (lookup, getattr, readdir) still work. The closed state persists across a daemon restart. Close is idempotent; discard works on open and closed scopes; return needs a closed scope (FAILED_PRECONDITION otherwise).
+- **Change set**: the net effect on the base, from the upper tree, whiteouts and opaque directories. An unchanged copy-up is no change; a deleted directory lists its base descendants as deletes; a create or modify that carries a pinned base inode, matched by the delete of the file that had it, is a rename. Reads are the base files the scope read (allowed) plus the gate's denials; labels come from `open_scope`.
+- **Policy file** (`--policy`): `version: 1`, `read.deny` globs; unknown keys or versions stop the daemon. Parsed with serde-saphyr (serde_yaml is deprecated).
+- **Ledger**: paths are percent-encoded (non-printable bytes, space, `=`, `%`), so lines split on spaces; `open`, `close`, `decide`, `list` and `readlink` are logged besides reads and changes.
 
 ### 1.4 Journal, commit, conflicts, pre-images
 

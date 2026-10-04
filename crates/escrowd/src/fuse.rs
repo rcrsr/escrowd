@@ -209,8 +209,12 @@ impl Filesystem for FuseView {
     }
 
     fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
-        match self.0.key(ino.0).and_then(|(h, rel)| self.0.open(&h, &rel, flags.0)) {
-            Ok(f) => reply.opened(FileHandle(self.0.add_file(f)), FopenFlags::empty()),
+        match self
+            .0
+            .key(ino.0)
+            .and_then(|(h, rel)| Ok((self.0.open(&h, &rel, flags.0)?, h)))
+        {
+            Ok((f, h)) => reply.opened(FileHandle(self.0.add_file(h, f)), FopenFlags::empty()),
             Err(e) => reply.error(e),
         }
     }
@@ -252,7 +256,7 @@ impl Filesystem for FuseView {
     ) {
         match self
             .0
-            .file(fh.0)
+            .file_for_write(fh.0)
             .and_then(|f| f.write_all_at(data, offset).map_err(errno))
         {
             Ok(()) => reply.written(data.len() as u32),
@@ -301,6 +305,9 @@ impl Filesystem for FuseView {
                     }
                 }
                 Node::In(h, rel) => {
+                    if offset == 0 {
+                        v.log(&h, "list", &rel, "allow");
+                    }
                     if !rel.as_os_str().is_empty() {
                         entries[1].0 = v.ino_for(&h, sys::parent(&rel))?;
                     }
@@ -359,14 +366,14 @@ impl Filesystem for FuseView {
             let f = v.create(&h, &rel, mode & !umask, flags)?;
             let st = rustix::fs::fstat(&f).map_err(|e| errno(e.into()))?;
             let attr = sys::attr(v.ino_for(&h, &rel)?, &st);
-            Ok((attr, f))
+            Ok((attr, f, h))
         })();
         match r {
-            Ok((attr, f)) => reply.created(
+            Ok((attr, f, h)) => reply.created(
                 &TTL,
                 &attr,
                 Generation(0),
-                FileHandle(v.add_file(f)),
+                FileHandle(v.add_file(h, f)),
                 FopenFlags::empty(),
             ),
             Err(e) => reply.error(e),

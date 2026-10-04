@@ -1,5 +1,5 @@
 //! The read gate: software rules decided synchronously while the caller waits.
-//! Phase 1.2 takes deny globs from the command line; 1.3 loads them from the policy file.
+//! Deny globs come from the policy file's `read.deny`.
 
 use std::path::Path;
 
