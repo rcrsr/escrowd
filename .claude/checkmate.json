@@ -1,0 +1,156 @@
+{
+  "environments": [
+    {
+      "name": "python-sdk",
+      "paths": [
+        "sdk/python/src"
+      ],
+      "exclude": [
+        "sdk/python/src/escrow/v1/**",
+        "**/__pycache__/**"
+      ],
+      "checks": {
+        ".py": [
+          {
+            "name": "ruff format",
+            "command": "uv",
+            "args": [
+              "run",
+              "--project",
+              "sdk/python",
+              "--frozen",
+              "ruff",
+              "format",
+              "--check",
+              "$FILE"
+            ],
+            "parser": "prettier",
+            "_auto": true
+          },
+          {
+            "name": "ruff check",
+            "command": "uv",
+            "args": [
+              "run",
+              "--project",
+              "sdk/python",
+              "--frozen",
+              "ruff",
+              "check",
+              "--output-format=concise",
+              "$FILE"
+            ],
+            "parser": "ruff",
+            "_auto": true
+          },
+          {
+            "name": "ty",
+            "command": "uv",
+            "args": [
+              "run",
+              "--project",
+              "sdk/python",
+              "--frozen",
+              "ty",
+              "check",
+              "--project",
+              "sdk/python",
+              "$FILE"
+            ],
+            "parser": "ty",
+            "_auto": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "root",
+      "paths": [
+        "."
+      ],
+      "exclude": [
+        "spikes/**",
+        "target/**",
+        "sdk/python/src/escrow/v1/**",
+        "**/.venv/**",
+        "**/__pycache__/**",
+        "**/.pytest_cache/**"
+      ],
+      "checks": {
+        ".rs": [
+          {
+            "name": "rustfmt",
+            "command": "rustfmt",
+            "args": [
+              "--check",
+              "--edition",
+              "2024",
+              "$FILE"
+            ],
+            "parser": "prettier",
+            "_auto": true
+          }
+        ],
+        ".py": [
+          {
+            "name": "ruff format",
+            "command": "uv",
+            "args": [
+              "run",
+              "--project",
+              "sdk/python",
+              "--frozen",
+              "ruff",
+              "format",
+              "--check",
+              "$FILE"
+            ],
+            "parser": "prettier",
+            "_auto": true
+          },
+          {
+            "name": "ruff check",
+            "command": "uv",
+            "args": [
+              "run",
+              "--project",
+              "sdk/python",
+              "--frozen",
+              "ruff",
+              "check",
+              "--output-format=concise",
+              "$FILE"
+            ],
+            "parser": "ruff",
+            "_auto": true
+          }
+        ],
+        ".sh": [
+          {
+            "name": "shellcheck",
+            "command": "shellcheck",
+            "args": [
+              "--format=gcc",
+              "--severity=warning",
+              "$FILE"
+            ],
+            "parser": "gcc",
+            "_auto": true
+          },
+          {
+            "name": "shfmt",
+            "command": "shfmt",
+            "args": [
+              "-d",
+              "-i",
+              "2",
+              "$FILE"
+            ],
+            "parser": "prettier",
+            "_auto": true
+          }
+        ]
+      }
+    }
+  ]
+}
