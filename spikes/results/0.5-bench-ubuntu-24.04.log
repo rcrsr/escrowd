@@ -1,0 +1,94 @@
+host: Ubuntu 24.04.4 LTS, kernel 6.8.0-134-generic, runs 5
+tree fs=ext4 entries=9116 size_mb=77
+space fs=ext4 mech=full used_mb=76
+time fs=ext4 mech=full op=create secs=0.135657
+time fs=ext4 mech=full op=delete secs=0.278039
+time fs=ext4 mech=full op=create secs=0.120459
+time fs=ext4 mech=full op=delete secs=0.0639956
+time fs=ext4 mech=full op=create secs=0.120669
+time fs=ext4 mech=full op=delete secs=0.0622079
+time fs=ext4 mech=full op=create secs=0.121932
+time fs=ext4 mech=full op=delete secs=0.0635781
+time fs=ext4 mech=full op=create secs=0.120269
+time fs=ext4 mech=full op=delete secs=0.0603902
+time fs=ext4 mech=statall op=create secs=0.0199699
+time fs=ext4 mech=statall op=create secs=0.0191596
+time fs=ext4 mech=statall op=create secs=0.0191305
+time fs=ext4 mech=statall op=create secs=0.0190454
+time fs=ext4 mech=statall op=create secs=0.017657
+PASS  ext4 full: scope view does not see a later base commit
+tree fs=xfs entries=9116 size_mb=69
+space fs=xfs mech=full used_mb=5
+time fs=xfs mech=full op=create secs=0.157253
+time fs=xfs mech=full op=delete secs=0.411726
+time fs=xfs mech=full op=create secs=0.166654
+time fs=xfs mech=full op=delete secs=0.210091
+time fs=xfs mech=full op=create secs=0.186013
+time fs=xfs mech=full op=delete secs=0.212322
+time fs=xfs mech=full op=create secs=0.162611
+time fs=xfs mech=full op=delete secs=0.223005
+time fs=xfs mech=full op=create secs=0.174595
+time fs=xfs mech=full op=delete secs=0.214795
+space fs=xfs mech=reflink used_mb=5
+time fs=xfs mech=reflink op=create secs=0.155404
+time fs=xfs mech=reflink op=delete secs=0.332282
+time fs=xfs mech=reflink op=create secs=0.168998
+time fs=xfs mech=reflink op=delete secs=0.207166
+time fs=xfs mech=reflink op=create secs=0.241028
+time fs=xfs mech=reflink op=delete secs=0.206092
+time fs=xfs mech=reflink op=create secs=0.207746
+time fs=xfs mech=reflink op=delete secs=0.219105
+time fs=xfs mech=reflink op=create secs=0.225117
+time fs=xfs mech=reflink op=delete secs=0.213911
+time fs=xfs mech=statall op=create secs=0.0170336
+time fs=xfs mech=statall op=create secs=0.0160043
+time fs=xfs mech=statall op=create secs=0.0163624
+time fs=xfs mech=statall op=create secs=0.016264
+time fs=xfs mech=statall op=create secs=0.0157523
+PASS  xfs full: scope view does not see a later base commit
+PASS  xfs reflink: scope view does not see a later base commit
+tree fs=btrfs entries=9116 size_mb=73
+space fs=btrfs mech=full used_mb=16
+time fs=btrfs mech=full op=create secs=0.153942
+time fs=btrfs mech=full op=delete secs=0.118925
+time fs=btrfs mech=full op=create secs=0.155117
+time fs=btrfs mech=full op=delete secs=0.0695693
+time fs=btrfs mech=full op=create secs=0.152298
+time fs=btrfs mech=full op=delete secs=0.0715675
+time fs=btrfs mech=full op=create secs=0.150311
+time fs=btrfs mech=full op=delete secs=0.0731821
+time fs=btrfs mech=full op=create secs=0.154022
+time fs=btrfs mech=full op=delete secs=0.0734003
+space fs=btrfs mech=reflink used_mb=16
+time fs=btrfs mech=reflink op=create secs=0.154007
+time fs=btrfs mech=reflink op=delete secs=0.112983
+time fs=btrfs mech=reflink op=create secs=0.152673
+time fs=btrfs mech=reflink op=delete secs=0.0762115
+time fs=btrfs mech=reflink op=create secs=0.154232
+time fs=btrfs mech=reflink op=delete secs=0.0705423
+time fs=btrfs mech=reflink op=create secs=0.151165
+time fs=btrfs mech=reflink op=delete secs=0.0738223
+time fs=btrfs mech=reflink op=create secs=0.153957
+time fs=btrfs mech=reflink op=delete secs=0.0744729
+space fs=btrfs mech=subvol used_mb=0
+time fs=btrfs mech=subvol op=create secs=0.00758982
+time fs=btrfs mech=subvol op=delete secs=0.00571203
+time fs=btrfs mech=subvol op=create secs=0.00784922
+time fs=btrfs mech=subvol op=delete secs=0.0027833
+time fs=btrfs mech=subvol op=create secs=0.00832939
+time fs=btrfs mech=subvol op=delete secs=0.00283861
+time fs=btrfs mech=subvol op=create secs=0.00781012
+time fs=btrfs mech=subvol op=delete secs=0.00275707
+time fs=btrfs mech=subvol op=create secs=0.0075767
+time fs=btrfs mech=subvol op=delete secs=0.00261283
+time fs=btrfs mech=statall op=create secs=0.0204315
+time fs=btrfs mech=statall op=create secs=0.0194509
+time fs=btrfs mech=statall op=create secs=0.0191274
+time fs=btrfs mech=statall op=create secs=0.0192683
+time fs=btrfs mech=statall op=create secs=0.0192859
+PASS  btrfs full: scope view does not see a later base commit
+PASS  btrfs reflink: scope view does not see a later base commit
+PASS  btrfs subvol: scope view does not see a later base commit
+PASS  live lower: scope view sees the later commit (no isolation)
+PASS  per-file version check detects the change at commit
+result: 0 failed

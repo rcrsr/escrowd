@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-escrowd has no product code yet: the repo holds the design, the phase 0 plan and throwaway spikes (Cargo workspace in `spikes/`). 0.1 to 0.4 and 0.6 are done.
+escrowd has no product code yet: the repo holds the design, the phase 0 plan and throwaway spikes (Cargo workspace in `spikes/`). 0.1 to 0.6 are done; 0.7 remains.
 
 - `docs/escrowd-proposal.md`: the design (scopes, escrow, FUSE capture, bwrap isolation, roadmap phases 0–8).
 - `docs/phase-0-spikes.md`: the active plan. Sub-phases 0.1–0.7, each with a go/no-go goal, plus host matrix, environment rules and open questions. Update it when a decision is made or an open question closes (tick the box, add the date).
@@ -38,6 +38,7 @@ Architecture as planned (proposal "Architecture" and "Isolation"):
 - **One mount, many scopes**: inode numbers are per scope (scope index << 48 | lower st_ino), or the kernel shares page cache between scopes.
 - **Overhead (0.6)**: plain FUSE meets 1.5× on the test suite and agent pipeline; cold metadata/read-heavy operations cost 5–30× per operation in any FUSE (bindfs too). No root helper needed.
 - Package stores (pnpm) are writable shared state outside the project; pnpm 12 fails offline with a read-only store.
+- **Snapshots (0.5)**: copy/reflink snapshots cost 13–23 µs per entry per scope open (reflink saves space, not time); btrfs subvolume snapshots are 8 ms. Recommended (unconfirmed): pre-images at commit + per-file version check.
 - Minimum kernel 6.8 (Ubuntu 24.04 GA). WSL2 is the dev host only; targets are general Linux, then macOS (phase 7).
 
 ## Environment
@@ -58,6 +59,6 @@ limactl shell escrow-ubuntu-24.04
 
 Build spikes with `cd spikes && cargo build --release`; each spike has a `run.sh` that prints PASS/FAIL per check (`spikes/02-fuse-bwrap/run.sh`, with `BWRAP=/usr/lib/escrowd/bwrap` on Ubuntu after `install-ubuntu.sh`). Run in a VM with `limactl shell escrow-<host> $PWD/spikes/<spike>/run.sh` and save output to `spikes/results/`.
 
-Spike binaries are built on the host and reach VMs via Lima's read-only home mount. Lima home mounts (9p `cache=loose` on Ubuntu 26.04, sshfs elsewhere) serve stale or half-updated files after host edits: run `limactl shell escrow-<host> sudo sysctl -q vm.drop_caches=3` before every run. Loopback XFS/btrfs volumes for 0.5 live in `~/escrowd-volumes/`, never in the repo.
+Spike binaries are built on the host and reach VMs via Lima's read-only home mount. Lima home mounts (9p `cache=loose` on Ubuntu 26.04, sshfs elsewhere) serve stale or half-updated files after host edits: run `limactl shell escrow-<host> sudo sysctl -q vm.drop_caches=3` before every run. Loopback XFS/btrfs volumes for 0.5 live in the benchmark VM (`/var/escrowd-volumes/`, mounted at `/mnt/escrow-{xfs,btrfs}` by `spikes/05-snapshot/setup-volumes.sh`), never in the repo.
 
 The 0.6 benchmark: `TOOLS_PATH="$(dirname $(mise which node)):$(dirname $(mise which pnpm))" RUNS=5 MODES="native fuse" spikes/06-bench/run.sh > log; python3 spikes/06-bench/summarize.py < log`. Run long benchmarks with `nohup … &` and wait on the PID (`kill -0`), not `pgrep -f`, which matches its own command line.
