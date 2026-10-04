@@ -1,5 +1,7 @@
 """Phase 1.1: the daemon serves the protocol over its Unix socket."""
 
+import time
+
 import grpc
 import pytest
 
@@ -23,9 +25,7 @@ def test_connect_reads_escrow_socket(daemon, monkeypatch):
 @pytest.mark.parametrize(
     "call, request_type",
     [
-        ("OpenScope", escrow_pb2.OpenScopeRequest),
         ("CloseScope", escrow_pb2.CloseScopeRequest),
-        ("Decide", escrow_pb2.DecideRequest),
         ("Spawn", escrow_pb2.SpawnRequest),
         ("SettleUnscoped", escrow_pb2.SettleUnscopedRequest),
     ],
@@ -42,25 +42,18 @@ def test_sigterm_removes_socket(daemon):
     assert not daemon.socket.exists()
 
 
-def test_stale_socket_is_replaced(escrow_bin, runtime_dir):
-    from conftest import Daemon
-
-    sock = runtime_dir / "escrow.sock"
-    first = Daemon(escrow_bin, sock)
-    first.proc.kill()  # SIGKILL leaves the socket file behind
+def test_stale_socket_is_replaced(start_daemon):
+    first = start_daemon()
+    first.proc.kill()  # SIGKILL leaves the socket file and a stale mount behind
     first.proc.wait()
-    assert sock.exists()
-    # Returns at once (the stale file already exists), so poll with ping.
-    second = Daemon(escrow_bin, sock)
-    try:
-        for _ in range(100):
-            try:
-                with escrow.connect(str(sock)) as client:
-                    assert client.ping(timeout=0.5).protocol_version == 1
-                break
-            except grpc.RpcError:
-                continue
-        else:
-            pytest.fail("second daemon never answered on the stale socket path")
-    finally:
-        second.stop()
+    first.stop()
+    assert first.socket.exists()
+    second = start_daemon()  # returns at once (the stale file exists), so poll with ping
+    for _ in range(100):
+        try:
+            with escrow.connect(str(second.socket)) as client:
+                assert client.ping(timeout=0.5).protocol_version == 1
+            return
+        except grpc.RpcError:
+            time.sleep(0.05)
+    pytest.fail("second daemon never answered on the stale socket path")

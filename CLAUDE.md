@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-Phase 1 (CLI POC) is in progress: sub-phase 1.1 (skeleton, protocol, CI) is done, 1.2 (overlay store and router) is next; the daemon serves only `Ping`. Phase 0 is complete (`spikes/results/phase-0-report.md`); its throwaway spikes stay in `spikes/`, a separate Cargo workspace.
+Phase 1 (CLI POC) is in progress: sub-phases 1.1 (skeleton, protocol, CI) and 1.2 (overlay store and router) are done, 1.3 (scope lifecycle, gate, ledger) is next; the daemon serves scope views over FUSE, `Ping`, `OpenScope` and discard; close, commit and spawn come in 1.3 to 1.5. Phase 0 is complete (`spikes/results/phase-0-report.md`); its throwaway spikes stay in `spikes/`, a separate Cargo workspace.
 
 - `docs/escrowd-proposal.md`: the design (scopes, escrow, FUSE capture, bwrap isolation, roadmap phases 0–8).
 - `docs/phase-1-poc.md`: the active plan (draft). Sub-phases 1.1–1.7 toward the proposal's seven exit tests, plus open questions. Update it when a decision is made or an open question closes (tick the box, add the date).
@@ -34,7 +34,7 @@ Architecture as planned (proposal "Architecture" and "Isolation"):
 - **Ubuntu 26.04 confines `fusermount3`** to mountpoints under `$HOME`, `/mnt`, `/run/user/<uid>`, `/media`, `/tmp`; views live under `$XDG_RUNTIME_DIR`.
 - Sandboxes use bwrap `--disable-userns` on every host; on Ubuntu the AppArmor child profile blocks nested namespaces as well (both verified in 0.2).
 - The daemon must never access its own FUSE view path (deadlock). A daemon restart leaves the sandbox's bind mount stale (ENOTCONN).
-- **Inode numbers**: lower-backed entries use the lower st_ino as the FUSE inode (stable through copy-up and rename); upper-only entries use 2^56 and up. A path-keyed inode table must keep an inode alive while any hard link names it (git links then unlinks temp objects).
+- **Inode numbers**: `scope idx << 48 | lower st_ino` for lower-backed entries (stable through copy-up and rename); upper-only entries `scope idx << 48 | 1 << 47 | counter`. Inodes that cannot be derived from the base path (upper-only, renamed) are pinned in the scope's store, so they survive a daemon restart. A path-keyed inode table must keep an inode alive while any hard link names it (git links then unlinks temp objects).
 - **Flush before decision = fsync every open file of the scope.** `syncfs` on a plain FUSE mount does not wait for the daemon (measured incomplete in 3 of 10 runs); `fsync` and `close` do.
 - **One mount, many scopes**: inode numbers are per scope (scope index << 48 | lower st_ino), or the kernel shares page cache between scopes.
 - **Overhead (0.6)**: plain FUSE meets 1.5× on the test suite and agent pipeline; cold metadata/read-heavy operations cost 5–30× per operation in any FUSE (bindfs too). No root helper needed.
@@ -45,8 +45,8 @@ Architecture as planned (proposal "Architecture" and "Isolation"):
 
 ## Layout and commands
 
-- `crates/escrowd/`: daemon library (gRPC service in `rpc.rs`; stubs generated from `proto/` by `build.rs` with vendored protoc).
-- `crates/escrow-cli/`: the `escrow` binary (`escrow daemon --socket PATH`).
+- `crates/escrowd/`: daemon library. `views.rs` (copy-on-write overlay per scope, routing by path, inode table), `fuse.rs` (fuser adapter), `store.rs` (per-scope SQLite: whiteouts, opaque dirs, base versions, pinned inodes), `sys.rs` (fd-relative syscalls via rustix; no `/proc/self/fd` paths), `gate.rs`, `ledger.rs`, `daemon.rs` (startup), `rpc.rs` (gRPC; stubs generated from `proto/` by `build.rs` with vendored protoc).
+- `crates/escrow-cli/`: the `escrow` binary (`escrow daemon --socket S --project P [--state D] [--mount M] [--deny-read GLOB]`). A scope is `<state>/scopes/<id>/{upper/,meta.sqlite}`; its view is `<mount>/<id>/`.
 - `proto/escrow/v1/escrow.proto`: the one protocol schema (gRPC over a Unix socket, `ESCROW_SOCKET`).
 - `sdk/python/`: uv project, package `escrow`; generated stubs in `src/escrow/v1/` are committed.
 - `tests/conformance/`: pytest suite run against the built binary; `packaging/ubuntu/`: escrowd's bwrap and AppArmor profile.

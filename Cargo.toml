@@ -21,3 +21,8 @@ tonic = { version = "0.14.6", default-features = false, features = ["codegen", "
 tonic-prost = "0.14.6"
 tonic-prost-build = "0.14.6"
 protoc-bin-vendored = "3.2"
+fuser = "0.18"
+globset = "0.4.20"
+libc = "0.2"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+rustix = { version = "1.1.5", features = ["fs"] }
