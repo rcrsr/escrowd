@@ -1,0 +1,16 @@
+host: Ubuntu 26.04 LTS, kernel 7.0.0-28-generic, bwrap 0.11.1
+PASS  mount view unprivileged (fuse.escrow)
+PASS  sandbox sees view at project path
+PASS  read existing file
+PASS  bash redirect write
+PASS  heredoc write
+PASS  python write
+PASS  rename and delete
+PASS  git init, commit, clean status
+PASS  nested user namespace blocked
+PASS  daemon not visible (pid namespace)
+PASS  writes reached base
+PASS  view over its own base path serves reads
+PASS  view over its own base path takes writes
+PASS  daemon death detected in sandbox (ENOTCONN)
+result: 0 failed

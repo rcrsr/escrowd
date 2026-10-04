@@ -1,0 +1,16 @@
+host: Ubuntu 24.04.4 LTS, kernel 6.8.0-134-generic, bwrap 0.9.0
+PASS  mount view unprivileged (fuse.escrow)
+FAIL  sandbox sees view at project path: bwrap: setting up uid map: Permission denied
+FAIL  read existing file: bwrap: setting up uid map: Permission denied
+FAIL  bash redirect write: bwrap: setting up uid map: Permission denied
+FAIL  heredoc write: bwrap: setting up uid map: Permission denied
+FAIL  python write: bwrap: setting up uid map: Permission denied
+FAIL  rename and delete: bwrap: setting up uid map: Permission denied
+FAIL  git init, commit, clean status: bwrap: setting up uid map: Permission denied
+FAIL  nested user namespace blocked: bwrap: setting up uid map: Permission denied
+FAIL  daemon not visible (pid namespace): bwrap: setting up uid map: Permission denied
+FAIL  writes reached base
+PASS  view over its own base path serves reads
+PASS  view over its own base path takes writes
+FAIL  daemon death detected in sandbox: bwrap: setting up uid map: Permission denied
+result: 11 failed

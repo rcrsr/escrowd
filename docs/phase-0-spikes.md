@@ -34,7 +34,7 @@ flowchart LR
 | # | Sub-phase | Goal (go when…) | Output |
 | --- | --- | --- | --- |
 | 0.1 | Environment and stack | Supported Linux distributions listed with kernel, bwrap, libfuse, user-namespace policy and filesystem; protocol chosen or deferred | Host matrix; stack decision note |
-| 0.2 | FUSE in bwrap over `$PROJECT` | A mirroring FUSE view, mounted by the daemon through `fusermount3` without root, is bind-mounted over `$PROJECT` inside bwrap; bash, git and python inside see ordinary paths; the daemon never touches the view path (it would deadlock) and reads the base through pre-opened handles; a daemon restart is detected (the sandbox's bind turns stale and returns ENOTCONN) | Spike binary; run log |
+| 0.2 | FUSE in bwrap over `$PROJECT` (**go**, Oct 3, 2026, [results](../spikes/results/0.2-summary.md)) | A mirroring FUSE view, mounted by the daemon through `fusermount3` without root, is bind-mounted over `$PROJECT` inside bwrap; bash, git and python inside see ordinary paths; the daemon never touches the view path (it would deadlock) and reads the base through pre-opened handles; a daemon restart is detected (the sandbox's bind turns stale and returns ENOTCONN) | Spike binary; run log |
 | 0.3 | Copy-on-write semantics | Write, rename, delete (whiteout) and mkdir inside the view leave the real project byte-identical; `stat` inode numbers stay stable across copy-up; `git status` and an editor save behave as on native | Spike binary; test script |
 | 0.4 | Per-scope routing and read gating | Two virtual roots `/escrow/<a>/` and `/escrow/<b>/` stage writes separately; two concurrent asyncio tasks on one thread, via a Python `contextvars` path-rewrite shim, land every write in the right scope; a denied read returns EACCES synchronously and is logged; with the writeback cache on, a flush delivers every dirty page before a close | Spike binary; Python shim; test script |
 | 0.5 | Snapshot at open | A scope opened before another scope's commit does not see that commit; mechanism chosen: reflink (XFS, btrfs), btrfs subvolume snapshot, or per-file version check at commit | Decision note with timings per mechanism |
@@ -123,7 +123,8 @@ Approach, so one install works on 24.04 LTS and later:
 3. Children may still create a user namespace, but it has no capabilities, so they cannot mount over the FUSE view. This meets the proposal's tamper-resistance goal.
 4. Any user who can run `/usr/lib/escrowd/bwrap` gets the same permission; the profile must stay as narrow as bwrap's needs.
 5. Never ask users to set the sysctl to 0: it removes the protection system-wide.
-6. 0.2 verifies this on stock Ubuntu 24.04 and 26.04: with the profile, the bind mount works and a sandboxed `unshare -Urm mount` fails; without it, bwrap fails to mount.
+6. 0.2 verifies this on stock Ubuntu 24.04 and 26.04: with the profile, the bind mount works and a sandboxed `unshare -Urm mount` fails; without it, bwrap fails to mount. Verified Oct 3, 2026 ([0.2 results](../spikes/results/0.2-summary.md)); bwrap's `--disable-userns` adds a second, distribution-independent block on nested namespaces.
+7. Ubuntu 26.04 also confines `fusermount3`: FUSE mountpoints must be under `$HOME`, `/mnt`, `/run/user/<uid>`, `/media` or `/tmp`. escrowd mounts views under `$XDG_RUNTIME_DIR`.
 
 ## Current dev host (measured Oct 3, 2026)
 

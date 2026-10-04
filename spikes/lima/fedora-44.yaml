@@ -10,5 +10,5 @@ provision:
   script: |
     #!/bin/sh
     set -eu
-    command -v bwrap >/dev/null && command -v fusermount3 >/dev/null && exit 0
-    dnf install -y bubblewrap fuse3
+    command -v bwrap >/dev/null && command -v fusermount3 >/dev/null && command -v git >/dev/null && command -v python3 >/dev/null && exit 0
+    dnf install -y bubblewrap fuse3 git python3

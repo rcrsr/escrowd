@@ -11,7 +11,7 @@ provision:
   script: |
     #!/bin/sh
     set -eu
-    command -v bwrap >/dev/null && command -v fusermount3 >/dev/null && exit 0
+    command -v bwrap >/dev/null && command -v fusermount3 >/dev/null && command -v git >/dev/null && command -v python3 >/dev/null && exit 0
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
-    apt-get install -y --no-install-recommends bubblewrap fuse3
+    apt-get install -y --no-install-recommends bubblewrap fuse3 git python3
