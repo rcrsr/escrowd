@@ -46,6 +46,10 @@ class Client:
         """Apply a closed scope's change set, all or nothing; a conflict drops the scope."""
         return self.decide(scope_id, escrow_pb2.VERDICT_COMMIT, timeout=timeout)
 
+    def settle_unscoped(self, timeout: float = 30.0) -> escrow_pb2.ChangeSet:
+        """Close the implicit default scope and return its change set (scope id "unscoped")."""
+        return self._stub.SettleUnscoped(escrow_pb2.SettleUnscopedRequest(), timeout=timeout)
+
     def discard(self, scope_id: str, timeout: float = 30.0) -> escrow_pb2.Outcome:
         return self.decide(scope_id, escrow_pb2.VERDICT_DISCARD, timeout=timeout)
 

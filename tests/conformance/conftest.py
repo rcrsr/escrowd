@@ -36,6 +36,24 @@ def runtime_dir():
     shutil.rmtree(d, ignore_errors=True)
 
 
+def write_policy(work: Path, deny_read=(".env",), sandbox_read=()) -> Path:
+    policy = work / "policy.yaml"
+    deny = ", ".join(f"'{g}'" for g in deny_read)
+    read = ", ".join(f"'{p}'" for p in sandbox_read)
+    policy.write_text(f"version: 1\nread:\n  deny: [{deny}]\nsandbox:\n  read: [{read}]\n")
+    return policy
+
+
+def accepts(path: Path) -> bool:
+    """The Unix socket at `path` takes connections (a crashed daemon leaves a stale file)."""
+    with socket.socket(socket.AF_UNIX) as s:
+        try:
+            s.connect(str(path))
+            return True
+        except OSError:
+            return False
+
+
 class Daemon:
     """`escrow daemon` with its socket, project, state and mount under one work directory."""
 
@@ -46,40 +64,35 @@ class Daemon:
         deny_read=(".env",),
         project: Path | None = None,
         env: dict[str, str] | None = None,
+        unscoped: str | None = None,
+        sandbox_read=(),
     ):
-        """`deny_read` becomes the policy file's read.deny list; `env` adds to the environment."""
+        """`deny_read` and `sandbox_read` become the policy file's read.deny and sandbox.read
+        lists; `env` adds to the environment."""
         self.work = work
+        self.bin = bin
         self.socket = work / "escrow.sock"
         self.project = project or work / "proj"
         self.state = work / "state"
         self.mount = work / "mnt"
         self.project.mkdir(parents=True, exist_ok=True)
-        self.policy = work / "policy.yaml"
-        deny = ", ".join(f"'{g}'" for g in deny_read)
-        self.policy.write_text(f"version: 1\nread:\n  deny: [{deny}]\n")
+        self.policy = write_policy(work, deny_read, sandbox_read)
         args = [bin, "daemon", "--socket", self.socket, "--project", self.project]
         args += ["--state", self.state, "--mount", self.mount, "--policy", self.policy]
+        if unscoped:
+            args += ["--unscoped", unscoped]
         self.log = open(work / "daemon.log", "ab")
         self.proc = subprocess.Popen(args, stderr=self.log, env={**os.environ, **(env or {})})
         self.wait_ready()
 
     def wait_ready(self):
         deadline = time.monotonic() + 10
-        while not self.accepts():  # the socket is bound after the views are mounted
+        while not accepts(self.socket):  # the socket is bound after the views are mounted
             if self.proc.poll() is not None:
                 raise RuntimeError(f"daemon exited: {(self.work / 'daemon.log').read_text()}")
             if time.monotonic() > deadline:
                 raise TimeoutError(f"daemon did not create {self.socket}")
             time.sleep(0.02)
-
-    def accepts(self) -> bool:
-        """The socket takes connections (a crashed daemon leaves a stale file behind)."""
-        with socket.socket(socket.AF_UNIX) as s:
-            try:
-                s.connect(str(self.socket))
-                return True
-            except OSError:
-                return False
 
     def stop(self) -> int:
         if self.proc.poll() is None:
@@ -97,6 +110,20 @@ class Daemon:
 
     def upper(self, scope_id: str) -> Path:
         return self.state / "scopes" / scope_id / "upper"
+
+    def exec(self, scope_id: str, *argv, **kw) -> subprocess.CompletedProcess:
+        """`escrow exec --scope scope_id -- argv` from the host, output captured as text."""
+        return subprocess.run(
+            self.exec_args(scope_id, *argv),
+            env={**os.environ, "ESCROW_SOCKET": str(self.socket)},
+            capture_output=True,
+            text=True,
+            timeout=30,
+            **kw,
+        )
+
+    def exec_args(self, scope_id: str, *argv) -> list:
+        return [self.bin, "exec", "--scope", scope_id, "--", *argv]
 
     def generations(self) -> list[str]:
         """Generation directories holding pre-images."""

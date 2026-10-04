@@ -1,6 +1,14 @@
 // escrowd protocol: SDKs mark scopes, the daemon captures, gates and decides.
 // Served as gRPC over a Unix socket (path in ESCROW_SOCKET). The schema evolves
 // through phase 1 and freezes in phase 3; Ping reports PROTOCOL_VERSION.
+//
+// Spawning a scope's child needs file descriptors, which gRPC cannot carry, so
+// it has its own socket beside the gRPC one: `<ESCROW_SOCKET>.exec`. Each
+// connection starts one child. Frames are a little-endian u32 length followed
+// by one message. The client sends the length of a SpawnRequest with its
+// stdin, stdout and stderr attached (SCM_RIGHTS), then the request, then any
+// number of SpawnSignal. The daemon answers with SpawnEvent frames: `pid`,
+// then `exit_code`, or `error` alone. Closing the connection kills the child.
 syntax = "proto3";
 
 package escrow.v1;
@@ -19,11 +27,9 @@ service Escrow {
   // Apply the close-time decision: commit, discard or return to agent.
   rpc Decide(DecideRequest) returns (Outcome);
 
-  // Start a child process in the scope's sandbox. The child's stdin, stdout and
-  // stderr travel over SCM_RIGHTS on the same socket (phase 1.5).
-  rpc Spawn(SpawnRequest) returns (SpawnResponse);
-
-  // Close the implicit default scope (unscoped = implicit) and return its change set.
+  // Close the implicit default scope (unscoped = implicit) and return its change
+  // set; decide it like any scope (scope id "unscoped"). After a commit or a
+  // discard the daemon opens a fresh default scope at the same path.
   rpc SettleUnscoped(SettleUnscopedRequest) returns (ChangeSet);
 }
 
@@ -113,16 +119,30 @@ message Outcome {
   repeated string reasons = 4;
 }
 
+// Exec socket: start argv in the scope's sandbox, with the scope's view over the project.
 message SpawnRequest {
   string scope_id = 1;
   repeated string argv = 2;
+  // The caller's working directory; a path in the project or under /escrow/<scope_id>/
+  // maps to the same place in the sandbox, anything else to the project root.
   string cwd = 3;
   map<string, string> env = 4;
 }
 
-message SpawnResponse {
-  // PID of the sandboxed child, in the daemon's PID namespace.
-  int32 pid = 1;
+message SpawnEvent {
+  oneof event {
+    // The child started; PID of the sandbox, in the daemon's PID namespace.
+    int32 pid = 1;
+    // The child exited: its status, or 128 + the signal that killed it.
+    int32 exit_code = 2;
+    // The child could not start (unknown or closed scope, bad request).
+    string error = 3;
+  }
+}
+
+// Exec socket: deliver a signal to the command (not to bwrap).
+message SpawnSignal {
+  int32 signal = 1;
 }
 
 message SettleUnscopedRequest {}

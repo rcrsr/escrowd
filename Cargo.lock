@@ -310,6 +310,7 @@ dependencies = [
  "anyhow",
  "clap",
  "escrowd",
+ "libc",
  "tokio",
 ]
 

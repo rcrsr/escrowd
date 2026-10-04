@@ -172,11 +172,21 @@ class SpawnRequest(_message.Message):
     env: _containers.ScalarMap[str, str]
     def __init__(self, scope_id: _Optional[str] = ..., argv: _Optional[_Iterable[str]] = ..., cwd: _Optional[str] = ..., env: _Optional[_Mapping[str, str]] = ...) -> None: ...
 
-class SpawnResponse(_message.Message):
-    __slots__ = ("pid",)
+class SpawnEvent(_message.Message):
+    __slots__ = ("pid", "exit_code", "error")
     PID_FIELD_NUMBER: _ClassVar[int]
+    EXIT_CODE_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
     pid: int
-    def __init__(self, pid: _Optional[int] = ...) -> None: ...
+    exit_code: int
+    error: str
+    def __init__(self, pid: _Optional[int] = ..., exit_code: _Optional[int] = ..., error: _Optional[str] = ...) -> None: ...
+
+class SpawnSignal(_message.Message):
+    __slots__ = ("signal",)
+    SIGNAL_FIELD_NUMBER: _ClassVar[int]
+    signal: int
+    def __init__(self, signal: _Optional[int] = ...) -> None: ...
 
 class SettleUnscopedRequest(_message.Message):
     __slots__ = ()

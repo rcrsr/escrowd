@@ -15,7 +15,7 @@ escrowd = { path = "crates/escrowd" }
 anyhow = "1"
 clap = { version = "4.6", features = ["derive", "env"] }
 prost = "0.14"
-tokio = { version = "1.53", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tokio = { version = "1.53", features = ["macros", "rt-multi-thread", "net", "signal", "process"] }
 tokio-stream = { version = "0.1.19", features = ["net"] }
 tonic = { version = "0.14.6", default-features = false, features = ["codegen", "router", "server"] }
 tonic-prost = "0.14.6"
@@ -25,6 +25,6 @@ fuser = "0.18"
 globset = "0.4.20"
 libc = "0.2"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
-rustix = { version = "1.1.5", features = ["fs"] }
+rustix = { version = "1.1.5", features = ["fs", "net", "process"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde-saphyr = "1.3.0"

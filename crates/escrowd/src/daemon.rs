@@ -1,4 +1,5 @@
-//! Daemon startup: pre-open the project, mount the scope views, serve the protocol.
+//! Daemon startup: pre-open the project, mount the scope views, serve the protocol
+//! and the exec socket.
 
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
@@ -6,9 +7,13 @@ use std::sync::Arc;
 
 use anyhow::{Context, bail};
 
+use fuser::BackgroundSession;
+
+use crate::exec::{self, Children, ExecServer};
 use crate::gate::Gate;
 use crate::policy::Policy;
-use crate::views::Views;
+use crate::sandbox::{self, Sandbox};
+use crate::views::{Unscoped, Views};
 use crate::{fuse, rpc, sys};
 
 pub struct Config {
@@ -19,9 +24,13 @@ pub struct Config {
     /// Where the views are mounted; default `$XDG_RUNTIME_DIR/escrowd/<project-id>/view`
     /// (Ubuntu 26.04 confines fusermount3 to a few roots, `/run/user/<uid>` among them).
     pub mount: Option<PathBuf>,
-    /// The policy file; none means no read rules.
+    /// The policy file; none means no read rules and no extra sandbox paths.
     pub policy: Option<PathBuf>,
     pub threads: usize,
+    /// What IO outside a scope does (the `unscoped` root of the mount).
+    pub unscoped: Unscoped,
+    /// bwrap for scope children [default: `sandbox::find_bwrap`].
+    pub bwrap: Option<PathBuf>,
 }
 
 /// `<project basename>-<FNV-1a 64 of the canonical path>`: stable and readable.
@@ -58,26 +67,39 @@ pub fn default_state_dir(project: &Path) -> anyhow::Result<PathBuf> {
     .join(project_id(project)))
 }
 
-pub async fn run(config: Config, shutdown: impl Future<Output = ()>) -> anyhow::Result<()> {
+/// `$XDG_RUNTIME_DIR/escrowd/<project-id>`: the views (`view/`) and sockets of `escrow run`.
+pub fn default_runtime_dir(project: &Path) -> anyhow::Result<PathBuf> {
+    Ok(env_dir("XDG_RUNTIME_DIR", || None)?
+        .join("escrowd")
+        .join(project_id(project)))
+}
+
+/// A started daemon: views mounted, sockets not yet served.
+pub struct Daemon {
+    pub views: Arc<Views>,
+    pub project: PathBuf,
+    pub state: PathBuf,
+    pub mount: PathBuf,
+    pub socket: PathBuf,
+    pub children: Arc<Children>,
+    read: Vec<PathBuf>,
+    bwrap: PathBuf,
+    session: BackgroundSession,
+}
+
+/// Mount the views and load the scopes (rolling back an interrupted commit).
+pub fn start(config: Config) -> anyhow::Result<Daemon> {
     let project = config
         .project
         .canonicalize()
         .with_context(|| format!("project {}", config.project.display()))?;
-    let id = project_id(&project);
     let state = match config.state {
         Some(s) => s,
-        None => env_dir("XDG_STATE_HOME", || {
-            std::env::home_dir().map(|h| h.join(".local/state"))
-        })?
-        .join("escrowd")
-        .join(&id),
+        None => default_state_dir(&project)?,
     };
     let mount = match config.mount {
         Some(m) => m,
-        None => env_dir("XDG_RUNTIME_DIR", || None)?
-            .join("escrowd")
-            .join(&id)
-            .join("view"),
+        None => default_runtime_dir(&project)?.join("view"),
     };
     std::fs::create_dir_all(&state).with_context(|| format!("state dir {}", state.display()))?;
     std::fs::create_dir_all(&mount).with_context(|| format!("mount dir {}", mount.display()))?;
@@ -99,20 +121,83 @@ pub async fn run(config: Config, shutdown: impl Future<Output = ()>) -> anyhow::
         },
     };
     let gate = Gate::new(&policy.read.deny).context("policy read.deny pattern")?;
+    let read = policy.sandbox.read_paths()?;
     // Open the base before anything is mounted, so reads of it never loop through a view.
     let lower = sys::open_dir(&project).with_context(|| format!("opening {}", project.display()))?;
-    let views = Arc::new(Views::new(lower, &state, &mount, gate).context("loading scopes")?);
+    let views = Arc::new(Views::new(lower, &state, &mount, gate, config.unscoped).context("loading scopes")?);
     let session = fuse::mount(views.clone(), &mount, config.threads)
         .with_context(|| format!("mounting views at {}", mount.display()))?;
+    views.set_notifier(session.notifier());
     eprintln!(
         "escrowd: project {} views at {} state {}",
         project.display(),
         mount.display(),
         state.display()
     );
-    let served = rpc::serve(&config.socket, views, shutdown).await;
-    tokio::task::spawn_blocking(move || session.umount_and_join())
-        .await?
-        .context("unmounting views")?;
-    served
+    Ok(Daemon {
+        views,
+        project,
+        state,
+        mount,
+        socket: config.socket,
+        children: Arc::new(Children::default()),
+        read,
+        bwrap: sandbox::find_bwrap(config.bwrap.as_deref()),
+        session,
+    })
+}
+
+impl Daemon {
+    /// A sandbox that hides escrowd's state, views and sockets.
+    pub fn sandbox(&self) -> Sandbox {
+        Sandbox {
+            bwrap: self.bwrap.clone(),
+            read: self.read.clone(),
+            hide_dirs: vec![self.state.clone(), self.mount.clone()],
+            hide_files: vec![self.socket.clone(), exec::exec_socket(&self.socket)],
+            home: std::env::home_dir(),
+        }
+    }
+
+    /// Serve the gRPC and exec sockets until `shutdown` resolves, then stop every
+    /// child and unmount.
+    pub async fn serve(self, shutdown: impl Future<Output = ()>) -> anyhow::Result<()> {
+        let exec_path = exec::exec_socket(&self.socket);
+        let exec_listener = rpc::bind(&exec_path)?;
+        let server = Arc::new(ExecServer {
+            views: self.views.clone(),
+            sandbox: self.sandbox(),
+            project: self.project.clone(),
+            mount: self.mount.clone(),
+            children: self.children.clone(),
+        });
+        let accept = tokio::spawn(async move {
+            while let Ok((stream, _)) = exec_listener.accept().await {
+                let server = server.clone();
+                let Ok(stream) = stream.into_std().and_then(|s| s.set_nonblocking(false).map(|()| s)) else {
+                    continue;
+                };
+                std::thread::spawn(move || {
+                    if let Err(e) = server.handle(stream) {
+                        eprintln!("escrowd: exec: {e}");
+                    }
+                });
+            }
+        });
+        let service = rpc::Service::new(self.views.clone(), self.children.clone());
+        let served = rpc::serve(&self.socket, service, shutdown).await;
+        accept.abort();
+        let _ = std::fs::remove_file(&exec_path);
+        let children = self.children.clone();
+        tokio::task::spawn_blocking(move || children.stop_all()).await?;
+        let session = self.session;
+        tokio::task::spawn_blocking(move || session.umount_and_join())
+            .await?
+            .context("unmounting views")?;
+        served
+    }
+}
+
+pub async fn run(config: Config, shutdown: impl Future<Output = ()>) -> anyhow::Result<()> {
+    start(config)?.serve(shutdown).await
 }

@@ -47,6 +47,8 @@ pub struct ScopeStore {
     pub idx: u64,
     /// The base generation at open: the scope reads the base as it was then.
     pub since: u64,
+    /// Reads only (the unscoped root in `deny` mode): every change gets EROFS.
+    pub readonly: bool,
     dir: PathBuf,
     db: Connection,
     whiteouts: HashSet<PathBuf>,
@@ -111,6 +113,7 @@ impl ScopeStore {
         name: &str,
         idx: u64,
         since: u64,
+        readonly: bool,
         labels: &HashMap<String, String>,
     ) -> io::Result<Self> {
         let dir = scopes_dir.join(id);
@@ -119,8 +122,8 @@ impl ScopeStore {
         let db = Connection::open(dir.join("meta.sqlite")).map_err(sql)?;
         db.execute_batch(SCHEMA).map_err(sql)?;
         db.execute(
-            "INSERT INTO meta VALUES ('name', ?1), ('idx', ?2), ('since', ?3), ('next_upper_ino', 0), ('state', 'open')",
-            params![name, idx as i64, since as i64],
+            "INSERT INTO meta VALUES ('name', ?1), ('idx', ?2), ('since', ?3), ('readonly', ?4), ('next_upper_ino', 0), ('state', 'open')",
+            params![name, idx as i64, since as i64, readonly as i64],
         )
         .map_err(sql)?;
         for (k, v) in labels {
@@ -151,6 +154,7 @@ impl ScopeStore {
         };
         let idx = int(meta("idx")?)?;
         let since = int(meta("since")?)?;
+        let readonly = int(meta("readonly")?)? != 0;
         let next_upper_ino = int(meta("next_upper_ino")?)?;
         let state = match meta("state")? {
             rusqlite::types::Value::Text(t) if t == "closed" => ScopeState::Closed,
@@ -189,6 +193,7 @@ impl ScopeStore {
             name,
             idx,
             since,
+            readonly,
             dir,
             db,
             whiteouts,

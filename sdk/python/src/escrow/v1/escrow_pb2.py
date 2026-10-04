@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x16\x65scrow/v1/escrow.proto\x12\tescrow.v1\"\r\n\x0bPingRequest\"@\n\x0cPingResponse\x12\x16\n\x0e\x64\x61\x65mon_version\x18\x01 \x01(\t\x12\x18\n\x10protocol_version\x18\x02 \x01(\r\"\x88\x01\n\x10OpenScopeRequest\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x37\n\x06labels\x18\x02 \x03(\x0b\x32\'.escrow.v1.OpenScopeRequest.LabelsEntry\x1a-\n\x0bLabelsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"3\n\x11OpenScopeResponse\x12\x10\n\x08scope_id\x18\x01 \x01(\t\x12\x0c\n\x04root\x18\x02 \x01(\t\"%\n\x11\x43loseScopeRequest\x12\x10\n\x08scope_id\x18\x01 \x01(\t\"N\n\x06\x43hange\x12#\n\x04kind\x18\x01 \x01(\x0e\x32\x15.escrow.v1.ChangeKind\x12\x0c\n\x04path\x18\x02 \x01(\t\x12\x11\n\tfrom_path\x18\x03 \x01(\t\"?\n\x04Read\x12\x0c\n\x04path\x18\x01 \x01(\t\x12)\n\x08\x64\x65\x63ision\x18\x02 \x01(\x0e\x32\x17.escrow.v1.ReadDecision\"\xc2\x01\n\tChangeSet\x12\x10\n\x08scope_id\x18\x01 \x01(\t\x12\"\n\x07\x63hanges\x18\x02 \x03(\x0b\x32\x11.escrow.v1.Change\x12\x1e\n\x05reads\x18\x03 \x03(\x0b\x32\x0f.escrow.v1.Read\x12\x30\n\x06labels\x18\x04 \x03(\x0b\x32 .escrow.v1.ChangeSet.LabelsEntry\x1a-\n\x0bLabelsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"W\n\rDecideRequest\x12\x10\n\x08scope_id\x18\x01 \x01(\t\x12#\n\x07verdict\x18\x02 \x01(\x0e\x32\x12.escrow.v1.Verdict\x12\x0f\n\x07reasons\x18\x03 \x03(\t\"e\n\x07Outcome\x12\x10\n\x08scope_id\x18\x01 \x01(\t\x12(\n\x06status\x18\x02 \x01(\x0e\x32\x18.escrow.v1.OutcomeStatus\x12\r\n\x05paths\x18\x03 \x03(\t\x12\x0f\n\x07reasons\x18\x04 \x03(\t\"\x96\x01\n\x0cSpawnRequest\x12\x10\n\x08scope_id\x18\x01 \x01(\t\x12\x0c\n\x04\x61rgv\x18\x02 \x03(\t\x12\x0b\n\x03\x63wd\x18\x03 \x01(\t\x12-\n\x03\x65nv\x18\x04 \x03(\x0b\x32 .escrow.v1.SpawnRequest.EnvEntry\x1a*\n\x08\x45nvEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"\x1c\n\rSpawnResponse\x12\x0b\n\x03pid\x18\x01 \x01(\x05\"\x17\n\x15SettleUnscopedRequest*\x89\x01\n\nChangeKind\x12\x1b\n\x17\x43HANGE_KIND_UNSPECIFIED\x10\x00\x12\x16\n\x12\x43HANGE_KIND_CREATE\x10\x01\x12\x16\n\x12\x43HANGE_KIND_MODIFY\x10\x02\x12\x16\n\x12\x43HANGE_KIND_DELETE\x10\x03\x12\x16\n\x12\x43HANGE_KIND_RENAME\x10\x04*^\n\x0cReadDecision\x12\x1d\n\x19READ_DECISION_UNSPECIFIED\x10\x00\x12\x17\n\x13READ_DECISION_ALLOW\x10\x01\x12\x16\n\x12READ_DECISION_DENY\x10\x02*_\n\x07Verdict\x12\x17\n\x13VERDICT_UNSPECIFIED\x10\x00\x12\x12\n\x0eVERDICT_COMMIT\x10\x01\x12\x13\n\x0fVERDICT_DISCARD\x10\x02\x12\x12\n\x0eVERDICT_RETURN\x10\x03*\xa5\x01\n\rOutcomeStatus\x12\x1e\n\x1aOUTCOME_STATUS_UNSPECIFIED\x10\x00\x12\x1c\n\x18OUTCOME_STATUS_COMMITTED\x10\x01\x12\x1c\n\x18OUTCOME_STATUS_DISCARDED\x10\x02\x12\x1b\n\x17OUTCOME_STATUS_RETURNED\x10\x03\x12\x1b\n\x17OUTCOME_STATUS_CONFLICT\x10\x04\x32\x89\x03\n\x06\x45scrow\x12\x37\n\x04Ping\x12\x16.escrow.v1.PingRequest\x1a\x17.escrow.v1.PingResponse\x12\x46\n\tOpenScope\x12\x1b.escrow.v1.OpenScopeRequest\x1a\x1c.escrow.v1.OpenScopeResponse\x12@\n\nCloseScope\x12\x1c.escrow.v1.CloseScopeRequest\x1a\x14.escrow.v1.ChangeSet\x12\x36\n\x06\x44\x65\x63ide\x12\x18.escrow.v1.DecideRequest\x1a\x12.escrow.v1.Outcome\x12:\n\x05Spawn\x12\x17.escrow.v1.SpawnRequest\x1a\x18.escrow.v1.SpawnResponse\x12H\n\x0eSettleUnscoped\x12 .escrow.v1.SettleUnscopedRequest\x1a\x14.escrow.v1.ChangeSetb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x16\x65scrow/v1/escrow.proto\x12\tescrow.v1\"\r\n\x0bPingRequest\"@\n\x0cPingResponse\x12\x16\n\x0e\x64\x61\x65mon_version\x18\x01 \x01(\t\x12\x18\n\x10protocol_version\x18\x02 \x01(\r\"\x88\x01\n\x10OpenScopeRequest\x12\x0c\n\x04name\x18\x01 \x01(\t\x12\x37\n\x06labels\x18\x02 \x03(\x0b\x32\'.escrow.v1.OpenScopeRequest.LabelsEntry\x1a-\n\x0bLabelsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"3\n\x11OpenScopeResponse\x12\x10\n\x08scope_id\x18\x01 \x01(\t\x12\x0c\n\x04root\x18\x02 \x01(\t\"%\n\x11\x43loseScopeRequest\x12\x10\n\x08scope_id\x18\x01 \x01(\t\"N\n\x06\x43hange\x12#\n\x04kind\x18\x01 \x01(\x0e\x32\x15.escrow.v1.ChangeKind\x12\x0c\n\x04path\x18\x02 \x01(\t\x12\x11\n\tfrom_path\x18\x03 \x01(\t\"?\n\x04Read\x12\x0c\n\x04path\x18\x01 \x01(\t\x12)\n\x08\x64\x65\x63ision\x18\x02 \x01(\x0e\x32\x17.escrow.v1.ReadDecision\"\xc2\x01\n\tChangeSet\x12\x10\n\x08scope_id\x18\x01 \x01(\t\x12\"\n\x07\x63hanges\x18\x02 \x03(\x0b\x32\x11.escrow.v1.Change\x12\x1e\n\x05reads\x18\x03 \x03(\x0b\x32\x0f.escrow.v1.Read\x12\x30\n\x06labels\x18\x04 \x03(\x0b\x32 .escrow.v1.ChangeSet.LabelsEntry\x1a-\n\x0bLabelsEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"W\n\rDecideRequest\x12\x10\n\x08scope_id\x18\x01 \x01(\t\x12#\n\x07verdict\x18\x02 \x01(\x0e\x32\x12.escrow.v1.Verdict\x12\x0f\n\x07reasons\x18\x03 \x03(\t\"e\n\x07Outcome\x12\x10\n\x08scope_id\x18\x01 \x01(\t\x12(\n\x06status\x18\x02 \x01(\x0e\x32\x18.escrow.v1.OutcomeStatus\x12\r\n\x05paths\x18\x03 \x03(\t\x12\x0f\n\x07reasons\x18\x04 \x03(\t\"\x96\x01\n\x0cSpawnRequest\x12\x10\n\x08scope_id\x18\x01 \x01(\t\x12\x0c\n\x04\x61rgv\x18\x02 \x03(\t\x12\x0b\n\x03\x63wd\x18\x03 \x01(\t\x12-\n\x03\x65nv\x18\x04 \x03(\x0b\x32 .escrow.v1.SpawnRequest.EnvEntry\x1a*\n\x08\x45nvEntry\x12\x0b\n\x03key\x18\x01 \x01(\t\x12\r\n\x05value\x18\x02 \x01(\t:\x02\x38\x01\"J\n\nSpawnEvent\x12\r\n\x03pid\x18\x01 \x01(\x05H\x00\x12\x13\n\texit_code\x18\x02 \x01(\x05H\x00\x12\x0f\n\x05\x65rror\x18\x03 \x01(\tH\x00\x42\x07\n\x05\x65vent\"\x1d\n\x0bSpawnSignal\x12\x0e\n\x06signal\x18\x01 \x01(\x05\"\x17\n\x15SettleUnscopedRequest*\x89\x01\n\nChangeKind\x12\x1b\n\x17\x43HANGE_KIND_UNSPECIFIED\x10\x00\x12\x16\n\x12\x43HANGE_KIND_CREATE\x10\x01\x12\x16\n\x12\x43HANGE_KIND_MODIFY\x10\x02\x12\x16\n\x12\x43HANGE_KIND_DELETE\x10\x03\x12\x16\n\x12\x43HANGE_KIND_RENAME\x10\x04*^\n\x0cReadDecision\x12\x1d\n\x19READ_DECISION_UNSPECIFIED\x10\x00\x12\x17\n\x13READ_DECISION_ALLOW\x10\x01\x12\x16\n\x12READ_DECISION_DENY\x10\x02*_\n\x07Verdict\x12\x17\n\x13VERDICT_UNSPECIFIED\x10\x00\x12\x12\n\x0eVERDICT_COMMIT\x10\x01\x12\x13\n\x0fVERDICT_DISCARD\x10\x02\x12\x12\n\x0eVERDICT_RETURN\x10\x03*\xa5\x01\n\rOutcomeStatus\x12\x1e\n\x1aOUTCOME_STATUS_UNSPECIFIED\x10\x00\x12\x1c\n\x18OUTCOME_STATUS_COMMITTED\x10\x01\x12\x1c\n\x18OUTCOME_STATUS_DISCARDED\x10\x02\x12\x1b\n\x17OUTCOME_STATUS_RETURNED\x10\x03\x12\x1b\n\x17OUTCOME_STATUS_CONFLICT\x10\x04\x32\xcd\x02\n\x06\x45scrow\x12\x37\n\x04Ping\x12\x16.escrow.v1.PingRequest\x1a\x17.escrow.v1.PingResponse\x12\x46\n\tOpenScope\x12\x1b.escrow.v1.OpenScopeRequest\x1a\x1c.escrow.v1.OpenScopeResponse\x12@\n\nCloseScope\x12\x1c.escrow.v1.CloseScopeRequest\x1a\x14.escrow.v1.ChangeSet\x12\x36\n\x06\x44\x65\x63ide\x12\x18.escrow.v1.DecideRequest\x1a\x12.escrow.v1.Outcome\x12H\n\x0eSettleUnscoped\x12 .escrow.v1.SettleUnscopedRequest\x1a\x14.escrow.v1.ChangeSetb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -37,14 +37,14 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_CHANGESET_LABELSENTRY']._serialized_options = b'8\001'
   _globals['_SPAWNREQUEST_ENVENTRY']._loaded_options = None
   _globals['_SPAWNREQUEST_ENVENTRY']._serialized_options = b'8\001'
-  _globals['_CHANGEKIND']._serialized_start=1092
-  _globals['_CHANGEKIND']._serialized_end=1229
-  _globals['_READDECISION']._serialized_start=1231
-  _globals['_READDECISION']._serialized_end=1325
-  _globals['_VERDICT']._serialized_start=1327
-  _globals['_VERDICT']._serialized_end=1422
-  _globals['_OUTCOMESTATUS']._serialized_start=1425
-  _globals['_OUTCOMESTATUS']._serialized_end=1590
+  _globals['_CHANGEKIND']._serialized_start=1169
+  _globals['_CHANGEKIND']._serialized_end=1306
+  _globals['_READDECISION']._serialized_start=1308
+  _globals['_READDECISION']._serialized_end=1402
+  _globals['_VERDICT']._serialized_start=1404
+  _globals['_VERDICT']._serialized_end=1499
+  _globals['_OUTCOMESTATUS']._serialized_start=1502
+  _globals['_OUTCOMESTATUS']._serialized_end=1667
   _globals['_PINGREQUEST']._serialized_start=37
   _globals['_PINGREQUEST']._serialized_end=50
   _globals['_PINGRESPONSE']._serialized_start=52
@@ -73,10 +73,12 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_SPAWNREQUEST']._serialized_end=1034
   _globals['_SPAWNREQUEST_ENVENTRY']._serialized_start=992
   _globals['_SPAWNREQUEST_ENVENTRY']._serialized_end=1034
-  _globals['_SPAWNRESPONSE']._serialized_start=1036
-  _globals['_SPAWNRESPONSE']._serialized_end=1064
-  _globals['_SETTLEUNSCOPEDREQUEST']._serialized_start=1066
-  _globals['_SETTLEUNSCOPEDREQUEST']._serialized_end=1089
-  _globals['_ESCROW']._serialized_start=1593
-  _globals['_ESCROW']._serialized_end=1986
+  _globals['_SPAWNEVENT']._serialized_start=1036
+  _globals['_SPAWNEVENT']._serialized_end=1110
+  _globals['_SPAWNSIGNAL']._serialized_start=1112
+  _globals['_SPAWNSIGNAL']._serialized_end=1141
+  _globals['_SETTLEUNSCOPEDREQUEST']._serialized_start=1143
+  _globals['_SETTLEUNSCOPEDREQUEST']._serialized_end=1166
+  _globals['_ESCROW']._serialized_start=1670
+  _globals['_ESCROW']._serialized_end=2003
 # @@protoc_insertion_point(module_scope)
