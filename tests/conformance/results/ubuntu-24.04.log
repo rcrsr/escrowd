@@ -1,23 +1,10 @@
-host: Ubuntu 24.04.4 LTS, kernel 6.8.0-134-generic, 2026-10-04T19:15:27Z
-commit: 2363413
+host: Ubuntu 24.04.4 LTS, kernel 6.8.0-142-generic, 2026-10-04T19:38:07Z
+commit: 7de8ac8
 installed /usr/lib/escrowd/bwrap with profile escrowd_bwrap
-Downloading cpython-3.14.7-linux-x86_64-gnu (download) (34.6MiB)
- Downloaded cpython-3.14.7-linux-x86_64-gnu (download)
-Using CPython 3.14.7
+Using CPython 3.14.7 interpreter at: /home/andre/.local/share/uv/python/cpython-3.14.7-linux-x86_64-gnu/bin/python3.14
+Removed virtual environment at: /var/tmp/escrow-venv
 Creating virtual environment at: /var/tmp/escrow-venv
-   Building escrow @ file:///home/andre/projects/escrowd/sdk/python
-      Built escrow @ file:///home/andre/projects/escrowd/sdk/python
-Downloading ruff (9.9MiB)
-Downloading pygments (1.2MiB)
-Downloading grpcio-tools (2.6MiB)
-Downloading ty (13.5MiB)
-Downloading grpcio (6.8MiB)
- Downloaded pygments
- Downloaded grpcio-tools
- Downloaded grpcio
- Downloaded ruff
- Downloaded ty
-Installed 13 packages in 6ms
+Installed 13 packages in 25ms
 ============================= test session starts ==============================
 platform linux -- Python 3.14.7, pytest-9.1.1, pluggy-1.6.0 -- /var/tmp/escrow-venv/bin/python
 rootdir: /home/andre/projects/escrowd
@@ -145,4 +132,4 @@ tests/conformance/test_store.py::test_hard_link_keeps_inode_after_original_unlin
 tests/conformance/test_store.py::test_directory_renamed_onto_deleted_base_dir_hides_its_contents PASSED [ 99%]
 tests/conformance/test_store.py::test_daemon_refuses_a_mount_inside_the_project PASSED [100%]
 
-======================== 121 passed in 65.61s (0:01:05) ========================
+============================= 121 passed in 54.55s =============================

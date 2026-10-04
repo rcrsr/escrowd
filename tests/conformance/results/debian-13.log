@@ -1,20 +1,9 @@
-host: Debian GNU/Linux 13 (trixie), kernel 6.12.95+deb13-cloud-amd64, 2026-10-04T19:23:29Z
-commit: 2363413
-Using CPython 3.14.7 interpreter at: /home/andre/.local/share/uv/python/cpython-3.14.7-linux-x86_64-gnu/bin/python3.14
-Creating virtual environment at: /var/tmp/escrow-venv
+host: Debian GNU/Linux 13 (trixie), kernel 6.12.111+deb13-cloud-amd64, 2026-10-04T19:40:36Z
+commit: 7de8ac8
    Building escrow @ file:///home/andre/projects/escrowd/sdk/python
       Built escrow @ file:///home/andre/projects/escrowd/sdk/python
-Downloading ruff (9.9MiB)
-Downloading grpcio (6.8MiB)
-Downloading pygments (1.2MiB)
-Downloading ty (13.5MiB)
-Downloading grpcio-tools (2.6MiB)
- Downloaded pygments
- Downloaded grpcio-tools
- Downloaded grpcio
- Downloaded ruff
- Downloaded ty
-Installed 13 packages in 11ms
+Uninstalled 1 package in 2ms
+Installed 1 package in 0.91ms
 ============================= test session starts ==============================
 platform linux -- Python 3.14.7, pytest-9.1.1, pluggy-1.6.0 -- /var/tmp/escrow-venv/bin/python
 rootdir: /home/andre/projects/escrowd
@@ -142,4 +131,4 @@ tests/conformance/test_store.py::test_hard_link_keeps_inode_after_original_unlin
 tests/conformance/test_store.py::test_directory_renamed_onto_deleted_base_dir_hides_its_contents PASSED [ 99%]
 tests/conformance/test_store.py::test_daemon_refuses_a_mount_inside_the_project PASSED [100%]
 
-======================== 121 passed in 77.96s (0:01:17) ========================
+======================== 121 passed in 69.34s (0:01:09) ========================
