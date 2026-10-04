@@ -9,7 +9,12 @@ publish.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+fuser.workspace = true
+globset.workspace = true
+libc.workspace = true
 prost.workspace = true
+rusqlite.workspace = true
+rustix.workspace = true
 tokio.workspace = true
 tokio-stream.workspace = true
 tonic.workspace = true

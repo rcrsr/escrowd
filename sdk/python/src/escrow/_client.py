@@ -20,6 +20,13 @@ class Client:
     def ping(self, timeout: float = 5.0) -> escrow_pb2.PingResponse:
         return self._stub.Ping(escrow_pb2.PingRequest(), timeout=timeout)
 
+    def open_scope(self, name: str = "", timeout: float = 5.0) -> escrow_pb2.OpenScopeResponse:
+        return self._stub.OpenScope(escrow_pb2.OpenScopeRequest(name=name), timeout=timeout)
+
+    def discard(self, scope_id: str, timeout: float = 5.0) -> escrow_pb2.Outcome:
+        req = escrow_pb2.DecideRequest(scope_id=scope_id, verdict=escrow_pb2.VERDICT_DISCARD)
+        return self._stub.Decide(req, timeout=timeout)
+
     def close(self) -> None:
         self._channel.close()
 
