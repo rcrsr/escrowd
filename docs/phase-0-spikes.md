@@ -145,9 +145,9 @@ Approach, so one install works on 24.04 LTS and later:
 - [x] Is WSL2 a target host? No: WSL2 is the dev host; targets are general Linux, then macOS.
 - [x] Daemon language: Rust, decided Oct 3, 2026. It matches AgentFS for 0.7, and `fuser` covers passthrough and writeback cache.
 - [x] Test hosts for 0.1: Lima VMs for Ubuntu 24.04, Ubuntu 26.04, Debian 13 and Fedora 44; GitHub Actions `ubuntu-24.04` for CI. Decided Oct 3, 2026.
-- [ ] Does GitHub Actions offer an `ubuntu-26.04` runner? Add it to CI if so.
+- [x] Does GitHub Actions offer an `ubuntu-26.04` runner? Yes, GA, checked Oct 3, 2026 ([runner-images](https://github.com/actions/runner-images)); phase 1 CI uses it.
 - [x] Snapshot mechanism, accepted Oct 3, 2026: pre-images at commit + per-file version check, btrfs subvolume snapshot as an optional fast path ([0.5 results](../spikes/results/0.5-summary.md)). Phase 1 must prove the pre-image layer.
 - [x] Root helper for FUSE passthrough: not needed. Plain FUSE meets the 1.5× target on the test suite (1.01–1.16×) and the agent pipeline (1.21–1.25×); cold full-tree reads remain 1.6–2.0× and are a phase 2 optimization target ([0.6 results](../spikes/results/0.6-summary.md)).
-- [ ] Protocol: gRPC over a Unix socket is recommended. grpc-go, grpcio, grpc-js and tonic all support Unix sockets, and one schema generates every SDK. JSON-RPC avoids protobuf but needs hand-rolled framing in Rust and Python.
+- [x] Protocol: gRPC over a Unix socket, decided Oct 3, 2026 in the [phase 1 plan](phase-1-poc.md). grpc-go, grpcio, grpc-js and tonic all support Unix sockets, and one schema generates every SDK. JSON-RPC avoids protobuf but needs hand-rolled framing in Rust and Python.
 - [x] Benchmark repo for 0.6: [express](https://github.com/expressjs/express) at tag `v5.2.1`, decided Oct 3, 2026. It has the heaviest small-file load of the candidates. Steps: `git clone`, `pnpm install --frozen-lockfile --offline` (stands in for the build), `pnpm test`.
 - [x] XFS and btrfs volumes for 0.5: 2 GB loopback images in the benchmark VM (`/var/escrowd-volumes/`, `spikes/05-snapshot/setup-volumes.sh`), since VMs have passwordless sudo.

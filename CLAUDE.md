@@ -7,7 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 escrowd has no product code yet: the repo holds the design, the phase 0 plan and throwaway spikes (Cargo workspace in `spikes/`). Phase 0 is complete: go for phase 1 (`spikes/results/phase-0-report.md`).
 
 - `docs/escrowd-proposal.md`: the design (scopes, escrow, FUSE capture, bwrap isolation, roadmap phases 0–8).
-- `docs/phase-0-spikes.md`: the active plan. Sub-phases 0.1–0.7, each with a go/no-go goal, plus host matrix, environment rules and open questions. Update it when a decision is made or an open question closes (tick the box, add the date).
+- `docs/phase-1-poc.md`: the active plan (draft). Sub-phases 1.1–1.7 toward the proposal's seven exit tests, plus open questions. Update it when a decision is made or an open question closes (tick the box, add the date).
+- `docs/phase-0-spikes.md`: the completed phase 0 plan (sub-phases 0.1–0.7, host matrix, environment rules).
 
 ## What escrowd is
 
@@ -22,7 +23,7 @@ It works with any application, but it is built for LLM agent harnesses: a scope 
 
 Architecture as planned (proposal "Architecture" and "Isolation"):
 
-- **escrowd** (Rust) owns the FUSE capture layer, scopes, journal, gate and ledger. Language SDKs only mark scopes and talk to it over a Unix socket (gRPC recommended, not final).
+- **escrowd** (Rust) owns the FUSE capture layer, scopes, journal, gate and ledger. Language SDKs only mark scopes and talk to it over a Unix socket (gRPC: tonic and grpcio; per-scope state in one SQLite file).
 - **Attribution is by path**, not thread: each scope gets a virtual root `/escrow/<scope-id>/`; SDKs rewrite project paths using the language's async context (`contextvars`, `AsyncLocalStorage`); subprocesses run in bwrap with the scope's view mounted over `$PROJECT`.
 - **Isolation**: the real project directory is never mounted in the sandbox; the FUSE view is the only way to it.
 
