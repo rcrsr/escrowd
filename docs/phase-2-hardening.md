@@ -2,7 +2,7 @@
 
 Oct 4, 2026 · Andre Bremer · Draft
 
-**Status, Oct 4, 2026: 2.1 in progress** (baseline for workloads A and B recorded on the dev host and the benchmark VM; workload C next). Plan revised Oct 4, 2026 for issues [#11](https://github.com/rcrsr/escrowd/issues/11)–[#16](https://github.com/rcrsr/escrowd/issues/16).
+**Status, Oct 4, 2026: 2.1 in review** (baseline for workloads A, B and C recorded on the dev host and the benchmark VM at `564c36f`). Plan revised Oct 4, 2026 for issues [#11](https://github.com/rcrsr/escrowd/issues/11)–[#16](https://github.com/rcrsr/escrowd/issues/16).
 
 Phase 2 takes the phase 1 POC to something an agent harness can lean on: commits that survive a crash at any point, real repositories at near-native speed, paths outside the project under the same rules as the project, and errors that tell the caller what went wrong. Phase 3 freezes the protocol on top of it, so every protocol change (path roots, diff, scope token, policy options) lands here or waits for a protocol version bump.
 
@@ -64,7 +64,7 @@ The 0.6 harness (`spikes/06-bench/`) moves to `bench/`, which may not depend on 
 - Runs in the `escrow-bench` VM (4 vCPUs, 4 GiB) and on the dev host; 7 runs, medians, per-step and wall ratios against native.
 - **Ride-alongs**: the conformance suite stops depending on the host's git config (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_SYSTEM=/dev/null`; #11's first acceptance item); a CI job builds and tests on Rust stable next to the 1.93.1 pin, not required by the CI Gate (#16).
 
-As built so far (Oct 4, 2026):
+As built (Oct 4, 2026):
 
 - `bench/run.sh` runs three modes: `native`, `sandbox` (`escrow run --unscoped passthrough`: daemon and bwrap, the project bound directly) and `escrow` (`--unscoped implicit --on-exit commit`: every write in one scope, committed at exit). The implicit scope replaces the planned SDK scope: it is a scope like any other and needs no Python wrapper around a shell workload. Each run reports its steps and `wall`, the whole run as the caller sees it (daemon start, mount, steps, commit, unmount). `bench/summarize.py` prints medians and ratios, flags test-count mismatches, and drops runs with a negative step (WSL steps its wall clock).
 - `bench/lima.sh` runs it in `escrow-bench`: the host passes node, pnpm, uv and Python by resolved path. attrs runs without `tests/test_pyright.py`, which needs pyright on PATH. Logs: `bench/results/`.
@@ -72,26 +72,36 @@ As built so far (Oct 4, 2026):
 - Ride-alongs: `conftest.py` sets `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` to `/dev/null` for the suite and its children; with a global config that signs commits through a missing program, `test_overlay.py` fails 14 of 14 without it and passes 14 of 14 with it. CI gains `Rust (stable, advisory)`: clippy and tests with `RUSTUP_TOOLCHAIN=stable`, `continue-on-error`, outside the CI Gate.
 - `sandbox.write` in the policy: host paths bound read-write into every sandbox, outside escrow. The daemon creates each one and refuses to start if one overlaps the project, the state directory or the mount. Each sandbox start writes one `op=sandbox-write path=<absolute path>` ledger line per path. Five conformance checks; suite: 126.
 
-Baseline for A and B, benchmark VM (Ubuntu 24.04, kernel 6.8, 4 vCPUs), 7 runs, medians, escrow / native:
+Baseline at `564c36f`, benchmark VM (Ubuntu 24.04, kernel 6.8, 4 vCPUs), 7 runs, medians, escrow / native (logs: `bench/results/bench-ubuntu-24.04.log`, `wsl-dev-host.log`):
 
 | Repo | Workload | Test step | Timed steps | Wall |
 | --- | --- | --- | --- | --- |
-| express | A (clone, install, test) | 1.30× | 2.03× | **13.35×** (2.39 s → 31.90 s) |
-| express | B (status, read all, test) | 1.27× | 2.28× | 2.37× |
-| attrs | A | 1.06× | 1.13× | 1.75× |
-| attrs | B | 1.03× | 1.09× | 1.13× |
+| express | A (clone, install, test) | 1.23× | 1.97× | **13.32×** (2.23 s → 29.72 s) |
+| express | B (status, read all, test) | 1.24× | 2.01× | 2.16× |
+| attrs | A | 1.08× | 1.15× | 1.73× |
+| attrs | B | 1.06× | 1.10× | 1.13× |
+| cpython | C (read-heavy) | – | 2.91× | 3.17× |
 
-Dev host (WSL2, 28 CPUs): test steps 1.05–1.10×, timed steps 1.16–1.29×, wall 1.19–1.95×.
+Workload C per step, VM (dev host in brackets):
 
-Workload C, first run on the dev host (1 run; the 7-run baseline comes with the final runs of 2.1): cold `rg` 29×, cold `git status` 20×, cold `git log -p` 2.4×; warm 8.5×, 2.1× and 2.5×; wall 9.5×. Against the ≤ 1.5× warm target, warm `rg` is the largest gap.
+| Step | Cold | Warm |
+| --- | --- | --- |
+| `rg -c return .` | 16.41× (28.73×) | **8.53×** (9.47×) |
+| `git status` | 3.77× (22.94×) | 0.41× (2.72×) |
+| `git log -p -n 50` | 1.76× (2.58×) | **1.90×** (2.45×) |
+
+Dev host (WSL2, 28 CPUs): test steps 1.01–1.10×, wall 1.19–1.86× for A and B, 10.36× for C.
+
+Notes on the numbers: `git status` warm runs faster under escrow than natively in the VM because the first status in the scope rewrites the index (staged in the scope), while the native tree keeps rehashing racily clean entries; treat status as reported, not targeted. 3 of 105 VM runs and 4 of 105 dev host runs had a negative step (the wall clock stepped) and are dropped; 2.3 switches the timer to a monotonic clock.
 
 Findings:
 
 1. **The test suites already meet 1.5×** in both places (1.03–1.30×). The cost is elsewhere.
-2. **Commit dominates express A**: 27 s of its 31.9 s wall in the VM (11 s on the dev host) commit about 8,800 files. `apply` fsyncs each file it writes (`copy_entry(…, sync = true)`), then runs `syncfs` over the whole filesystem anyway.
+2. **Commit dominates express A**: about 25 s of its 29.7 s wall in the VM (11 s on the dev host) commit about 8,800 files. `apply` fsyncs each file it writes (`copy_entry(…, sync = true)`), then runs `syncfs` over the whole filesystem anyway.
 3. **Cold reads stay expensive**: read every file 17–35×, `git status` 4–6×, `pnpm install` 19× (VM), as 0.6 measured.
 4. **The sandbox is free**: `sandbox` mode is within 0.97–1.06× of native wall.
-5. **express flakes in `sandbox` mode on the dev host only**: workload B lost 3–25 tests in 4 of 7 runs (`server.address()` returns null in `res.render` tests). No FUSE is involved in that mode, the VM passed all runs, and `escrow` mode passed all runs on both; not yet explained.
+5. **Warm reads miss the target**: warm `rg` 8.5× and warm `git log -p` 1.9× in the VM, against ≤ 1.5×. Cached entries and attributes (2.3 item 4) are the lever: a warm run still pays a FUSE round trip per lookup.
+6. **express flakes in `sandbox` mode on the dev host only**: workload B lost 3–25 tests in 4 of 7 runs (`server.address()` returns null in `res.render` tests). No FUSE is involved in that mode, the VM passed all runs, and `escrow` mode passed all runs on both; not yet explained.
 
 ### 2.2 Crash soak, fsync audit, close and flush
 
@@ -112,6 +122,7 @@ Phase 1 tested recovery with fault points (5 steps, error and abort modes). Phas
    - Rename instead of copy when the upper and the project share a filesystem and the file is new or fully rewritten. The file keeps its inode, so file watchers see a rename rather than a delete and a create (#16), and the data is not copied twice. Otherwise copy with `copy_file_range`, or reflink where the filesystem allows.
    - Batch journal writes into one transaction per generation.
    - Target: express A wall ≤ 1.5× in the VM.
+   - Benchmark timer: a monotonic clock instead of `date +%s.%N` (WSL steps the wall clock; 7 of 210 baseline runs were dropped).
 2. **Locks.** `Views` holds one `Mutex<Tables>` for the inode table and open files of every scope, and each scope's store (whiteouts, opaque directories, versions) sits behind one `Mutex`, taken on every lookup. Shard the tables and make the store's read-mostly sets read-locked, so `--threads` helps.
 3. **READDIRPLUS**, so a listing returns attributes and saves a lookup per entry.
 4. **Cache lifetimes.** Longer entry and attribute timeouts for base entries, invalidated by commit (the kernel notifier added in 1.5); `FOPEN_KEEP_CACHE` for files whose version has not changed. This is what workload C's warm runs measure.
