@@ -1,0 +1,11 @@
+[package]
+name = "fuse-agentfs-spike"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+agentfs-sdk = "0.6"
+fuser = "0.18"
+libc = "0.2"
+tokio = { version = "1", features = ["rt-multi-thread"] }

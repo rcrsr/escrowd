@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-escrowd has no product code yet: the repo holds the design, the phase 0 plan and throwaway spikes (Cargo workspace in `spikes/`). 0.1 to 0.6 are done; 0.7 remains.
+escrowd has no product code yet: the repo holds the design, the phase 0 plan and throwaway spikes (Cargo workspace in `spikes/`). Phase 0 is complete: go for phase 1 (`spikes/results/phase-0-report.md`).
 
 - `docs/escrowd-proposal.md`: the design (scopes, escrow, FUSE capture, bwrap isolation, roadmap phases 0–8).
 - `docs/phase-0-spikes.md`: the active plan. Sub-phases 0.1–0.7, each with a go/no-go goal, plus host matrix, environment rules and open questions. Update it when a decision is made or an open question closes (tick the box, add the date).
@@ -39,6 +39,7 @@ Architecture as planned (proposal "Architecture" and "Isolation"):
 - **Overhead (0.6)**: plain FUSE meets 1.5× on the test suite and agent pipeline; cold metadata/read-heavy operations cost 5–30× per operation in any FUSE (bindfs too). No root helper needed.
 - Package stores (pnpm) are writable shared state outside the project; pnpm 12 fails offline with a read-only store.
 - **Snapshots (0.5)**: copy/reflink snapshots cost 13–23 µs per entry per scope open (reflink saves space, not time); btrfs subvolume snapshots are 8 ms. Decided: pre-images at commit + per-file version check at commit; btrfs subvolume snapshot as an optional fast path.
+- **AgentFS is rejected (0.7)**: its OverlayFS rename leaves inode maps stale (breaks git), 246 crates, Turso beta. escrowd builds its own overlay from the spike 0.3 lineage.
 - Minimum kernel 6.8 (Ubuntu 24.04 GA). WSL2 is the dev host only; targets are general Linux, then macOS (phase 7).
 
 ## Environment

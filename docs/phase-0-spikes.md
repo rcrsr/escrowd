@@ -2,6 +2,8 @@
 
 Oct 3, 2026 · Andre Bremer · Draft
 
+**Status, Oct 3, 2026: phase 0 complete, go for phase 1** ([go/no-go report](../spikes/results/phase-0-report.md)).
+
 Phase 0 ends with a written go/no-go for each risky mechanic in the [escrowd proposal](escrowd-proposal.md), each backed by a run on the target kernel. Phase 1 (CLI POC) starts only when every sub-phase below reads "go", or has a recorded fallback.
 
 ## Exit criteria (from the proposal)
@@ -39,7 +41,7 @@ flowchart LR
 | 0.4 | Per-scope routing and read gating (**go**, Oct 3, 2026, [results](../spikes/results/0.4-summary.md)) | Two virtual roots `/escrow/<a>/` and `/escrow/<b>/` stage writes separately; two concurrent asyncio tasks on one thread, via a Python `contextvars` path-rewrite shim, land every write in the right scope; a denied read returns EACCES synchronously and is logged; with the writeback cache on, a flush delivers every dirty page before a close | Spike binary; Python shim; test script |
 | 0.5 | Snapshot at open (**go**, Oct 3, 2026, [results](../spikes/results/0.5-summary.md); mechanism accepted) | A scope opened before another scope's commit does not see that commit; mechanism chosen: reflink (XFS, btrfs), btrfs subvolume snapshot, or per-file version check at commit | Decision note with timings per mechanism |
 | 0.6 | Overhead benchmark (**go** for plain FUSE, Oct 3, 2026, [results](../spikes/results/0.6-summary.md)) | Wall time for `git clone`, `pnpm install --frozen-lockfile --offline` and `pnpm test` of express `v5.2.1` measured native, plain FUSE with the cache flags below, and (optionally) FUSE with kernel passthrough through a privileged helper; plain FUSE compared with the proposal's 1.5× target for phase 2 | Benchmark script; results table |
-| 0.7 | AgentFS embed decision | `agentfs_sdk::OverlayFS` (crate `agentfs-sdk`), wrapped in our own fuser adapter, either passes 0.3's test script behind our store interface, or is rejected with reasons | Decision note |
+| 0.7 | AgentFS embed decision (**rejected**, Oct 3, 2026, [results](../spikes/results/0.7-summary.md)) | `agentfs_sdk::OverlayFS` (crate `agentfs-sdk`), wrapped in our own fuser adapter, either passes 0.3's test script behind our store interface, or is rejected with reasons | Decision note |
 
 ### Kernel passthrough needs privilege
 
