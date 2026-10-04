@@ -7,7 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Phase 1 (CLI POC) is complete: sub-phases 1.1 to 1.7 are done and the exit criteria are met (10 consecutive CI runs per runner, the Lima host matrix, zero misattributed ledger entries); the Python SDK (`escrow.init`, `escrow.scope`) captures in-process IO and subprocesses; the daemon serves scope views over FUSE (each scope reads its snapshot of the base), the open, close (stop children + freeze + change set), commit (journal, conflict check, rollback), discard, return and settle_unscoped calls, and the exec socket; `escrow run` sandboxes an app with the unscoped mode over the project. Phase 0 is complete (`spikes/results/phase-0-report.md`); its throwaway spikes stay in `spikes/`, a separate Cargo workspace.
 
 - `docs/escrowd-proposal.md`: the design (scopes, escrow, FUSE capture, bwrap isolation, roadmap phases 0–8).
-- `docs/phase-1-poc.md`: the active plan (draft). Sub-phases 1.1–1.7 toward the proposal's seven exit tests, plus open questions. Update it when a decision is made or an open question closes (tick the box, add the date).
+- `docs/phase-2-hardening.md`: the active plan (draft). Sub-phases 2.1–2.6 toward the proposal's phase 2 goals (crash soak, real repo speed), plus open questions. Update it when a decision is made or an open question closes (tick the box, add the date).
+- `docs/phase-1-poc.md`: the completed phase 1 plan (sub-phases 1.1–1.7 with as-built notes, exit criteria met Oct 4, 2026).
 - `docs/phase-0-spikes.md`: the completed phase 0 plan (sub-phases 0.1–0.7, host matrix, environment rules).
 
 ## What escrowd is
