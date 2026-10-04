@@ -1,5 +1,6 @@
 //! gRPC service over a Unix socket.
 
+use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -8,10 +9,10 @@ use tokio::net::UnixListener;
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::{Request, Response, Status};
 
-use crate::changeset;
 use crate::proto::escrow_server::{Escrow, EscrowServer};
 use crate::proto::*;
 use crate::views::Views;
+use crate::{changeset, commit};
 
 pub struct Service {
     views: Arc<Views>,
@@ -21,6 +22,7 @@ fn io_status(e: std::io::Error) -> Status {
     match e.kind() {
         std::io::ErrorKind::NotFound => Status::not_found(e.to_string()),
         std::io::ErrorKind::InvalidInput => Status::failed_precondition(e.to_string()),
+        std::io::ErrorKind::Interrupted => Status::aborted(e.to_string()),
         _ => Status::internal(e.to_string()),
     }
 }
@@ -103,10 +105,12 @@ impl Escrow for Service {
         Ok(Response::new(to_proto(id, cs)))
     }
 
-    /// Discard drops the scope (open or closed); return reopens a closed scope; commit is phase 1.4.
+    /// Commit applies a closed scope's change set (or reports the conflicting paths and
+    /// drops the scope); discard drops the scope (open or closed); return reopens a closed scope.
     async fn decide(&self, req: Request<DecideRequest>) -> Result<Response<Outcome>, Status> {
         let req = req.into_inner();
-        let (id, reasons) = (req.scope_id.clone(), req.reasons);
+        let (id, mut reasons) = (req.scope_id.clone(), req.reasons);
+        let mut paths = vec![];
         let status = match Verdict::try_from(req.verdict) {
             Ok(Verdict::Discard) => {
                 self.blocking(move |v| v.drop_scope(&req.scope_id)).await?;
@@ -116,13 +120,37 @@ impl Escrow for Service {
                 self.blocking(move |v| v.reopen_scope(&req.scope_id)).await?;
                 OutcomeStatus::Returned
             }
-            Ok(Verdict::Commit) => return Err(Status::unimplemented("commit: phase 1.4")),
+            Ok(Verdict::Commit) => {
+                let scope = req.scope_id;
+                let outcome = self
+                    .blocking(move |v| match v.commit_scope(&scope) {
+                        Err(e) if !matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::InvalidInput) => Err(
+                            io::Error::new(io::ErrorKind::Interrupted, format!("commit rolled back: {e}")),
+                        ),
+                        r => r,
+                    })
+                    .await?;
+                match outcome {
+                    commit::Outcome::Committed(_, changed) => {
+                        paths = changed.iter().map(|p| path_str(p)).collect();
+                        OutcomeStatus::Committed
+                    }
+                    commit::Outcome::Conflict(conflicts) => {
+                        paths = conflicts.iter().map(|p| path_str(p)).collect();
+                        reasons = paths
+                            .iter()
+                            .map(|p| format!("conflict: {p} changed in the project since the scope read it"))
+                            .collect();
+                        OutcomeStatus::Conflict
+                    }
+                }
+            }
             _ => return Err(Status::invalid_argument("verdict must be set")),
         };
         Ok(Response::new(Outcome {
             scope_id: id,
             status: status.into(),
-            paths: vec![],
+            paths,
             reasons,
         }))
     }
