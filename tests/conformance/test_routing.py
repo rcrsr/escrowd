@@ -1,7 +1,9 @@
-"""Phase 1.2: per-scope routing and read gating (spike 0.4's 17 checks, on the daemon).
+"""Per-scope routing and read gating: spike 0.4's 17 checks, on the daemon and the SDK.
 
-Scopes are opened over RPC; a test-only contextvars shim (routing_shim.py) rewrites
-project paths to each scope's root, and the read gate denies `.env`.
+The Python SDK (installed by `escrow.init` against a running daemon) rewrites project
+paths to each scope's view through a ContextVar and runs subprocesses through
+`escrow exec`; the read gate denies `.env`. Scopes end with `send_back`, which keeps
+their staged files for inspection and the project untouched.
 """
 
 import asyncio
@@ -13,7 +15,9 @@ import threading
 from pathlib import Path
 
 import pytest
-import routing_shim as shim
+
+import escrow
+from escrow import _sdk
 
 
 def fingerprint(root: Path) -> list[str]:
@@ -32,13 +36,13 @@ class Run:
 
 
 @pytest.fixture(scope="module")
-def run(escrow_bin, bwrap):
+def run(escrow_bin):
     from conftest import Daemon, make_runtime_dir
 
     work = make_runtime_dir()
     d = Daemon(escrow_bin, work)
     try:
-        r = setup_and_run(d, bwrap)
+        r = setup_and_run(d, escrow_bin)
     except BaseException:
         d.stop()
         shutil.rmtree(work, ignore_errors=True)
@@ -48,7 +52,7 @@ def run(escrow_bin, bwrap):
     shutil.rmtree(work, ignore_errors=True)
 
 
-def setup_and_run(d, bwrap) -> Run:
+def setup_and_run(d, escrow_bin) -> Run:
     project = d.project
     (project / "README.md").write_text("base")
     (project / ".env").write_text("SECRET=1\n")
@@ -57,22 +61,35 @@ def setup_and_run(d, bwrap) -> Run:
     r.daemon, r.project = d, project
     r.before = fingerprint(project)
     cwd = os.getcwd()
-    shim.install(str(project), str(d.socket), bwrap)
+    env = {"ESCROW_SOCKET": str(d.socket), "ESCROW_EXE": str(escrow_bin)}
+    saved = {k: os.environ.get(k) for k in env}
+    os.environ.update(env)
     try:
+        escrow.init(project, unscoped="passthrough")
         os.chdir(project)
         asyncio.run(gather(r))
     finally:
-        shim.uninstall()
+        _sdk._uninstall()
         os.chdir(cwd)
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
     r.after = fingerprint(project)
     return r
+
+
+def keep(changes):
+    """Return to agent: the scope reopens with its staged files, the project stays as it was."""
+    return escrow.send_back()
 
 
 async def worker(r, name, readme, extra):
     """One scope: interleaved writes, reads, a pathlib write and a bash subprocess."""
     seen = {}
-    async with shim.scope(name) as s:
-        seen["id"] = s.scope_id
+    async with escrow.scope(name, decide=keep) as s:
+        seen["id"] = s.id
         r.threads.add(threading.get_ident())
         with open(os.path.join(r.project, "README.md"), "w") as f:  # absolute path
             f.write(readme)
@@ -97,8 +114,8 @@ async def gather(r):
     )
     r.base_readme = (r.project / "README.md").read_text()  # outside any scope
 
-    async with shim.scope("c") as s:
-        r.c = s.scope_id
+    async with escrow.scope("c", decide=keep) as s:
+        r.c = s.id
         try:
             open(".env").read()
             r.env_error = None
@@ -113,12 +130,12 @@ async def gather(r):
 
     n = 4 * 1024 * 1024
     r.n = n
-    async with shim.scope("d") as s:
-        up = r.daemon.upper(s.scope_id)
+    async with escrow.scope("d", decide=keep) as s:
+        up = r.daemon.upper(s.id)
         f = open("big.bin", "wb")
         f.write(b"x" * n)
         f.flush()  # Python buffer -> kernel page cache; file still open
-        shim.flush(s.root)  # fsync of the scope's open files
+        s.flush()  # fsync of the scope's open files
         r.after_flush = (up / "big.bin").stat().st_size
         f.close()
         g = open("closed.bin", "wb")

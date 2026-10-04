@@ -2,7 +2,7 @@
 
 Oct 3, 2026 · Andre Bremer · Draft
 
-**Status, Oct 3, 2026: 1.1 done** (12 / 12 checks on the dev host and in CI on `ubuntu-24.04` and `ubuntu-26.04`, [PR #1](https://github.com/rcrsr/escrowd/pull/1)). **1.2 done**, Oct 4, 2026: 52 / 52 checks on the dev host (5 repeat runs clean) and in CI on both runners, including the 0.3 (14) and 0.4 (17) spike checks ported to the daemon ([PR #3](https://github.com/rcrsr/escrowd/pull/3)). **1.3 done**, Oct 4, 2026: 66 / 66 checks on the dev host (5 repeat runs clean) and in CI on both runners ([PR #5](https://github.com/rcrsr/escrowd/pull/5)). **1.4 done**, Oct 4, 2026: 78 / 78 checks on the dev host (5 repeat runs clean) and in CI on both runners ([PR #6](https://github.com/rcrsr/escrowd/pull/6)). **1.5 done**, Oct 4, 2026: 96 / 96 checks on the dev host (5 repeat runs clean) and in CI on both runners ([PR #7](https://github.com/rcrsr/escrowd/pull/7)). Next: 1.6.
+**Status, Oct 3, 2026: 1.1 done** (12 / 12 checks on the dev host and in CI on `ubuntu-24.04` and `ubuntu-26.04`, [PR #1](https://github.com/rcrsr/escrowd/pull/1)). **1.2 done**, Oct 4, 2026: 52 / 52 checks on the dev host (5 repeat runs clean) and in CI on both runners, including the 0.3 (14) and 0.4 (17) spike checks ported to the daemon ([PR #3](https://github.com/rcrsr/escrowd/pull/3)). **1.3 done**, Oct 4, 2026: 66 / 66 checks on the dev host (5 repeat runs clean) and in CI on both runners ([PR #5](https://github.com/rcrsr/escrowd/pull/5)). **1.4 done**, Oct 4, 2026: 78 / 78 checks on the dev host (5 repeat runs clean) and in CI on both runners ([PR #6](https://github.com/rcrsr/escrowd/pull/6)). **1.5 done**, Oct 4, 2026: 96 / 96 checks on the dev host (5 repeat runs clean) and in CI on both runners ([PR #7](https://github.com/rcrsr/escrowd/pull/7)). **1.6 done**, Oct 4, 2026: 107 / 107 checks on the dev host (5 repeat runs clean). Next: 1.7.
 
 Phase 1 delivers escrowd, a minimal Python SDK and a CLI test app. Together they prove the scope model from the [escrowd proposal](escrowd-proposal.md) on Linux. Phase 0 cleared every mechanic this phase relies on ([go/no-go report](../spikes/results/phase-0-report.md)). Phase 1 turns the spikes into product code and adds the parts phase 0 never built: the RPC socket, the journal, commit, conflicts, the launcher and unscoped modes.
 
@@ -61,7 +61,7 @@ flowchart LR
 | 1.3 | Scope lifecycle, gate and ledger (**done**, Oct 4, 2026) | `open_scope`, `close_scope` and `decide` work end to end: close flushes and returns the change set (diff, reads, labels); discard drops the store; read rules load from a policy file; every operation lands in the ledger with its scope | 1, 6 |
 | 1.4 | Journal, commit, conflicts, pre-images (**done**, Oct 4, 2026) | Commit applies the whole change set through the journal, or none of it if any step fails; a changed base file triggers the conflict policy (default discard); open scopes keep their snapshot through the pre-image layer; a fault injected at each apply step leaves the base byte-identical; the daemon rolls back an unfinished journal on start | 4, 5, 8 |
 | 1.5 | Launcher, sandbox, unscoped modes (**done**, Oct 4, 2026) | `escrow run --project P -- cmd` starts the daemon and runs `cmd` in bwrap with the unscoped view over `$PROJECT`; the spawn helper starts a scope's child in its own sandbox with ordinary `Popen` semantics; `passthrough`, `implicit` and `deny` behave as the proposal's table says; sandboxes hide the state directory, other scopes' views, the socket (from scope children) and everything outside the bind list | 2, 7 |
-| 1.6 | Python SDK | `escrow.init`, `escrow.scope(...)` as an async context manager and decide callbacks work; scopes live in `contextvars`; wrapped `open`, `os.*`, `pathlib` and `subprocess` attribute IO by path; `s.outcome` reports status, paths and reasons | 3, 6 |
+| 1.6 | Python SDK (**done**, Oct 4, 2026) | `escrow.init`, `escrow.scope(...)` as an async context manager and decide callbacks work; scopes live in `contextvars`; wrapped `open`, `os.*`, `pathlib` and `subprocess` attribute IO by path; `s.outcome` reports status, paths and reasons | 3, 6 |
 | 1.7 | Conformance suite and soak | The test app and the nine checks above run as one pytest suite; CI passes it 10 consecutive times; each Lima host passes it once | All |
 
 ## Design for each sub-phase
@@ -185,6 +185,19 @@ The SDK grows from spike 0.4's `escrow_shim.py`: the same `contextvars` scope, t
 - Paths returned by `os.path.realpath` and `os.getcwd` map back from `/escrow/<scope>/…` to the project path.
 
 The SDK stays stdlib-only except for the protocol's client library, and targets the pinned Python (3.14.8).
+
+As built (Oct 4, 2026):
+
+- **`escrow.init(project, unscoped, policy=None, *, on_exit=None, read=())`**: without `ESCROW_SOCKET` it re-executes the program under `escrow run`. The new `--read` flag binds the interpreter, `sys.prefix`, `sys.base_prefix` and every absolute `sys.path` entry into the sandbox. It also binds every symlink on the way to the interpreter: uv's venv `python` points through a version-alias directory, and binding only the resolved path fails `execvp`. With `ESCROW_SOCKET` set, it checks the launcher's project and mode (`ESCROW_PROJECT`, `ESCROW_UNSCOPED`) and installs the wrappers. Against a daemon started outside `escrow run`, it only installs the wrappers. The routing checks run that way.
+- **`escrow.scope(name, *, decide, labels, resume)`**: works with both `with` and `async with`. At exit, the SDK fsyncs the scope's open files, closes the scope and calls `decide(change_set)`. `decide` may be sync or async (async only under `async with`); its default is commit. `decide` returns `escrow.commit()`, `escrow.discard(*reasons)` or `escrow.send_back(*reasons)` (return to agent; `scope(resume=s)` continues the same scope). An exception in the body discards the scope with the exception as reason, then propagates. `s.outcome` has `status`, `paths`, `reasons`, `changes`, `reads` and `labels`. `escrow.settle_unscoped(decide)` settles the implicit default scope.
+- **Wrappers**:
+  - `open`/`io.open` and the `os` path functions are wrapped, which also covers pathlib, shutil and `os.walk`.
+  - Calls with `dir_fd` are not rewritten. `symlink` rewrites only the link's path, never its target, which is content.
+  - `os.path.realpath` and `os.getcwd` map `/escrow/<id>/…` back to the project.
+  - `subprocess.Popen` becomes `escrow exec --scope <id> --socket … -- argv`, which covers `subprocess.run` and asyncio subprocesses. Its cwd is rewritten into the scope's view, so it may be a directory the scope created; the daemon maps it back. `escrow run` sets `ESCROW_VIEWS=/escrow` and `ESCROW_EXE`.
+- **Not covered**: these fall to the unscoped mode — `os.system`, `os.posix_spawn`, `os.chdir` into the project (the cwd is per process), native code, and child file descriptors beyond 0–2. `EscrowUnscopedError` and `EscrowStaleHandleError` stay in phase 2.
+- **Diff deferred**: `s.outcome` has no content diff yet. A closed scope refuses new opens, so the SDK cannot read the staged files at decide time. A daemon-side diff in the change set is a phase 2 item.
+- The routing checks (spike 0.4's 17) now run on the SDK; the test-only `routing_shim.py` is gone.
 
 ### 1.7 Conformance suite and soak
 

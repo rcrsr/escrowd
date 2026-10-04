@@ -148,6 +148,11 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
 }
 
 impl Daemon {
+    /// Let every sandbox read `path` too (`escrow run --read`).
+    pub fn add_read(&mut self, path: PathBuf) {
+        self.read.push(path);
+    }
+
     /// A sandbox that hides escrowd's state, views and sockets.
     pub fn sandbox(&self) -> Sandbox {
         Sandbox {

@@ -58,6 +58,9 @@ enum Command {
         /// FUSE request threads.
         #[arg(long, default_value_t = 4)]
         threads: usize,
+        /// A host path the sandboxes may read, besides the policy's sandbox.read (repeatable).
+        #[arg(long = "read", value_name = "PATH")]
+        reads: Vec<PathBuf>,
         /// The command and its arguments.
         #[arg(trailing_var_arg = true, required = true)]
         cmd: Vec<OsString>,
@@ -190,6 +193,7 @@ async fn run(
     socket: Option<PathBuf>,
     bwrap: Option<PathBuf>,
     threads: usize,
+    reads: Vec<PathBuf>,
     cmd: Vec<OsString>,
 ) -> anyhow::Result<i32> {
     let project = project
@@ -214,7 +218,12 @@ async fn run(
         unscoped,
         bwrap,
     })?;
+    let mut daemon = daemon;
     let (views, children) = (daemon.views.clone(), daemon.children.clone());
+    for r in reads {
+        anyhow::ensure!(r.is_absolute(), "--read {} is not absolute", r.display());
+        daemon.add_read(r);
+    }
     let sandbox = daemon.sandbox();
     let view = daemon.mount.clone();
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
@@ -227,6 +236,7 @@ async fn run(
     // the sockets and this binary (for `escrow exec`).
     let inner_socket = PathBuf::from("/run/escrowd/escrow.sock");
     let exe = std::env::current_exe()?;
+    let exe_path = exe.clone();
     let project_src = match unscoped {
         Unscoped::Passthrough => project.clone(),
         _ => view.join(UNSCOPED),
@@ -245,7 +255,9 @@ async fn run(
     let mut app = sandbox.command(&mounts, &cwd, &cmd);
     app.env("ESCROW_SOCKET", &inner_socket)
         .env("ESCROW_PROJECT", &project)
-        .env("ESCROW_UNSCOPED", format!("{unscoped:?}").to_lowercase());
+        .env("ESCROW_UNSCOPED", format!("{unscoped:?}").to_lowercase())
+        .env("ESCROW_VIEWS", "/escrow")
+        .env("ESCROW_EXE", &exe_path);
     let mut child = tokio::process::Command::from(app).spawn().context("starting bwrap")?;
     let pid = child.id().unwrap_or(0) as i32;
     // Ctrl-C reaches the app through the terminal; the launcher outlives it to settle and unmount.
@@ -312,10 +324,11 @@ async fn main() -> anyhow::Result<()> {
             socket,
             bwrap,
             threads,
+            reads,
             cmd,
         } => {
             let code = run(
-                project, unscoped, on_exit, policy, state, mount, socket, bwrap, threads, cmd,
+                project, unscoped, on_exit, policy, state, mount, socket, bwrap, threads, reads, cmd,
             )
             .await?;
             std::process::exit(code)
