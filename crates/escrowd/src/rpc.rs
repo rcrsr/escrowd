@@ -8,6 +8,7 @@ use tokio::net::UnixListener;
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::{Request, Response, Status};
 
+use crate::changeset;
 use crate::proto::escrow_server::{Escrow, EscrowServer};
 use crate::proto::*;
 use crate::views::Views;
@@ -19,7 +20,61 @@ pub struct Service {
 fn io_status(e: std::io::Error) -> Status {
     match e.kind() {
         std::io::ErrorKind::NotFound => Status::not_found(e.to_string()),
+        std::io::ErrorKind::InvalidInput => Status::failed_precondition(e.to_string()),
         _ => Status::internal(e.to_string()),
+    }
+}
+
+fn path_str(p: &std::path::Path) -> String {
+    p.to_string_lossy().into_owned()
+}
+
+fn to_proto(scope_id: String, cs: changeset::ChangeSet) -> ChangeSet {
+    let kind = |k| match k {
+        changeset::Kind::Create => ChangeKind::Create,
+        changeset::Kind::Modify => ChangeKind::Modify,
+        changeset::Kind::Delete => ChangeKind::Delete,
+        changeset::Kind::Rename => ChangeKind::Rename,
+    };
+    ChangeSet {
+        scope_id,
+        changes: cs
+            .changes
+            .into_iter()
+            .map(|c| Change {
+                kind: kind(c.kind).into(),
+                path: path_str(&c.path),
+                from_path: c.from.as_deref().map(path_str).unwrap_or_default(),
+            })
+            .collect(),
+        reads: cs
+            .reads
+            .into_iter()
+            .map(|(p, allowed)| Read {
+                path: path_str(&p),
+                decision: if allowed {
+                    ReadDecision::Allow
+                } else {
+                    ReadDecision::Deny
+                }
+                .into(),
+            })
+            .collect(),
+        labels: cs.labels,
+    }
+}
+
+impl Service {
+    /// Filesystem work runs off the async executor.
+    async fn blocking<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&Views) -> std::io::Result<T> + Send + 'static,
+    ) -> Result<T, Status> {
+        let views = self.views.clone();
+        tokio::task::spawn_blocking(move || f(&views))
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?
+            .map_err(io_status)
     }
 }
 
@@ -33,33 +88,43 @@ impl Escrow for Service {
     }
 
     async fn open_scope(&self, req: Request<OpenScopeRequest>) -> Result<Response<OpenScopeResponse>, Status> {
-        let (scope_id, root) = self.views.open_scope(&req.into_inner().name).map_err(io_status)?;
+        let req = req.into_inner();
+        let (scope_id, root) = self.blocking(move |v| v.open_scope(&req.name, &req.labels)).await?;
         Ok(Response::new(OpenScopeResponse {
             scope_id,
-            root: root.to_string_lossy().into_owned(),
+            root: path_str(&root),
         }))
     }
 
-    async fn close_scope(&self, _req: Request<CloseScopeRequest>) -> Result<Response<ChangeSet>, Status> {
-        Err(Status::unimplemented("close_scope: phase 1.3"))
+    async fn close_scope(&self, req: Request<CloseScopeRequest>) -> Result<Response<ChangeSet>, Status> {
+        let id = req.into_inner().scope_id;
+        let id2 = id.clone();
+        let cs = self.blocking(move |v| v.close_scope(&id2)).await?;
+        Ok(Response::new(to_proto(id, cs)))
     }
 
-    /// Phase 1.2 handles discard only: drop the scope and its staged changes.
+    /// Discard drops the scope (open or closed); return reopens a closed scope; commit is phase 1.4.
     async fn decide(&self, req: Request<DecideRequest>) -> Result<Response<Outcome>, Status> {
         let req = req.into_inner();
-        match Verdict::try_from(req.verdict) {
+        let (id, reasons) = (req.scope_id.clone(), req.reasons);
+        let status = match Verdict::try_from(req.verdict) {
             Ok(Verdict::Discard) => {
-                self.views.drop_scope(&req.scope_id).map_err(io_status)?;
-                Ok(Response::new(Outcome {
-                    scope_id: req.scope_id,
-                    status: OutcomeStatus::Discarded.into(),
-                    paths: vec![],
-                    reasons: req.reasons,
-                }))
+                self.blocking(move |v| v.drop_scope(&req.scope_id)).await?;
+                OutcomeStatus::Discarded
             }
-            Ok(Verdict::Commit | Verdict::Return) => Err(Status::unimplemented("commit and return: phase 1.3 and 1.4")),
-            _ => Err(Status::invalid_argument("verdict must be set")),
-        }
+            Ok(Verdict::Return) => {
+                self.blocking(move |v| v.reopen_scope(&req.scope_id)).await?;
+                OutcomeStatus::Returned
+            }
+            Ok(Verdict::Commit) => return Err(Status::unimplemented("commit: phase 1.4")),
+            _ => return Err(Status::invalid_argument("verdict must be set")),
+        };
+        Ok(Response::new(Outcome {
+            scope_id: id,
+            status: status.into(),
+            paths: vec![],
+            reasons,
+        }))
     }
 
     async fn spawn(&self, _req: Request<SpawnRequest>) -> Result<Response<SpawnResponse>, Status> {

@@ -85,12 +85,13 @@ def test_store_records_whiteouts_opaque_dirs_and_versions(daemon):
     with meta_db(daemon, s.scope_id) as db:
         whiteouts = {r[0] for r in db.execute("SELECT path FROM whiteouts")}
         opaque = {r[0] for r in db.execute("SELECT path FROM opaque")}
-        versions = dict(db.execute("SELECT path, kind FROM versions"))
+        rows = db.execute("SELECT path, read, changed FROM versions")
+        versions = {p: (r, c) for p, r, c in rows}
     assert whiteouts == {b"gone.txt"}  # tree/leaf.txt and tree folded into the opaque mark
     assert opaque == {b"tree"}
-    assert versions[b"read.txt"] == "read"
-    assert versions[b"keep.txt"] == "changed"
-    assert versions[b"gone.txt"] == "changed"
+    assert versions[b"read.txt"] == (1, 0)
+    assert versions[b"keep.txt"] == (0, 1)
+    assert versions[b"gone.txt"] == (0, 1)
 
 
 def test_version_is_the_base_version_first_seen(daemon):
@@ -104,9 +105,9 @@ def test_version_is_the_base_version_first_seen(daemon):
     (root / "keep.txt").write_text("v3\n")
     with meta_db(daemon, s.scope_id) as db:
         row = db.execute(
-            "SELECT kind, ino, size, mtime_ns FROM versions WHERE path = ?", (b"keep.txt",)
+            "SELECT read, changed, ino, size, mtime_ns FROM versions WHERE path = ?", (b"keep.txt",)
         ).fetchone()
-    assert row == ("changed", st.st_ino, st.st_size, st.st_mtime_ns)
+    assert row == (1, 1, st.st_ino, st.st_size, st.st_mtime_ns)
 
 
 def test_scope_state_survives_a_daemon_restart(start_daemon):

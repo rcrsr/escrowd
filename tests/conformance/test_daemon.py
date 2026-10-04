@@ -25,7 +25,6 @@ def test_connect_reads_escrow_socket(daemon, monkeypatch):
 @pytest.mark.parametrize(
     "call, request_type",
     [
-        ("CloseScope", escrow_pb2.CloseScopeRequest),
         ("Spawn", escrow_pb2.SpawnRequest),
         ("SettleUnscoped", escrow_pb2.SettleUnscopedRequest),
     ],

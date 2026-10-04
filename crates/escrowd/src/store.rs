@@ -3,10 +3,11 @@
 //!
 //! - whiteouts and opaque directories (which base entries the scope hides),
 //! - base versions of every path the scope read or changed (the conflict check, 1.4),
+//!   and the reads the gate denied (both go into the change set),
 //! - pinned inode numbers: entries whose inode cannot be derived from the base
 //!   path they now sit at (upper-only files, renamed files), so inode numbers
 //!   survive a daemon restart,
-//! - scope name, index and the upper-only inode counter.
+//! - scope name, labels, index, lifecycle state and the upper-only inode counter.
 //!
 //! Hot lookups (hidden, pinned inode) hit in-memory copies; every change is
 //! written through to SQLite before the FUSE reply.
@@ -26,6 +27,19 @@ pub enum VersionKind {
     Changed,
 }
 
+/// `Open` accepts IO; `Closed` is frozen until the decision (commit, discard, or return reopens it).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScopeState {
+    Open,
+    Closed,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Seen {
+    read: bool,
+    changed: bool,
+}
+
 pub struct ScopeStore {
     pub id: String,
     pub name: String,
@@ -35,8 +49,10 @@ pub struct ScopeStore {
     whiteouts: HashSet<PathBuf>,
     opaque: HashSet<PathBuf>,
     pins: HashMap<PathBuf, u64>,
-    versions: HashMap<PathBuf, VersionKind>,
+    versions: HashMap<PathBuf, Seen>,
+    denied: HashSet<PathBuf>,
     next_upper_ino: u64,
+    pub state: ScopeState,
 }
 
 const SCHEMA: &str = "
@@ -46,9 +62,12 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value ANY) STRICT;
 CREATE TABLE IF NOT EXISTS whiteouts (path BLOB PRIMARY KEY) STRICT;
 CREATE TABLE IF NOT EXISTS opaque (path BLOB PRIMARY KEY) STRICT;
 CREATE TABLE IF NOT EXISTS pins (path BLOB PRIMARY KEY, ino INTEGER NOT NULL) STRICT;
+CREATE TABLE IF NOT EXISTS labels (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;
+CREATE TABLE IF NOT EXISTS denied (path BLOB PRIMARY KEY) STRICT;
 CREATE TABLE IF NOT EXISTS versions (
     path BLOB PRIMARY KEY,
-    kind TEXT NOT NULL,
+    read INTEGER NOT NULL,
+    changed INTEGER NOT NULL,
     ino INTEGER NOT NULL,
     size INTEGER NOT NULL,
     mtime_ns INTEGER NOT NULL,
@@ -83,17 +102,27 @@ pub fn moved(p: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
 
 impl ScopeStore {
     /// Create a new scope directory.
-    pub fn create(scopes_dir: &Path, id: &str, name: &str, idx: u64) -> io::Result<Self> {
+    pub fn create(
+        scopes_dir: &Path,
+        id: &str,
+        name: &str,
+        idx: u64,
+        labels: &HashMap<String, String>,
+    ) -> io::Result<Self> {
         let dir = scopes_dir.join(id);
         fs::create_dir(&dir)?;
         fs::create_dir(dir.join("upper"))?;
         let db = Connection::open(dir.join("meta.sqlite")).map_err(sql)?;
         db.execute_batch(SCHEMA).map_err(sql)?;
         db.execute(
-            "INSERT INTO meta VALUES ('name', ?1), ('idx', ?2), ('next_upper_ino', 0)",
+            "INSERT INTO meta VALUES ('name', ?1), ('idx', ?2), ('next_upper_ino', 0), ('state', 'open')",
             params![name, idx as i64],
         )
         .map_err(sql)?;
+        for (k, v) in labels {
+            db.execute("INSERT INTO labels VALUES (?1, ?2)", params![k, v])
+                .map_err(sql)?;
+        }
         Self::load(scopes_dir, id)
     }
 
@@ -118,12 +147,17 @@ impl ScopeStore {
         };
         let idx = int(meta("idx")?)?;
         let next_upper_ino = int(meta("next_upper_ino")?)?;
+        let state = match meta("state")? {
+            rusqlite::types::Value::Text(t) if t == "closed" => ScopeState::Closed,
+            _ => ScopeState::Open,
+        };
         let paths = |table: &str| -> io::Result<HashSet<PathBuf>> {
             let mut st = db.prepare(&format!("SELECT path FROM {table}")).map_err(sql)?;
             let rows = st.query_map([], |r| r.get::<_, Vec<u8>>(0)).map_err(sql)?;
             rows.map(|r| r.map(sys::path_from).map_err(sql)).collect()
         };
         let whiteouts = paths("whiteouts")?;
+        let denied = paths("denied")?;
         let opaque = paths("opaque")?;
         let pins = {
             let mut st = db.prepare("SELECT path, ino FROM pins").map_err(sql)?;
@@ -133,15 +167,14 @@ impl ScopeStore {
             rows.collect::<Result<HashMap<_, _>, _>>().map_err(sql)?
         };
         let versions = {
-            let mut st = db.prepare("SELECT path, kind FROM versions").map_err(sql)?;
+            let mut st = db.prepare("SELECT path, read, changed FROM versions").map_err(sql)?;
             let rows = st
                 .query_map([], |r| {
-                    let kind = if r.get::<_, String>(1)? == "changed" {
-                        VersionKind::Changed
-                    } else {
-                        VersionKind::Read
+                    let seen = Seen {
+                        read: r.get(1)?,
+                        changed: r.get(2)?,
                     };
-                    Ok((sys::path_from(r.get(0)?), kind))
+                    Ok((sys::path_from(r.get(0)?), seen))
                 })
                 .map_err(sql)?;
             rows.collect::<Result<HashMap<_, _>, _>>().map_err(sql)?
@@ -156,7 +189,9 @@ impl ScopeStore {
             opaque,
             pins,
             versions,
+            denied,
             next_upper_ino,
+            state,
         })
     }
 
@@ -182,6 +217,53 @@ impl ScopeStore {
             first = false;
         }
         false
+    }
+
+    pub fn set_state(&mut self, state: ScopeState) -> io::Result<()> {
+        let v = if state == ScopeState::Closed { "closed" } else { "open" };
+        self.db
+            .execute("UPDATE meta SET value = ?1 WHERE key = 'state'", [v])
+            .map_err(sql)?;
+        self.state = state;
+        Ok(())
+    }
+
+    pub fn labels(&self) -> io::Result<HashMap<String, String>> {
+        let mut st = self.db.prepare("SELECT key, value FROM labels").map_err(sql)?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(sql)?;
+        rows.collect::<Result<_, _>>().map_err(sql)
+    }
+
+    pub fn whiteouts(&self) -> impl Iterator<Item = &PathBuf> {
+        self.whiteouts.iter()
+    }
+
+    pub fn opaque_dirs(&self) -> impl Iterator<Item = &PathBuf> {
+        self.opaque.iter()
+    }
+
+    /// Base reads (allowed) and gate denials, sorted by path.
+    pub fn reads(&self) -> Vec<(PathBuf, bool)> {
+        let mut out: Vec<(PathBuf, bool)> = self
+            .versions
+            .iter()
+            .filter(|(_, s)| s.read)
+            .map(|(p, _)| (p.clone(), true))
+            .chain(self.denied.iter().map(|p| (p.clone(), false)))
+            .collect();
+        out.sort();
+        out
+    }
+
+    pub fn record_denied(&mut self, rel: &Path) -> io::Result<()> {
+        if self.denied.contains(rel) {
+            return Ok(());
+        }
+        self.db
+            .execute("INSERT OR IGNORE INTO denied VALUES (?1)", [sys::path_bytes(rel)])
+            .map_err(sql)?;
+        self.denied.insert(rel.to_path_buf());
+        Ok(())
     }
 
     pub fn is_opaque(&self, rel: &Path) -> bool {
@@ -303,25 +385,33 @@ impl ScopeStore {
     }
 
     /// Record the base version of `rel` the first time the scope reads or changes it.
-    /// A change upgrades an earlier read but keeps the version first seen.
+    /// Later reads and changes set their flag but keep the version first seen.
     pub fn record_version(&mut self, rel: &Path, kind: VersionKind, v: Version) -> io::Result<()> {
-        match (self.versions.get(rel), kind) {
-            (Some(VersionKind::Changed), _) | (Some(VersionKind::Read), VersionKind::Read) => return Ok(()),
-            _ => {}
+        let old = self.versions.get(rel).copied();
+        let mut seen = old.unwrap_or_default();
+        match kind {
+            VersionKind::Read => seen.read = true,
+            VersionKind::Changed => seen.changed = true,
         }
-        let k = if kind == VersionKind::Changed {
-            "changed"
-        } else {
-            "read"
-        };
+        if old == Some(seen) {
+            return Ok(());
+        }
         self.db
             .execute(
-                "INSERT INTO versions VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT(path) DO UPDATE SET kind = excluded.kind",
-                params![sys::path_bytes(rel), k, v.ino as i64, v.size, v.mtime_ns, v.ctime_ns],
+                "INSERT INTO versions VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(path) DO UPDATE SET read = excluded.read, changed = excluded.changed",
+                params![
+                    sys::path_bytes(rel),
+                    seen.read,
+                    seen.changed,
+                    v.ino as i64,
+                    v.size,
+                    v.mtime_ns,
+                    v.ctime_ns
+                ],
             )
             .map_err(sql)?;
-        self.versions.insert(rel.to_path_buf(), kind);
+        self.versions.insert(rel.to_path_buf(), seen);
         Ok(())
     }
 }

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use anyhow::{Context, bail};
 
 use crate::gate::Gate;
+use crate::policy::Policy;
 use crate::views::Views;
 use crate::{fuse, rpc, sys};
 
@@ -18,7 +19,8 @@ pub struct Config {
     /// Where the views are mounted; default `$XDG_RUNTIME_DIR/escrowd/<project-id>/view`
     /// (Ubuntu 26.04 confines fusermount3 to a few roots, `/run/user/<uid>` among them).
     pub mount: Option<PathBuf>,
-    pub deny_read: Vec<String>,
+    /// The policy file; none means no read rules.
+    pub policy: Option<PathBuf>,
     pub threads: usize,
 }
 
@@ -45,6 +47,15 @@ fn env_dir(var: &str, fallback: impl FnOnce() -> Option<PathBuf>) -> anyhow::Res
 
 fn inside(a: &Path, b: &Path) -> bool {
     a.starts_with(b)
+}
+
+/// `$XDG_STATE_HOME/escrowd/<project-id>` (or `~/.local/state/…`) for a canonical project path.
+pub fn default_state_dir(project: &Path) -> anyhow::Result<PathBuf> {
+    Ok(env_dir("XDG_STATE_HOME", || {
+        std::env::home_dir().map(|h| h.join(".local/state"))
+    })?
+    .join("escrowd")
+    .join(project_id(project)))
 }
 
 pub async fn run(config: Config, shutdown: impl Future<Output = ()>) -> anyhow::Result<()> {
@@ -80,7 +91,14 @@ pub async fn run(config: Config, shutdown: impl Future<Output = ()>) -> anyhow::
             mount.display()
         );
     }
-    let gate = Gate::new(&config.deny_read).context("--deny-read pattern")?;
+    let policy = match &config.policy {
+        Some(p) => Policy::load(p)?,
+        None => Policy {
+            version: 1,
+            ..Default::default()
+        },
+    };
+    let gate = Gate::new(&policy.read.deny).context("policy read.deny pattern")?;
     // Open the base before anything is mounted, so reads of it never loop through a view.
     let lower = sys::open_dir(&project).with_context(|| format!("opening {}", project.display()))?;
     let views = Arc::new(Views::new(lower, &state, &mount, gate).context("loading scopes")?);

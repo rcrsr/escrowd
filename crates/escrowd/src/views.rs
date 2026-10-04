@@ -15,19 +15,21 @@ use std::fs::{self, File};
 use std::io;
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use fuser::{Errno, FileType};
 use rustix::fs::{OFlags, Stat};
 
+use crate::changeset::{self, ChangeSet};
 use crate::gate::Gate;
 use crate::ledger::Ledger;
-use crate::store::{ScopeStore, VersionKind, moved};
+use crate::store::{ScopeState, ScopeStore, VersionKind, moved};
 use crate::sys::{self, Version, parent};
 
 pub const ROOT: u64 = 1;
 const SCOPE_SHIFT: u32 = 48;
-const UPPER_BIT: u64 = 1 << 47;
+pub const UPPER_BIT: u64 = 1 << 47;
 
 pub type R<T> = Result<T, Errno>;
 
@@ -45,12 +47,23 @@ pub struct ScopeHandle {
     pub id: String,
     pub idx: u64,
     pub upper: OwnedFd,
+    /// Frozen between close and the decision: new IO gets EROFS, writes on open handles EBADF.
+    closed: AtomicBool,
     store: Mutex<ScopeStore>,
 }
 
 impl ScopeHandle {
-    fn store(&self) -> MutexGuard<'_, ScopeStore> {
+    pub(crate) fn store(&self) -> MutexGuard<'_, ScopeStore> {
         self.store.lock().unwrap()
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
+    }
+
+    /// New IO (opens, creates, any change) is refused while the scope is closed.
+    fn check_open(&self) -> R<()> {
+        if self.is_closed() { Err(Errno::EROFS) } else { Ok(()) }
     }
 }
 
@@ -60,7 +73,7 @@ type Key = (String, PathBuf);
 struct Tables {
     paths: HashMap<u64, Key>,
     inos: HashMap<Key, u64>,
-    files: HashMap<u64, Arc<File>>,
+    files: HashMap<u64, (Arc<ScopeHandle>, Arc<File>)>,
     next_fh: u64,
 }
 
@@ -164,6 +177,7 @@ impl Views {
             id: store.id.clone(),
             idx: store.idx,
             upper,
+            closed: AtomicBool::new(store.state == ScopeState::Closed),
             store: Mutex::new(store),
         });
         self.scopes.write().unwrap().insert(h.id.clone(), h.clone());
@@ -173,7 +187,7 @@ impl Views {
     // ---- scope lifecycle (RPC) ----
 
     /// Create a scope; returns its id and its root inside the mount.
-    pub fn open_scope(&self, name: &str) -> io::Result<(String, PathBuf)> {
+    pub fn open_scope(&self, name: &str, labels: &HashMap<String, String>) -> io::Result<(String, PathBuf)> {
         let idx = {
             let mut n = self.next_idx.lock().unwrap();
             *n += 1;
@@ -183,13 +197,53 @@ impl Views {
             return Err(io::Error::other("scope index space exhausted"));
         }
         let id = format!("s{idx}");
-        let store = ScopeStore::create(&self.scopes_dir, &id, name, idx)?;
-        self.attach(store)?;
+        let store = ScopeStore::create(&self.scopes_dir, &id, name, idx, labels)?;
+        let h = self.attach(store)?;
+        self.ledger.append(&h.id, "open", Path::new(""), None, "allow");
         Ok((id.clone(), self.mount.join(&id)))
+    }
+
+    fn handle(&self, id: &str) -> io::Result<Arc<ScopeHandle>> {
+        self.scopes
+            .read()
+            .unwrap()
+            .get(id)
+            .cloned()
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no scope {id}")))
+    }
+
+    /// Freeze the scope and return its change set. The caller has fsynced its open files
+    /// (syncfs is not a barrier on plain FUSE); sandboxes are stopped here from phase 1.5.
+    /// Closing a closed scope returns the same change set.
+    pub fn close_scope(&self, id: &str) -> io::Result<ChangeSet> {
+        let h = self.handle(id)?;
+        if !h.is_closed() {
+            h.store().set_state(ScopeState::Closed)?;
+            h.closed.store(true, Ordering::Release);
+            self.ledger.append(id, "close", Path::new(""), None, "allow");
+        }
+        changeset::build(self.lower.as_fd(), &h)
+    }
+
+    /// Return to agent: the decision's reasons go back and the scope accepts IO again.
+    pub fn reopen_scope(&self, id: &str) -> io::Result<()> {
+        let h = self.handle(id)?;
+        if !h.is_closed() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("scope {id} is not closed"),
+            ));
+        }
+        h.store().set_state(ScopeState::Open)?;
+        h.closed.store(false, Ordering::Release);
+        self.ledger.append(id, "decide", Path::new(""), None, "return");
+        Ok(())
     }
 
     /// Drop a scope and its staged changes.
     pub fn drop_scope(&self, id: &str) -> io::Result<()> {
+        self.handle(id)?;
+        self.ledger.append(id, "decide", Path::new(""), None, "discard");
         let h = self
             .scopes
             .write()
@@ -364,6 +418,7 @@ impl Views {
         size: Option<u64>,
         times: Option<(rustix::fs::Timespec, rustix::fs::Timespec)>,
     ) -> R<Stat> {
+        h.check_open()?;
         self.copy_up(h, rel)?;
         let up = h.upper.as_fd();
         self.log(h, "setattr", rel, "allow");
@@ -385,6 +440,7 @@ impl Views {
     }
 
     pub fn readlink(&self, h: &ScopeHandle, rel: &Path) -> R<PathBuf> {
+        self.log(h, "readlink", rel, "allow");
         match self.locate(h, rel)?.0 {
             Loc::Upper => sys::readlink(h.upper.as_fd(), rel),
             Loc::Lower => sys::readlink(self.lower.as_fd(), rel),
@@ -393,6 +449,7 @@ impl Views {
     }
 
     pub fn mkdir(&self, h: &ScopeHandle, rel: &Path, mode: u32) -> R<()> {
+        h.check_open()?;
         if self.locate(h, rel).is_ok() {
             return Err(Errno::EEXIST);
         }
@@ -404,6 +461,7 @@ impl Views {
     }
 
     pub fn unlink(&self, h: &ScopeHandle, rel: &Path, dir: bool) -> R<()> {
+        h.check_open()?;
         let (loc, st) = self.locate(h, rel)?;
         if dir != sys::is_dir(&st) {
             return Err(if dir { Errno::ENOTDIR } else { Errno::EISDIR });
@@ -435,6 +493,7 @@ impl Views {
     }
 
     pub fn symlink(&self, h: &ScopeHandle, rel: &Path, target: &Path) -> R<()> {
+        h.check_open()?;
         if self.locate(h, rel).is_ok() {
             return Err(Errno::EEXIST);
         }
@@ -446,6 +505,7 @@ impl Views {
     }
 
     pub fn rename(&self, h: &ScopeHandle, from: &Path, to: &Path, flags: u32) -> R<()> {
+        h.check_open()?;
         if flags & libc::RENAME_EXCHANGE != 0 {
             return Err(Errno::EINVAL);
         }
@@ -496,6 +556,7 @@ impl Views {
     }
 
     pub fn link(&self, h: &ScopeHandle, ino: u64, src: &Path, dst: &Path) -> R<()> {
+        h.check_open()?;
         if self.locate(h, dst).is_ok() {
             return Err(Errno::EEXIST);
         }
@@ -530,7 +591,9 @@ impl Views {
     pub fn open(&self, h: &ScopeHandle, rel: &Path, flags: i32) -> R<File> {
         let acc = flags & libc::O_ACCMODE;
         let writes = acc != libc::O_RDONLY || flags & libc::O_TRUNC != 0;
+        h.check_open()?;
         if acc != libc::O_WRONLY && !self.gate.read_allowed(rel) {
+            h.store().record_denied(rel).map_err(errno)?;
             self.log(h, "read", rel, "deny");
             return Err(Errno::EACCES);
         }
@@ -552,6 +615,7 @@ impl Views {
     }
 
     pub fn create(&self, h: &ScopeHandle, rel: &Path, mode: u32, flags: i32) -> R<File> {
+        h.check_open()?;
         let exists = self.locate(h, rel).is_ok();
         if exists && flags & libc::O_EXCL != 0 {
             return Err(Errno::EEXIST);
@@ -570,16 +634,26 @@ impl Views {
 
     // ---- open files ----
 
-    pub fn add_file(&self, f: File) -> u64 {
+    pub fn add_file(&self, h: Arc<ScopeHandle>, f: File) -> u64 {
         let mut t = self.t();
         let fh = t.next_fh;
         t.next_fh += 1;
-        t.files.insert(fh, Arc::new(f));
+        t.files.insert(fh, (h, Arc::new(f)));
         fh
     }
 
     pub fn file(&self, fh: u64) -> R<Arc<File>> {
-        self.t().files.get(&fh).cloned().ok_or(Errno::EBADF)
+        self.t().files.get(&fh).map(|(_, f)| f.clone()).ok_or(Errno::EBADF)
+    }
+
+    /// A handle to write through: the tag is fixed at open, and a closed scope takes no writes.
+    pub fn file_for_write(&self, fh: u64) -> R<Arc<File>> {
+        let (h, f) = self.t().files.get(&fh).cloned().ok_or(Errno::EBADF)?;
+        if h.is_closed() {
+            self.ledger.append(&h.id, "write", Path::new(""), None, "deny");
+            return Err(Errno::EBADF);
+        }
+        Ok(f)
     }
 
     pub fn release(&self, fh: u64) {
