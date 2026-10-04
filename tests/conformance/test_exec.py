@@ -139,9 +139,13 @@ def test_sandbox_read_paths_are_visible(contained):
 
 
 def test_child_cannot_find_another_scopes_files(contained):
-    d, _, b = contained
-    r = d.exec(b, "sh", "-c", "find / -path /proc -prune -o -name 'secret-a*' -print 2>/dev/null")
-    assert r.stdout == ""
+    d, a, b = contained
+    # Everything but /proc and the read-only system directories (large on CI runners).
+    pruned = " -o ".join(f"-path {p}" for p in ("/proc", "/usr", "/opt", "/etc", "/sys"))
+    find = f"find / \\( {pruned} \\) -prune -o -name 'secret-a*' -print"
+    r = d.exec(b, "sh", "-c", find)
+    assert (r.returncode, r.stdout) == (0, ""), r.stderr
+    assert d.exec(a, "sh", "-c", find).stdout == f"{d.project}/secret-a.txt\n"  # the probe works
 
 
 def test_child_sees_no_state_views_or_socket(contained):
