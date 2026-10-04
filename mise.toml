@@ -9,3 +9,4 @@ lefthook = "2.1.16"
 actionlint = "1.7.12"
 shellcheck = "0.11.0"
 shfmt = "3.14.1"
+ripgrep = "15.2.0"  # bench workload C

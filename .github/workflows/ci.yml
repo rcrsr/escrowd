@@ -42,6 +42,7 @@ jobs:
               - 'sdk/python/**'
               - 'tests/**'
               - 'examples/**'
+              - 'bench/**'
               - 'proto/**'
               - '.python-version'
               - '.github/workflows/ci.yml'
@@ -75,6 +76,33 @@ jobs:
       - name: Check Rust crates
         run: |
           cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+
+  # Early warning, not required by the CI Gate: the workspace on current stable Rust
+  # instead of the rust-toolchain.toml pin (RUSTUP_TOOLCHAIN overrides the file).
+  check-rust-stable:
+    name: Rust (stable, advisory)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      RUSTUP_TOOLCHAIN: stable
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: stable
+
+      - name: Check Rust crates on stable
+        run: |
+          rustc --version
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked
 

@@ -6,11 +6,12 @@
 //!   deny: [".env", "secrets/**"]   # a pattern without '/' matches the name at any depth
 //! sandbox:
 //!   read: ["~/.local/share/mise"]  # host paths sandboxes may read besides the system dirs
+//!   write: ["~/.cache/pnpm"]        # host paths sandboxes may write, outside escrow
 //! ```
 //!
 //! Close-time write rules come with the decision tiers.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, bail};
 use serde::Deserialize;
@@ -32,27 +33,40 @@ pub struct SandboxRules {
     /// Absolute paths (or `~/…`) bound read-only into every sandbox: toolchains, package stores.
     #[serde(default)]
     pub read: Vec<String>,
+    /// Absolute paths (or `~/…`) bound read-write into every sandbox, outside escrow:
+    /// package stores and caches. The ledger records each one when a sandbox starts.
+    #[serde(default)]
+    pub write: Vec<String>,
 }
 
 impl SandboxRules {
     /// The read paths with `~` expanded; relative paths are an error.
-    pub fn read_paths(&self) -> anyhow::Result<Vec<std::path::PathBuf>> {
-        self.read
-            .iter()
-            .map(|p| {
-                let path = match p.strip_prefix("~/") {
-                    Some(rest) => std::env::home_dir()
-                        .context("sandbox.read: no home directory")?
-                        .join(rest),
-                    None => std::path::PathBuf::from(p),
-                };
-                if !path.is_absolute() {
-                    bail!("sandbox.read: {p} is not absolute");
-                }
-                Ok(path)
-            })
-            .collect()
+    pub fn read_paths(&self) -> anyhow::Result<Vec<PathBuf>> {
+        expand("sandbox.read", &self.read)
     }
+
+    /// The write paths with `~` expanded; relative paths are an error.
+    pub fn write_paths(&self) -> anyhow::Result<Vec<PathBuf>> {
+        expand("sandbox.write", &self.write)
+    }
+}
+
+fn expand(key: &str, paths: &[String]) -> anyhow::Result<Vec<PathBuf>> {
+    paths
+        .iter()
+        .map(|p| {
+            let path = match p.strip_prefix("~/") {
+                Some(rest) => std::env::home_dir()
+                    .with_context(|| format!("{key}: no home directory"))?
+                    .join(rest),
+                None => PathBuf::from(p),
+            };
+            if !path.is_absolute() {
+                bail!("{key}: {p} is not absolute");
+            }
+            Ok(path)
+        })
+        .collect()
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -100,6 +114,14 @@ mod tests {
         assert_eq!(paths[1], std::path::Path::new("/opt/x"));
         let p = Policy::parse("version: 1\nsandbox:\n  read: ['rel/path']\n").unwrap();
         assert!(p.sandbox.read_paths().is_err());
+    }
+
+    #[test]
+    fn sandbox_write_expands_home_and_needs_absolute_paths() {
+        let p = Policy::parse("version: 1\nsandbox:\n  write: ['~/.cache/pnpm']\n").unwrap();
+        assert!(p.sandbox.write_paths().unwrap()[0].ends_with(".cache/pnpm"));
+        let p = Policy::parse("version: 1\nsandbox:\n  write: ['cache']\n").unwrap();
+        assert!(p.sandbox.write_paths().is_err());
     }
 
     #[test]

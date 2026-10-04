@@ -2,7 +2,8 @@
 //! each scope's children (from the exec socket).
 //!
 //! Binds are deny-by-default: the system directories read-only, the policy's
-//! `sandbox.read` paths read-only, a private `/tmp` and an empty `$HOME`, then
+//! `sandbox.read` paths read-only, the `sandbox.write` paths read-write (outside
+//! escrow: package stores, caches), a private `/tmp` and an empty `$HOME`, then
 //! the caller's mounts (the project view, the socket). escrowd's own state, its
 //! views and its sockets are hidden even when a read path contains them. User
 //! namespaces are disabled inside, so nothing in the sandbox can remount.
@@ -27,6 +28,8 @@ pub struct Sandbox {
     pub bwrap: PathBuf,
     /// Host paths bound read-only besides the system directories (policy `sandbox.read`).
     pub read: Vec<PathBuf>,
+    /// Host paths bound read-write, outside escrow (policy `sandbox.write`); they exist.
+    pub write: Vec<PathBuf>,
     /// Directories that must stay hidden (state, views) even under a read path.
     pub hide_dirs: Vec<PathBuf>,
     /// Files that must stay hidden (the sockets) even under a read path.
@@ -52,7 +55,7 @@ pub fn find_bwrap(explicit: Option<&Path>) -> PathBuf {
 
 impl Sandbox {
     fn exposed(&self, p: &Path) -> bool {
-        SYSTEM.iter().any(|s| p.starts_with(s)) || self.read.iter().any(|r| p.starts_with(r))
+        SYSTEM.iter().any(|s| p.starts_with(s)) || self.read.iter().chain(&self.write).any(|r| p.starts_with(r))
     }
 
     /// `bwrap … -- argv` with `mounts` applied last and the working directory `chdir`.
@@ -82,6 +85,9 @@ impl Sandbox {
         }
         for r in &self.read {
             push(&[&"--ro-bind-try", r, r]);
+        }
+        for w in &self.write {
+            push(&[&"--bind", w, w]);
         }
         for d in self.hide_dirs.iter().filter(|d| self.exposed(d)) {
             push(&[&"--tmpfs", d]);

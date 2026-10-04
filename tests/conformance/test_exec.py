@@ -172,3 +172,22 @@ def test_home_and_unlisted_paths_are_absent(daemon, runtime_dir):
     r = daemon.exec(sid, "sh", "-c", f"cat {runtime_dir}/canary.txt; ls -A $HOME | wc -l")
     assert "No such file" in r.stderr
     assert r.stdout.strip() == "0"  # $HOME is an empty tmpfs
+
+
+def test_sandbox_write_paths_are_writable_outside_escrow(start_daemon, runtime_dir):
+    store = runtime_dir / "store"  # created by the daemon
+    d = start_daemon(sandbox_write=(str(store),))
+    sid = open_scope(d)
+    r = d.exec(sid, "sh", "-c", f"echo pkg > {store}/pkg.txt; echo x > f.txt")
+    assert r.returncode == 0, r.stderr
+    assert (store / "pkg.txt").read_text() == "pkg\n"  # on the host at once: not escrowed
+    assert not (d.project / "f.txt").exists()  # the project still is
+    assert f" scope={sid} op=sandbox-write path={store} decision=allow" in "\n".join(d.ledger)
+
+
+@pytest.mark.parametrize("where", ["proj", "proj/sub", "state", "."])
+def test_sandbox_write_must_not_overlap_project_or_state(escrow_bin, runtime_dir, where):
+    from conftest import Daemon
+
+    with pytest.raises(RuntimeError, match="overlaps the"):
+        Daemon(escrow_bin, runtime_dir, sandbox_write=(str(runtime_dir / where),))
