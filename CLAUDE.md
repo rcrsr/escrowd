@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-Phase 1 (CLI POC) is in progress: sub-phases 1.1 and 1.2 are done, 1.3 (scope lifecycle, gate, ledger) is built; the daemon serves scope views over FUSE and the open, close (freeze + change set), discard and return calls; commit comes in 1.4, spawn and unscoped IO in 1.5. Phase 0 is complete (`spikes/results/phase-0-report.md`); its throwaway spikes stay in `spikes/`, a separate Cargo workspace.
+Phase 1 (CLI POC) is in progress: sub-phases 1.1 to 1.3 are done, 1.4 (commit) and 1.5 (launcher, sandbox) are next; the daemon serves scope views over FUSE and the open, close (freeze + change set), discard and return calls; commit comes in 1.4, spawn and unscoped IO in 1.5. Phase 0 is complete (`spikes/results/phase-0-report.md`); its throwaway spikes stay in `spikes/`, a separate Cargo workspace.
 
 - `docs/escrowd-proposal.md`: the design (scopes, escrow, FUSE capture, bwrap isolation, roadmap phases 0–8).
 - `docs/phase-1-poc.md`: the active plan (draft). Sub-phases 1.1–1.7 toward the proposal's seven exit tests, plus open questions. Update it when a decision is made or an open question closes (tick the box, add the date).
