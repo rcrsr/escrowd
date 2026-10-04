@@ -42,6 +42,10 @@ class Client:
         req = escrow_pb2.DecideRequest(scope_id=scope_id, verdict=verdict, reasons=reasons or [])
         return self._stub.Decide(req, timeout=timeout)
 
+    def commit(self, scope_id: str, timeout: float = 60.0) -> escrow_pb2.Outcome:
+        """Apply a closed scope's change set, all or nothing; a conflict drops the scope."""
+        return self.decide(scope_id, escrow_pb2.VERDICT_COMMIT, timeout=timeout)
+
     def discard(self, scope_id: str, timeout: float = 30.0) -> escrow_pb2.Outcome:
         return self.decide(scope_id, escrow_pb2.VERDICT_DISCARD, timeout=timeout)
 

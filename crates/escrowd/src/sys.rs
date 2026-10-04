@@ -159,20 +159,34 @@ pub fn read_dir(dir: BorrowedFd, rel: &Path) -> io::Result<Vec<(OsString, FileTy
     Ok(out)
 }
 
-/// Whole-file copy-up of a regular file, symlink or directory from `src_dir` to `dst_dir`,
-/// keeping mode and times.
-pub fn copy_entry(src_dir: BorrowedFd, dst_dir: BorrowedFd, rel: &Path, st: &Stat) -> io::Result<()> {
+/// Whole-file copy of a regular file, symlink or directory from `src_dir/src` to `dst_dir/dst`,
+/// keeping the exact mode (no umask) and times; `sync` fsyncs a copied file.
+pub fn copy_entry(
+    src_dir: BorrowedFd,
+    src: &Path,
+    dst_dir: BorrowedFd,
+    dst: &Path,
+    st: &Stat,
+    sync: bool,
+) -> io::Result<()> {
     let mode = st.st_mode & 0o7777;
     match st.st_mode & libc::S_IFMT {
-        libc::S_IFDIR => match mkdir(dst_dir, rel, mode) {
+        libc::S_IFDIR => match mkdir(dst_dir, dst, mode) {
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
-            r => r?,
+            r => {
+                r?;
+                chmod(dst_dir, dst, mode)?;
+            }
         },
-        libc::S_IFLNK => symlink(&readlink(src_dir, rel)?, dst_dir, rel)?,
+        libc::S_IFLNK => symlink(&readlink(src_dir, src)?, dst_dir, dst)?,
         libc::S_IFREG => {
-            let mut src = open(src_dir, rel, OFlags::RDONLY, 0)?;
-            let mut dst = open(dst_dir, rel, OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL, mode)?;
-            io::copy(&mut src, &mut dst)?;
+            let mut from = open(src_dir, src, OFlags::RDONLY, 0)?;
+            let mut to = open(dst_dir, dst, OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL, mode)?;
+            io::copy(&mut from, &mut to)?;
+            rfs::fchmod(&to, Mode::from_raw_mode(mode))?;
+            if sync {
+                to.sync_all()?;
+            }
         }
         _ => return Err(io::Error::from_raw_os_error(libc::EPERM)),
     }
@@ -182,10 +196,38 @@ pub fn copy_entry(src_dir: BorrowedFd, dst_dir: BorrowedFd, rel: &Path, st: &Sta
     };
     set_times(
         dst_dir,
-        rel,
+        dst,
         ts(st.st_atime, st.st_atime_nsec),
         ts(st.st_mtime, st.st_mtime_nsec),
     )
+}
+
+/// Flush the whole filesystem holding `dir` (the journal's barrier between steps).
+/// `dir` may be an O_PATH fd, which syncfs refuses, so it reopens the directory.
+pub fn syncfs(dir: BorrowedFd) -> io::Result<()> {
+    let fd = rfs::openat(
+        dir,
+        ".",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    Ok(rfs::syncfs(fd)?)
+}
+
+/// `mkdir -p` below `dir`.
+pub fn mkdirs(dir: BorrowedFd, rel: &Path) -> io::Result<()> {
+    if rel.as_os_str().is_empty() || lstat(dir, rel).is_ok_and(|st| is_dir(&st)) {
+        return Ok(());
+    }
+    mkdirs(dir, parent(rel))?;
+    match mkdir(dir, rel, 0o755) {
+        Err(e) if e.kind() != io::ErrorKind::AlreadyExists => Err(e),
+        _ => Ok(()),
+    }
+}
+
+pub fn depth(rel: &Path) -> usize {
+    rel.components().count()
 }
 
 fn time(secs: i64, nsecs: i64) -> SystemTime {
@@ -229,7 +271,7 @@ pub fn attr(ino: u64, st: &Stat) -> FileAttr {
 }
 
 /// The base version of a file: what the conflict check at commit compares (1.4).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Version {
     pub ino: u64,
     pub size: i64,

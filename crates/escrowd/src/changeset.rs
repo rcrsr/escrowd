@@ -5,7 +5,10 @@
 //!   (type, mode, content or symlink target) is a modify; a copied-up entry left
 //!   unchanged is no change.
 //! - A whiteout is a delete of the base entry and everything under it; an
-//!   opaque directory deletes the base children the scope did not recreate.
+//!   opaque directory deletes the base children the scope did not recreate; a
+//!   file or symlink in place of a base directory deletes what was under it.
+//!
+//! "The base" is the scope's snapshot: the project as it was when the scope opened.
 //! - A create or modify whose pinned inode is a base inode, matched by a delete
 //!   of the file that had that inode, is a rename.
 
@@ -17,6 +20,7 @@ use std::path::{Path, PathBuf};
 use fuser::FileType;
 use rustix::fs::{OFlags, Stat};
 
+use crate::snapshot::Base;
 use crate::store::ScopeStore;
 use crate::sys;
 use crate::views::{ScopeHandle, UPPER_BIT};
@@ -44,27 +48,27 @@ pub struct ChangeSet {
     pub labels: HashMap<String, String>,
 }
 
-pub fn build(lower: BorrowedFd, h: &ScopeHandle) -> io::Result<ChangeSet> {
+pub fn build(base: &Base, h: &ScopeHandle) -> io::Result<ChangeSet> {
     let upper = h.upper.as_fd();
     let mut kinds: BTreeMap<PathBuf, Kind> = BTreeMap::new();
-    walk_upper(lower, upper, Path::new(""), &mut kinds)?;
-    let store = h.store();
     let mut deletes: BTreeSet<PathBuf> = BTreeSet::new();
+    walk_upper(base, upper, Path::new(""), &mut kinds, &mut deletes)?;
+    let store = h.store();
     for w in store.whiteouts() {
-        if !kinds.contains_key(w) && sys::lstat(lower, w).is_ok() {
+        if !kinds.contains_key(w) && base.lstat(w).is_ok() {
             deletes.insert(w.clone());
-            base_descendants(lower, w, &mut deletes)?;
+            base_descendants(base, w, &mut deletes)?;
         }
     }
     for dir in store.opaque_dirs() {
         let mut below = BTreeSet::new();
-        base_descendants(lower, dir, &mut below)?;
+        base_descendants(base, dir, &mut below)?;
         deletes.extend(below.into_iter().filter(|p| sys::lstat(upper, p).is_err()));
     }
     for d in deletes {
         kinds.insert(d, Kind::Delete);
     }
-    let changes = pair_renames(lower, &store, kinds);
+    let changes = pair_renames(base, &store, kinds);
     Ok(ChangeSet {
         changes,
         reads: store.reads(),
@@ -73,41 +77,50 @@ pub fn build(lower: BorrowedFd, h: &ScopeHandle) -> io::Result<ChangeSet> {
 }
 
 /// Creates and modifies, pre-order, for every entry in the upper tree.
-fn walk_upper(lower: BorrowedFd, upper: BorrowedFd, dir: &Path, out: &mut BTreeMap<PathBuf, Kind>) -> io::Result<()> {
+fn walk_upper(
+    base: &Base,
+    upper: BorrowedFd,
+    dir: &Path,
+    out: &mut BTreeMap<PathBuf, Kind>,
+    deletes: &mut BTreeSet<PathBuf>,
+) -> io::Result<()> {
     for (name, kind) in sys::read_dir(upper, dir)? {
         let rel = dir.join(&name);
         let up = sys::lstat(upper, &rel)?;
-        match sys::lstat(lower, &rel) {
+        match base.lstat(&rel) {
             Err(_) => {
                 out.insert(rel.clone(), Kind::Create);
             }
-            Ok(base) => {
-                if differs(lower, upper, &rel, &base, &up)? {
+            Ok(old) => {
+                if differs(base, upper, &rel, &old, &up)? {
                     out.insert(rel.clone(), Kind::Modify);
+                }
+                if sys::is_dir(&old) && !sys::is_dir(&up) {
+                    base_descendants(base, &rel, deletes)?;
                 }
             }
         }
         if kind == FileType::Directory {
-            walk_upper(lower, upper, &rel, out)?;
+            walk_upper(base, upper, &rel, out, deletes)?;
         }
     }
     Ok(())
 }
 
-fn differs(lower: BorrowedFd, upper: BorrowedFd, rel: &Path, base: &Stat, up: &Stat) -> io::Result<bool> {
+fn differs(base: &Base, upper: BorrowedFd, rel: &Path, old: &Stat, up: &Stat) -> io::Result<bool> {
     let fmt = |st: &Stat| st.st_mode & libc::S_IFMT;
-    if fmt(base) != fmt(up) || base.st_mode & 0o7777 != up.st_mode & 0o7777 {
+    if fmt(old) != fmt(up) || old.st_mode & 0o7777 != up.st_mode & 0o7777 {
         return Ok(true);
     }
     match fmt(up) {
         libc::S_IFREG => {
-            if base.st_size != up.st_size {
+            if old.st_size != up.st_size {
                 return Ok(true);
             }
-            let open = |d| sys::open(d, rel, OFlags::RDONLY, 0);
-            Ok(!same_bytes(open(lower)?, open(upper)?)?)
+            let ours = sys::open(upper, rel, OFlags::RDONLY, 0)?;
+            Ok(!same_bytes(base.open(rel, OFlags::RDONLY)?, ours)?)
         }
-        libc::S_IFLNK => Ok(sys::readlink(lower, rel)? != sys::readlink(upper, rel)?),
+        libc::S_IFLNK => Ok(base.readlink(rel)? != sys::readlink(upper, rel)?),
         _ => Ok(false),
     }
 }
@@ -134,15 +147,15 @@ fn same_bytes(mut a: impl Read, mut b: impl Read) -> io::Result<bool> {
 }
 
 /// Every base entry under `dir` (not `dir` itself).
-fn base_descendants(lower: BorrowedFd, dir: &Path, out: &mut BTreeSet<PathBuf>) -> io::Result<()> {
-    let Ok(entries) = sys::read_dir(lower, dir) else {
+fn base_descendants(base: &Base, dir: &Path, out: &mut BTreeSet<PathBuf>) -> io::Result<()> {
+    let Ok(entries) = base.read_dir(dir) else {
         return Ok(()); // not a directory in the base
     };
     for (name, kind) in entries {
         let rel = dir.join(name);
         out.insert(rel.clone());
         if kind == FileType::Directory {
-            base_descendants(lower, &rel, out)?;
+            base_descendants(base, &rel, out)?;
         }
     }
     Ok(())
@@ -150,12 +163,12 @@ fn base_descendants(lower: BorrowedFd, dir: &Path, out: &mut BTreeSet<PathBuf>) 
 
 /// Pair each create or modify that carries a base inode with the delete of the
 /// file that had it: together they are one rename.
-fn pair_renames(lower: BorrowedFd, store: &ScopeStore, kinds: BTreeMap<PathBuf, Kind>) -> Vec<Change> {
+fn pair_renames(base: &Base, store: &ScopeStore, kinds: BTreeMap<PathBuf, Kind>) -> Vec<Change> {
     let base_ino_of_delete: HashMap<u64, PathBuf> = kinds
         .iter()
         .filter(|(_, k)| **k == Kind::Delete)
         .filter_map(|(p, _)| {
-            let st = sys::lstat(lower, p).ok()?;
+            let st = base.lstat(p).ok()?;
             (!sys::is_dir(&st)).then(|| (st.st_ino, p.clone()))
         })
         .collect();

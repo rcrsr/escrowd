@@ -63,15 +63,6 @@ def test_discard_of_unknown_scope_is_not_found(daemon):
     assert err.value.code() == grpc.StatusCode.NOT_FOUND
 
 
-def test_commit_is_not_built_yet(daemon):
-    with client(daemon) as c:
-        s = c.open_scope()
-        req = escrow_pb2.DecideRequest(scope_id=s.scope_id, verdict=escrow_pb2.VERDICT_COMMIT)
-        with pytest.raises(grpc.RpcError) as err:
-            c._stub.Decide(req, timeout=5)
-    assert err.value.code() == grpc.StatusCode.UNIMPLEMENTED
-
-
 def test_store_records_whiteouts_opaque_dirs_and_versions(daemon):
     seed(daemon.project)
     with client(daemon) as c:

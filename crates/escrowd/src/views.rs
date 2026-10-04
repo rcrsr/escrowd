@@ -8,6 +8,9 @@
 //! `(scope index + 1) << 48 | base st_ino` (upper-only entries: `| 1 << 47 | counter`);
 //! an inode stays alive while any hard link names it; lower-backed directories
 //! rename with EXDEV, like overlayfs.
+//!
+//! A scope reads "the base" through its snapshot (`snapshot::Base`): the live
+//! project overlaid with the pre-images of commits made after the scope opened.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{OsStr, OsString};
@@ -22,8 +25,10 @@ use fuser::{Errno, FileType};
 use rustix::fs::{OFlags, Stat};
 
 use crate::changeset::{self, ChangeSet};
+use crate::commit::{Commits, Outcome};
 use crate::gate::Gate;
 use crate::ledger::Ledger;
+use crate::snapshot::Base;
 use crate::store::{ScopeState, ScopeStore, VersionKind, moved};
 use crate::sys::{self, Version, parent};
 
@@ -46,6 +51,8 @@ pub enum Loc {
 pub struct ScopeHandle {
     pub id: String,
     pub idx: u64,
+    /// The base generation the scope opened at.
+    pub since: u64,
     pub upper: OwnedFd,
     /// Frozen between close and the decision: new IO gets EROFS, writes on open handles EBADF.
     closed: AtomicBool,
@@ -130,6 +137,7 @@ pub struct Views {
     mount: PathBuf,
     gate: Gate,
     ledger: Ledger,
+    commits: Commits,
     scopes: RwLock<HashMap<String, Arc<ScopeHandle>>>,
     next_idx: Mutex<u64>,
     t: Mutex<Tables>,
@@ -141,12 +149,23 @@ impl Views {
         let scopes_dir = state_dir.join("scopes");
         fs::create_dir_all(&scopes_dir)?;
         let ledger = Ledger::open(&state_dir.join("ledger.log"))?;
+        let commits = Commits::open(state_dir)?;
+        // Roll back an interrupted commit before any scope sees the base.
+        for (generation, id) in commits.recover(lower.as_fd())? {
+            let dir = scopes_dir.join(&id);
+            if dir.exists() {
+                fs::remove_dir_all(&dir)?;
+                ledger.append(&id, "decide", Path::new(""), None, "commit");
+            }
+            commits.scope_dropped(generation)?;
+        }
         let views = Views {
             lower,
             scopes_dir,
             mount: mount.to_path_buf(),
             gate,
             ledger,
+            commits,
             scopes: RwLock::new(HashMap::new()),
             next_idx: Mutex::new(0),
             t: Mutex::new(Tables {
@@ -155,6 +174,7 @@ impl Views {
             }),
         };
         views.load_scopes()?;
+        views.gc()?;
         Ok(views)
     }
 
@@ -176,6 +196,7 @@ impl Views {
         let h = Arc::new(ScopeHandle {
             id: store.id.clone(),
             idx: store.idx,
+            since: store.since,
             upper,
             closed: AtomicBool::new(store.state == ScopeState::Closed),
             store: Mutex::new(store),
@@ -197,7 +218,7 @@ impl Views {
             return Err(io::Error::other("scope index space exhausted"));
         }
         let id = format!("s{idx}");
-        let store = ScopeStore::create(&self.scopes_dir, &id, name, idx, labels)?;
+        let store = ScopeStore::create(&self.scopes_dir, &id, name, idx, self.commits.current(), labels)?;
         let h = self.attach(store)?;
         self.ledger.append(&h.id, "open", Path::new(""), None, "allow");
         Ok((id.clone(), self.mount.join(&id)))
@@ -222,7 +243,7 @@ impl Views {
             h.closed.store(true, Ordering::Release);
             self.ledger.append(id, "close", Path::new(""), None, "allow");
         }
-        changeset::build(self.lower.as_fd(), &h)
+        changeset::build(&self.base(&h), &h)
     }
 
     /// Return to agent: the decision's reasons go back and the scope accepts IO again.
@@ -240,10 +261,55 @@ impl Views {
         Ok(())
     }
 
+    /// Commit a closed scope's change set to the project, all or nothing, and drop the
+    /// scope. On a conflict nothing is written and the scope is dropped (the default
+    /// conflict policy); on a failure the commit is rolled back and the scope stays closed.
+    pub fn commit_scope(&self, id: &str) -> io::Result<Outcome> {
+        let h = self.handle(id)?;
+        if !h.is_closed() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("scope {id} is not closed"),
+            ));
+        }
+        let cs = changeset::build(&self.base(&h), &h)?;
+        let outcome = self.commits.commit(self.lower.as_fd(), &h, &cs)?;
+        match &outcome {
+            Outcome::Committed(generation, _) => {
+                crate::fault::hit("committed", 0)?;
+                self.ledger.append(id, "decide", Path::new(""), None, "commit");
+                self.remove_scope(id)?;
+                if let Some(g) = generation {
+                    self.commits.scope_dropped(*g)?;
+                }
+            }
+            Outcome::Conflict(paths) => {
+                for p in paths {
+                    self.ledger.append(id, "conflict", p, None, "deny");
+                }
+                self.ledger.append(id, "decide", Path::new(""), None, "conflict");
+                self.remove_scope(id)?;
+            }
+        }
+        self.gc()?;
+        Ok(outcome)
+    }
+
     /// Drop a scope and its staged changes.
     pub fn drop_scope(&self, id: &str) -> io::Result<()> {
         self.handle(id)?;
         self.ledger.append(id, "decide", Path::new(""), None, "discard");
+        self.remove_scope(id)?;
+        self.gc()
+    }
+
+    /// Drop generations no open scope reads through any more.
+    fn gc(&self) -> io::Result<()> {
+        let oldest = self.scopes.read().unwrap().values().map(|h| h.since).min();
+        self.commits.gc(oldest)
+    }
+
+    fn remove_scope(&self, id: &str) -> io::Result<()> {
         let h = self
             .scopes
             .write()
@@ -292,11 +358,16 @@ impl Views {
         Ok((h, p.join(name)))
     }
 
+    /// The scope's snapshot of the base.
+    fn base<'a>(&'a self, h: &ScopeHandle) -> Base<'a> {
+        Base::new(self.lower.as_fd(), &self.commits.gens, h.since)
+    }
+
     fn lower_stat(&self, h: &ScopeHandle, rel: &Path) -> Option<Stat> {
         if h.store().hidden(rel) {
             return None;
         }
-        sys::lstat(self.lower.as_fd(), rel).ok()
+        self.base(h).lstat(rel).ok()
     }
 
     pub fn locate(&self, h: &ScopeHandle, rel: &Path) -> R<(Loc, Stat)> {
@@ -349,7 +420,9 @@ impl Views {
         let mode = self.lower_stat(h, rel).map(|st| st.st_mode & 0o7777).unwrap_or(0o755);
         match sys::mkdir(h.upper.as_fd(), rel, mode) {
             Err(e) if e.kind() != io::ErrorKind::AlreadyExists => Err(errno(e)),
-            _ => Ok(()),
+            Err(_) => Ok(()),
+            // The process umask must not change the mode the base has.
+            Ok(()) => sys::chmod(h.upper.as_fd(), rel, mode).map_err(errno),
         }
     }
 
@@ -367,7 +440,8 @@ impl Views {
         if sys::is_dir(&st) {
             return self.ensure_upper_dir(h, rel);
         }
-        sys::copy_entry(self.lower.as_fd(), h.upper.as_fd(), rel, &st).map_err(errno)
+        let (src, src_rel) = self.base(h).src(rel).map_err(errno)?;
+        sys::copy_entry(src, &src_rel, h.upper.as_fd(), rel, &st, false).map_err(errno)
     }
 
     pub fn list(&self, h: &ScopeHandle, rel: &Path) -> R<BTreeMap<OsString, FileType>> {
@@ -380,7 +454,7 @@ impl Views {
         let opaque = h.store().is_opaque(rel);
         if !opaque
             && self.lower_stat(h, rel).is_some_and(|st| sys::is_dir(&st))
-            && let Ok(entries) = sys::read_dir(self.lower.as_fd(), rel)
+            && let Ok(entries) = self.base(h).read_dir(rel)
         {
             found = true;
             let store = h.store();
@@ -443,7 +517,7 @@ impl Views {
         self.log(h, "readlink", rel, "allow");
         match self.locate(h, rel)?.0 {
             Loc::Upper => sys::readlink(h.upper.as_fd(), rel),
-            Loc::Lower => sys::readlink(self.lower.as_fd(), rel),
+            Loc::Lower => self.base(h).readlink(rel),
         }
         .map_err(errno)
     }
@@ -526,7 +600,7 @@ impl Views {
             return Err(Errno::EXDEV);
         }
         // A base entry at `to`, even one this scope deleted: a directory landing there must hide it.
-        let to_in_base = sys::lstat(self.lower.as_fd(), to).ok();
+        let to_in_base = self.base(h).lstat(to).ok();
         self.copy_up(h, from)?;
         self.ensure_upper_dir(h, parent(to))?;
         sys::rename(h.upper.as_fd(), from, to, flags).map_err(errno)?;
@@ -608,7 +682,7 @@ impl Views {
             Loc::Upper => sys::open(h.upper.as_fd(), rel, oflags, 0),
             Loc::Lower => {
                 self.record(h, rel, VersionKind::Read, &st)?;
-                sys::open(self.lower.as_fd(), rel, oflags, 0)
+                self.base(h).open(rel, oflags)
             }
         }
         .map_err(errno)

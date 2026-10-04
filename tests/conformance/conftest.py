@@ -3,6 +3,7 @@
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import tempfile
 import time
@@ -38,8 +39,15 @@ def runtime_dir():
 class Daemon:
     """`escrow daemon` with its socket, project, state and mount under one work directory."""
 
-    def __init__(self, bin: Path, work: Path, deny_read=(".env",), project: Path | None = None):
-        """`deny_read` becomes the policy file's read.deny list."""
+    def __init__(
+        self,
+        bin: Path,
+        work: Path,
+        deny_read=(".env",),
+        project: Path | None = None,
+        env: dict[str, str] | None = None,
+    ):
+        """`deny_read` becomes the policy file's read.deny list; `env` adds to the environment."""
         self.work = work
         self.socket = work / "escrow.sock"
         self.project = project or work / "proj"
@@ -52,17 +60,26 @@ class Daemon:
         args = [bin, "daemon", "--socket", self.socket, "--project", self.project]
         args += ["--state", self.state, "--mount", self.mount, "--policy", self.policy]
         self.log = open(work / "daemon.log", "ab")
-        self.proc = subprocess.Popen(args, stderr=self.log)
+        self.proc = subprocess.Popen(args, stderr=self.log, env={**os.environ, **(env or {})})
         self.wait_ready()
 
     def wait_ready(self):
         deadline = time.monotonic() + 10
-        while not self.socket.exists():  # created after the views are mounted
+        while not self.accepts():  # the socket is bound after the views are mounted
             if self.proc.poll() is not None:
                 raise RuntimeError(f"daemon exited: {(self.work / 'daemon.log').read_text()}")
             if time.monotonic() > deadline:
                 raise TimeoutError(f"daemon did not create {self.socket}")
             time.sleep(0.02)
+
+    def accepts(self) -> bool:
+        """The socket takes connections (a crashed daemon leaves a stale file behind)."""
+        with socket.socket(socket.AF_UNIX) as s:
+            try:
+                s.connect(str(self.socket))
+                return True
+            except OSError:
+                return False
 
     def stop(self) -> int:
         if self.proc.poll() is None:
@@ -80,6 +97,11 @@ class Daemon:
 
     def upper(self, scope_id: str) -> Path:
         return self.state / "scopes" / scope_id / "upper"
+
+    def generations(self) -> list[str]:
+        """Generation directories holding pre-images."""
+        d = self.state / "generations"
+        return sorted(os.listdir(d)) if d.exists() else []
 
 
 @pytest.fixture

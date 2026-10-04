@@ -2,7 +2,7 @@
 
 Oct 3, 2026 · Andre Bremer · Draft
 
-**Status, Oct 3, 2026: 1.1 done** (12 / 12 checks on the dev host and in CI on `ubuntu-24.04` and `ubuntu-26.04`, [PR #1](https://github.com/rcrsr/escrowd/pull/1)). **1.2 done**, Oct 4, 2026: 52 / 52 checks on the dev host (5 repeat runs clean) and in CI on both runners, including the 0.3 (14) and 0.4 (17) spike checks ported to the daemon ([PR #3](https://github.com/rcrsr/escrowd/pull/3)). **1.3 done**, Oct 4, 2026: 66 / 66 checks on the dev host (5 repeat runs clean) and in CI on both runners ([PR #5](https://github.com/rcrsr/escrowd/pull/5)). Next: 1.4 and 1.5.
+**Status, Oct 3, 2026: 1.1 done** (12 / 12 checks on the dev host and in CI on `ubuntu-24.04` and `ubuntu-26.04`, [PR #1](https://github.com/rcrsr/escrowd/pull/1)). **1.2 done**, Oct 4, 2026: 52 / 52 checks on the dev host (5 repeat runs clean) and in CI on both runners, including the 0.3 (14) and 0.4 (17) spike checks ported to the daemon ([PR #3](https://github.com/rcrsr/escrowd/pull/3)). **1.3 done**, Oct 4, 2026: 66 / 66 checks on the dev host (5 repeat runs clean) and in CI on both runners ([PR #5](https://github.com/rcrsr/escrowd/pull/5)). **1.4 done**, Oct 4, 2026: 78 / 78 checks on the dev host (5 repeat runs clean). Next: 1.5.
 
 Phase 1 delivers escrowd, a minimal Python SDK and a CLI test app. Together they prove the scope model from the [escrowd proposal](escrowd-proposal.md) on Linux. Phase 0 cleared every mechanic this phase relies on ([go/no-go report](../spikes/results/phase-0-report.md)). Phase 1 turns the spikes into product code and adds the parts phase 0 never built: the RPC socket, the journal, commit, conflicts, the launcher and unscoped modes.
 
@@ -59,8 +59,8 @@ flowchart LR
 | 1.1 | Skeleton, protocol and CI (**done**, Oct 3, 2026) | Workspace builds; the protocol schema exists; a Python client completes a `ping` round trip to the daemon over the Unix socket; CI on `ubuntu-24.04` and `ubuntu-26.04` installs escrowd's bwrap and AppArmor profile and runs an empty suite | None |
 | 1.2 | Overlay store and router (**done**, Oct 4, 2026) | One FUSE mount serves many scopes, created and dropped over RPC instead of `mkdir`; whiteouts, opaque directories and the per-scope version table persist in each scope's store; the 0.3 (14) and 0.4 (17) spike checks pass when ported to the new daemon | 1 (staging half) |
 | 1.3 | Scope lifecycle, gate and ledger (**done**, Oct 4, 2026) | `open_scope`, `close_scope` and `decide` work end to end: close flushes and returns the change set (diff, reads, labels); discard drops the store; read rules load from a policy file; every operation lands in the ledger with its scope | 1, 6 |
-| 1.4 | Journal, commit, conflicts, pre-images | Commit applies the whole change set through the journal, or none of it if any step fails; a changed base file triggers the conflict policy (default discard); open scopes keep their snapshot through the pre-image layer; a fault injected at each apply step leaves the base byte-identical; the daemon rolls back an unfinished journal on start | 4, 5, 8 |
-| 1.5 | Launcher, sandbox, unscoped modes | `escrow run --project P -- cmd` starts the daemon and runs `cmd` in bwrap with the unscoped view over `$PROJECT`; the spawn helper starts a scope's child in its own sandbox with ordinary `Popen` semantics; `passthrough`, `implicit` and `deny` behave as the proposal's table says | 2, 7 |
+| 1.4 | Journal, commit, conflicts, pre-images (**done**, Oct 4, 2026) | Commit applies the whole change set through the journal, or none of it if any step fails; a changed base file triggers the conflict policy (default discard); open scopes keep their snapshot through the pre-image layer; a fault injected at each apply step leaves the base byte-identical; the daemon rolls back an unfinished journal on start | 4, 5, 8 |
+| 1.5 | Launcher, sandbox, unscoped modes | `escrow run --project P -- cmd` starts the daemon and runs `cmd` in bwrap with the unscoped view over `$PROJECT`; the spawn helper starts a scope's child in its own sandbox with ordinary `Popen` semantics; `passthrough`, `implicit` and `deny` behave as the proposal's table says; sandboxes hide the state directory, other scopes' views, the socket (from scope children) and everything outside the bind list | 2, 7 |
 | 1.6 | Python SDK | `escrow.init`, `escrow.scope(...)` as an async context manager and decide callbacks work; scopes live in `contextvars`; wrapped `open`, `os.*`, `pathlib` and `subprocess` attribute IO by path; `s.outcome` reports status, paths and reasons | 3, 6 |
 | 1.7 | Conformance suite and soak | The test app and the nine checks above run as one pytest suite; CI passes it 10 consecutive times; each Lima host passes it once | All |
 
@@ -124,6 +124,16 @@ If a step fails, the journal rolls the applied part back from the pre-images and
 
 The version check cannot stop an editor outside escrowd from writing a file between the check and the rename; phase 1 accepts that window.
 
+As built (Oct 4, 2026):
+
+- **Generations**: each commit is a numbered generation. Each scope records the generation it opened at (`since`). It resolves a path through the first later generation that recorded it, else through the live base. A commit records every path it touches, including each descendant of a deleted directory, so resolving one path at a time is complete. A pre-image keeps the original's inode number, mode, size and times, so inode numbers and recorded versions stay stable. Generations live in `<state>/generations/<n>/`. A generation is dropped once no open scope opened before it.
+- **Journal**: `<state>/journal.sqlite` with `synchronous = FULL`. A generation moves from `journaled` (paths, original metadata, temporary names, parent directory times) to `prepared` (pre-images copied, `syncfs`) to `done`. Commit then drops the scope. Start-up rolls back every generation not marked `done`. It finishes a `done` generation whose scope still exists, then clears the scope id so that a later scope reusing the id is not dropped.
+- **Conflict check**: it runs on every path the commit touches, under one commit lock per daemon. The expected version is the one the scope recorded, else its snapshot's version (absent for a create). A directory being deleted must not have gained entries, and the parent of each new entry must still be a directory. Directories compare full versions, so a scope that changes a directory's mode conflicts with any commit that adds or removes entries in it. On conflict, nothing is written, the scope is dropped, and the outcome lists the paths as reasons. The policy file has no conflict setting yet.
+- **Apply**: deletes run deepest first; this includes entries replaced by a different type. New entries follow, parents first. A file or symlink is written to `.escrow-<gen>-<i>.tmp` beside its target, fsynced and renamed over it. Content is copied, not renamed, so a renamed file gets a new inode in the project.
+- **Rollback**: it removes what the commit put in place and keeps originals the commit never reached (same version). It restores the rest from the pre-images, removes the temporary files and resets directory times. A restored copy has a new inode and ctime, so the journal records an alias (old version → new version). Scopes that recorded the original then don't conflict. A failed commit returns ABORTED and leaves the scope closed for a retry or a discard.
+- **Fault injection** (debug builds): `ESCROWD_FAULT=<point>:<n>[:abort]` fails at step `n` of `journal`, `preimage`, `apply`, `done` or `committed`. The suite hits every step of a 13-path commit, both in place and as a daemon crash. Each time it checks that the project is byte-identical (content, mode, mtimes), that no temporary files remain, and that a retry after restart applies the commit.
+- Also fixed: copies keep the exact mode (the process umask no longer applies). A file or symlink that replaces a base directory now lists the directory's base contents as deletes.
+
 ### 1.5 Launcher, sandbox and unscoped modes
 
 `escrow run` starts one daemon for its project and stops it on exit. The daemon mounts its FUSE view under `$XDG_RUNTIME_DIR/escrowd/` (Ubuntu 26.04 confines `fusermount3`). The app runs in bwrap with `--disable-userns`, `--unshare-pid` and `--die-with-parent`. On Ubuntu it uses escrowd's bwrap and AppArmor profile from spike 0.2.
@@ -136,6 +146,19 @@ The app's sandbox sees two bind mounts from the view:
 | `/escrow` | One directory per open scope, the targets of the SDK's path rewrite |
 
 Subprocesses need a second sandbox per scope, but `--disable-userns` stops the app from running bwrap itself. The wrapped `Popen` therefore runs `escrow exec --scope <id> -- cmd` as the real child. `escrow exec` sends its stdin, stdout and stderr over `SCM_RIGHTS`, plus its cwd and environment, to the daemon. The daemon starts `cmd` in bwrap with the scope's view over `$PROJECT`. `escrow exec` relays signals and exits with the child's status; the daemon kills the child if `escrow exec` dies. Pipes, exit codes and `kill` keep working because the caller holds a real child process.
+
+**Sandbox containment** (added Oct 4, 2026). The test sandboxes use `--ro-bind / /`, which hides only the project. Everything else stays readable, including escrowd's own state. The 1.5 sandboxes close four gaps:
+
+| Gap with `--ro-bind / /` | Requirement | Conformance check |
+| --- | --- | --- |
+| The state directory is readable: other scopes' upper trees, pre-images, journal and ledger | A `--tmpfs` covers the state directory in every sandbox | A file staged in scope A cannot be found from scope B's child, by any path |
+| The whole view mount is reachable: every scope's view | A `--tmpfs` covers `$XDG_RUNTIME_DIR/escrowd`. A scope child gets only its own view, over `$PROJECT`. The app gets the unscoped root and `/escrow` | Scope B's child cannot list or open `<mount>/<A>/`. Writing there fails |
+| The daemon socket is reachable, so a child could call `Decide(COMMIT)` on its own scope | Only the app's sandbox binds the socket. `escrow exec` runs in the app's sandbox and reaches the daemon; the command the daemon starts never gets the socket | A scope child's connect to the socket path fails with ENOENT. `Decide` from a child is impossible |
+| Reads outside the project (`~/.ssh`, other repositories) bypass the gate | Binds are deny-by-default. System directories (`/usr`, `/etc`, `/bin`, `/lib*`, `/opt`) are bound read-only, plus the paths listed in the policy file's `sandbox.read` (toolchains, package stores). `$HOME` and everything else is absent | A canary file outside the project and outside the bind list fails with ENOENT, from both the app and a scope child. A path listed in `sandbox.read` is readable |
+
+In-process code shares the harness's process, and with it the socket. Only subprocesses can be kept from the socket. A tool that must not reach the decision runs as a subprocess.
+
+`--unshare-net` stays opt-in; network capture is phase 8.
 
 ### 1.6 Python SDK
 

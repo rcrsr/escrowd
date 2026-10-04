@@ -1,16 +1,21 @@
 //! escrowd: the daemon behind escrow scopes.
 //!
 //! One FUSE mount serves a copy-on-write view per scope. Scopes are opened over
-//! RPC, closed (frozen, returning their change set) and decided: discard drops
-//! them, return reopens them. Commit lands in 1.4, spawn and unscoped IO in 1.5.
+//! RPC, closed (frozen, returning their change set) and decided: commit applies
+//! the change set through the journal, discard drops it, return reopens the
+//! scope. Spawn and unscoped IO land in 1.5.
 
 pub mod changeset;
+pub mod commit;
 pub mod daemon;
+pub mod fault;
 pub mod fuse;
 pub mod gate;
+pub mod journal;
 pub mod ledger;
 pub mod policy;
 pub mod rpc;
+pub mod snapshot;
 pub mod store;
 pub mod sys;
 pub mod views;

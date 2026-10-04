@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-Phase 1 (CLI POC) is in progress: sub-phases 1.1 to 1.3 are done, 1.4 (commit) and 1.5 (launcher, sandbox) are next; the daemon serves scope views over FUSE and the open, close (freeze + change set), discard and return calls; commit comes in 1.4, spawn and unscoped IO in 1.5. Phase 0 is complete (`spikes/results/phase-0-report.md`); its throwaway spikes stay in `spikes/`, a separate Cargo workspace.
+Phase 1 (CLI POC) is in progress: sub-phases 1.1 to 1.4 are done, 1.5 (launcher, sandbox) is next; the daemon serves scope views over FUSE (each scope reads its snapshot of the base) and the open, close (freeze + change set), commit (journal, conflict check, rollback), discard and return calls; spawn and unscoped IO come in 1.5. Phase 0 is complete (`spikes/results/phase-0-report.md`); its throwaway spikes stay in `spikes/`, a separate Cargo workspace.
 
 - `docs/escrowd-proposal.md`: the design (scopes, escrow, FUSE capture, bwrap isolation, roadmap phases 0–8).
 - `docs/phase-1-poc.md`: the active plan (draft). Sub-phases 1.1–1.7 toward the proposal's seven exit tests, plus open questions. Update it when a decision is made or an open question closes (tick the box, add the date).
@@ -45,8 +45,8 @@ Architecture as planned (proposal "Architecture" and "Isolation"):
 
 ## Layout and commands
 
-- `crates/escrowd/`: daemon library. `views.rs` (copy-on-write overlay per scope, routing by path, inode table), `fuse.rs` (fuser adapter), `store.rs` (per-scope SQLite: whiteouts, opaque dirs, base versions, pinned inodes), `sys.rs` (fd-relative syscalls via rustix; no `/proc/self/fd` paths), `changeset.rs` (net change set of a closed scope, renames from pinned inodes), `gate.rs`, `policy.rs` (YAML policy, `read.deny`), `ledger.rs` (percent-encoded paths), `daemon.rs` (startup), `rpc.rs` (gRPC; stubs generated from `proto/` by `build.rs` with vendored protoc).
-- `crates/escrow-cli/`: the `escrow` binary (`escrow daemon --socket S --project P [--state D] [--mount M] [--policy FILE]`, `escrow log --state D [SCOPE]`). A scope is `<state>/scopes/<id>/{upper/,meta.sqlite}`; its view is `<mount>/<id>/`.
+- `crates/escrowd/`: daemon library. `views.rs` (copy-on-write overlay per scope, routing by path, inode table), `fuse.rs` (fuser adapter), `store.rs` (per-scope SQLite: whiteouts, opaque dirs, base versions, pinned inodes), `sys.rs` (fd-relative syscalls via rustix; no `/proc/self/fd` paths), `changeset.rs` (net change set of a closed scope, renames from pinned inodes), `snapshot.rs` (base generations: pre-images that keep each scope's snapshot), `journal.rs` (`<state>/journal.sqlite`), `commit.rs` (conflict check, apply, rollback, recovery at start), `fault.rs` (`ESCROWD_FAULT`, debug builds), `gate.rs`, `policy.rs` (YAML policy, `read.deny`), `ledger.rs` (percent-encoded paths), `daemon.rs` (startup), `rpc.rs` (gRPC; stubs generated from `proto/` by `build.rs` with vendored protoc).
+- `crates/escrow-cli/`: the `escrow` binary (`escrow daemon --socket S --project P [--state D] [--mount M] [--policy FILE]`, `escrow log --state D [SCOPE]`). A scope is `<state>/scopes/<id>/{upper/,meta.sqlite}`; its view is `<mount>/<id>/`; commit pre-images live in `<state>/generations/<n>/`.
 - `proto/escrow/v1/escrow.proto`: the one protocol schema (gRPC over a Unix socket, `ESCROW_SOCKET`).
 - `sdk/python/`: uv project, package `escrow`; generated stubs in `src/escrow/v1/` are committed.
 - `tests/conformance/`: pytest suite run against the built binary; `packaging/ubuntu/`: escrowd's bwrap and AppArmor profile.

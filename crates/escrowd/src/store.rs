@@ -7,7 +7,8 @@
 //! - pinned inode numbers: entries whose inode cannot be derived from the base
 //!   path they now sit at (upper-only files, renamed files), so inode numbers
 //!   survive a daemon restart,
-//! - scope name, labels, index, lifecycle state and the upper-only inode counter.
+//! - scope name, labels, index, lifecycle state, the base generation it opened at
+//!   (its snapshot) and the upper-only inode counter.
 //!
 //! Hot lookups (hidden, pinned inode) hit in-memory copies; every change is
 //! written through to SQLite before the FUSE reply.
@@ -44,6 +45,8 @@ pub struct ScopeStore {
     pub id: String,
     pub name: String,
     pub idx: u64,
+    /// The base generation at open: the scope reads the base as it was then.
+    pub since: u64,
     dir: PathBuf,
     db: Connection,
     whiteouts: HashSet<PathBuf>,
@@ -107,6 +110,7 @@ impl ScopeStore {
         id: &str,
         name: &str,
         idx: u64,
+        since: u64,
         labels: &HashMap<String, String>,
     ) -> io::Result<Self> {
         let dir = scopes_dir.join(id);
@@ -115,8 +119,8 @@ impl ScopeStore {
         let db = Connection::open(dir.join("meta.sqlite")).map_err(sql)?;
         db.execute_batch(SCHEMA).map_err(sql)?;
         db.execute(
-            "INSERT INTO meta VALUES ('name', ?1), ('idx', ?2), ('next_upper_ino', 0), ('state', 'open')",
-            params![name, idx as i64],
+            "INSERT INTO meta VALUES ('name', ?1), ('idx', ?2), ('since', ?3), ('next_upper_ino', 0), ('state', 'open')",
+            params![name, idx as i64, since as i64],
         )
         .map_err(sql)?;
         for (k, v) in labels {
@@ -146,6 +150,7 @@ impl ScopeStore {
             _ => return Err(io::Error::other("bad meta name")),
         };
         let idx = int(meta("idx")?)?;
+        let since = int(meta("since")?)?;
         let next_upper_ino = int(meta("next_upper_ino")?)?;
         let state = match meta("state")? {
             rusqlite::types::Value::Text(t) if t == "closed" => ScopeState::Closed,
@@ -183,6 +188,7 @@ impl ScopeStore {
             id: id.to_string(),
             name,
             idx,
+            since,
             dir,
             db,
             whiteouts,
@@ -382,6 +388,28 @@ impl ScopeStore {
             )
             .map_err(sql)?;
         Ok(self.next_upper_ino)
+    }
+
+    /// The base version of `rel` the scope first saw, if it read or changed it.
+    pub fn base_version(&self, rel: &Path) -> io::Result<Option<Version>> {
+        if !self.versions.contains_key(rel) {
+            return Ok(None);
+        }
+        self.db
+            .query_row(
+                "SELECT ino, size, mtime_ns, ctime_ns FROM versions WHERE path = ?1",
+                [sys::path_bytes(rel)],
+                |r| {
+                    Ok(Version {
+                        ino: r.get::<_, i64>(0)? as u64,
+                        size: r.get(1)?,
+                        mtime_ns: r.get(2)?,
+                        ctime_ns: r.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(sql)
     }
 
     /// Record the base version of `rel` the first time the scope reads or changes it.

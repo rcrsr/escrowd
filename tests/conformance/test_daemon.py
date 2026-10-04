@@ -47,7 +47,7 @@ def test_stale_socket_is_replaced(start_daemon):
     first.proc.wait()
     first.stop()
     assert first.socket.exists()
-    second = start_daemon()  # returns at once (the stale file exists), so poll with ping
+    second = start_daemon()  # ready once the socket path accepts connections again
     for _ in range(100):
         try:
             with escrow.connect(str(second.socket)) as client:
