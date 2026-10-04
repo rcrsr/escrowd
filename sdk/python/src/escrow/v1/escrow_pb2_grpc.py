@@ -54,11 +54,6 @@ class EscrowStub:
                 request_serializer=escrow_dot_v1_dot_escrow__pb2.DecideRequest.SerializeToString,
                 response_deserializer=escrow_dot_v1_dot_escrow__pb2.Outcome.FromString,
                 _registered_method=True)
-        self.Spawn = channel.unary_unary(
-                '/escrow.v1.Escrow/Spawn',
-                request_serializer=escrow_dot_v1_dot_escrow__pb2.SpawnRequest.SerializeToString,
-                response_deserializer=escrow_dot_v1_dot_escrow__pb2.SpawnResponse.FromString,
-                _registered_method=True)
         self.SettleUnscoped = channel.unary_unary(
                 '/escrow.v1.Escrow/SettleUnscoped',
                 request_serializer=escrow_dot_v1_dot_escrow__pb2.SettleUnscopedRequest.SerializeToString,
@@ -98,16 +93,10 @@ class EscrowServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def Spawn(self, request, context):
-        """Start a child process in the scope's sandbox. The child's stdin, stdout and
-        stderr travel over SCM_RIGHTS on the same socket (phase 1.5).
-        """
-        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
-        context.set_details('Method not implemented!')
-        raise NotImplementedError('Method not implemented!')
-
     def SettleUnscoped(self, request, context):
-        """Close the implicit default scope (unscoped = implicit) and return its change set.
+        """Close the implicit default scope (unscoped = implicit) and return its change
+        set; decide it like any scope (scope id "unscoped"). After a commit or a
+        discard the daemon opens a fresh default scope at the same path.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -135,11 +124,6 @@ def add_EscrowServicer_to_server(servicer, server):
                     servicer.Decide,
                     request_deserializer=escrow_dot_v1_dot_escrow__pb2.DecideRequest.FromString,
                     response_serializer=escrow_dot_v1_dot_escrow__pb2.Outcome.SerializeToString,
-            ),
-            'Spawn': grpc.unary_unary_rpc_method_handler(
-                    servicer.Spawn,
-                    request_deserializer=escrow_dot_v1_dot_escrow__pb2.SpawnRequest.FromString,
-                    response_serializer=escrow_dot_v1_dot_escrow__pb2.SpawnResponse.SerializeToString,
             ),
             'SettleUnscoped': grpc.unary_unary_rpc_method_handler(
                     servicer.SettleUnscoped,
@@ -255,33 +239,6 @@ class Escrow:
             '/escrow.v1.Escrow/Decide',
             escrow_dot_v1_dot_escrow__pb2.DecideRequest.SerializeToString,
             escrow_dot_v1_dot_escrow__pb2.Outcome.FromString,
-            options,
-            channel_credentials,
-            insecure,
-            call_credentials,
-            compression,
-            wait_for_ready,
-            timeout,
-            metadata,
-            _registered_method=True)
-
-    @staticmethod
-    def Spawn(request,
-            target,
-            options=(),
-            channel_credentials=None,
-            call_credentials=None,
-            insecure=False,
-            compression=None,
-            wait_for_ready=None,
-            timeout=None,
-            metadata=None):
-        return grpc.experimental.unary_unary(
-            request,
-            target,
-            '/escrow.v1.Escrow/Spawn',
-            escrow_dot_v1_dot_escrow__pb2.SpawnRequest.SerializeToString,
-            escrow_dot_v1_dot_escrow__pb2.SpawnResponse.FromString,
             options,
             channel_credentials,
             insecure,

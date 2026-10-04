@@ -9,13 +9,15 @@ use tokio::net::UnixListener;
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::{Request, Response, Status};
 
+use crate::exec::Children;
 use crate::proto::escrow_server::{Escrow, EscrowServer};
 use crate::proto::*;
-use crate::views::Views;
+use crate::views::{UNSCOPED, Unscoped, Views};
 use crate::{changeset, commit};
 
 pub struct Service {
     views: Arc<Views>,
+    children: Arc<Children>,
 }
 
 fn io_status(e: std::io::Error) -> Status {
@@ -67,6 +69,25 @@ fn to_proto(scope_id: String, cs: changeset::ChangeSet) -> ChangeSet {
 }
 
 impl Service {
+    pub fn new(views: Arc<Views>, children: Arc<Children>) -> Self {
+        Service { views, children }
+    }
+
+    /// Stop the scope's children (their last writes flush on exit), then freeze it.
+    async fn close(&self, id: String) -> Result<ChangeSet, Status> {
+        let children = self.children.clone();
+        let id2 = id.clone();
+        let cs = self
+            .blocking(move |v| {
+                v.scope(&id2)
+                    .map_err(|_| io::Error::new(io::ErrorKind::NotFound, format!("no scope {id2}")))?;
+                children.stop(&id2);
+                v.close_scope(&id2)
+            })
+            .await?;
+        Ok(to_proto(id, cs))
+    }
+
     /// Filesystem work runs off the async executor.
     async fn blocking<T: Send + 'static>(
         &self,
@@ -100,9 +121,7 @@ impl Escrow for Service {
 
     async fn close_scope(&self, req: Request<CloseScopeRequest>) -> Result<Response<ChangeSet>, Status> {
         let id = req.into_inner().scope_id;
-        let id2 = id.clone();
-        let cs = self.blocking(move |v| v.close_scope(&id2)).await?;
-        Ok(Response::new(to_proto(id, cs)))
+        Ok(Response::new(self.close(id).await?))
     }
 
     /// Commit applies a closed scope's change set (or reports the conflicting paths and
@@ -113,22 +132,43 @@ impl Escrow for Service {
         let mut paths = vec![];
         let status = match Verdict::try_from(req.verdict) {
             Ok(Verdict::Discard) => {
-                self.blocking(move |v| v.drop_scope(&req.scope_id)).await?;
+                let children = self.children.clone();
+                self.blocking(move |v| {
+                    v.scope(&req.scope_id)
+                        .map_err(|_| io::Error::new(io::ErrorKind::NotFound, format!("no scope {}", req.scope_id)))?;
+                    children.stop(&req.scope_id);
+                    let r = v.drop_scope(&req.scope_id);
+                    children.release(&req.scope_id);
+                    r
+                })
+                .await?;
                 OutcomeStatus::Discarded
             }
             Ok(Verdict::Return) => {
-                self.blocking(move |v| v.reopen_scope(&req.scope_id)).await?;
+                let children = self.children.clone();
+                self.blocking(move |v| {
+                    v.reopen_scope(&req.scope_id)?;
+                    children.release(&req.scope_id);
+                    Ok(())
+                })
+                .await?;
                 OutcomeStatus::Returned
             }
             Ok(Verdict::Commit) => {
                 let scope = req.scope_id;
+                let children = self.children.clone();
                 let outcome = self
-                    .blocking(move |v| match v.commit_scope(&scope) {
-                        Err(e) if !matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::InvalidInput) => Err(
-                            io::Error::new(io::ErrorKind::Interrupted, format!("commit rolled back: {e}")),
-                        ),
-                        r => r,
-                    })
+                    .blocking(
+                        move |v| match v.commit_scope(&scope).inspect(|_| children.release(&scope)) {
+                            Err(e) if !matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::InvalidInput) => {
+                                Err(io::Error::new(
+                                    io::ErrorKind::Interrupted,
+                                    format!("commit rolled back: {e}"),
+                                ))
+                            }
+                            r => r,
+                        },
+                    )
                     .await?;
                 match outcome {
                     commit::Outcome::Committed(_, changed) => {
@@ -155,24 +195,28 @@ impl Escrow for Service {
         }))
     }
 
-    async fn spawn(&self, _req: Request<SpawnRequest>) -> Result<Response<SpawnResponse>, Status> {
-        Err(Status::unimplemented("spawn: phase 1.5"))
-    }
-
+    /// Close the implicit default scope and return its change set; decide it as scope `unscoped`.
     async fn settle_unscoped(&self, _req: Request<SettleUnscopedRequest>) -> Result<Response<ChangeSet>, Status> {
-        Err(Status::unimplemented("settle_unscoped: phase 1.5"))
+        if self.views.unscoped() != Unscoped::Implicit {
+            return Err(Status::failed_precondition("settle_unscoped needs unscoped = implicit"));
+        }
+        Ok(Response::new(self.close(UNSCOPED.to_string()).await?))
     }
 }
 
-/// Serve on `socket` until `shutdown` resolves. A stale socket file left by a
-/// previous daemon is replaced; the socket is removed on exit.
-pub async fn serve(socket: &Path, views: Arc<Views>, shutdown: impl Future<Output = ()>) -> anyhow::Result<()> {
+/// Bind a Unix socket, replacing a stale socket file left by a previous daemon.
+pub fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
     if socket.exists() {
         std::fs::remove_file(socket).with_context(|| format!("removing stale socket {}", socket.display()))?;
     }
-    let listener = UnixListener::bind(socket).with_context(|| format!("binding {}", socket.display()))?;
+    UnixListener::bind(socket).with_context(|| format!("binding {}", socket.display()))
+}
+
+/// Serve on `socket` until `shutdown` resolves; the socket is removed on exit.
+pub async fn serve(socket: &Path, service: Service, shutdown: impl Future<Output = ()>) -> anyhow::Result<()> {
+    let listener = bind(socket)?;
     let result = tonic::transport::Server::builder()
-        .add_service(EscrowServer::new(Service { views }))
+        .add_service(EscrowServer::new(service))
         .serve_with_incoming_shutdown(UnixListenerStream::new(listener), shutdown)
         .await;
     let _ = std::fs::remove_file(socket);

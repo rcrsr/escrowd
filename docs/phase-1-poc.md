@@ -2,7 +2,7 @@
 
 Oct 3, 2026 · Andre Bremer · Draft
 
-**Status, Oct 3, 2026: 1.1 done** (12 / 12 checks on the dev host and in CI on `ubuntu-24.04` and `ubuntu-26.04`, [PR #1](https://github.com/rcrsr/escrowd/pull/1)). **1.2 done**, Oct 4, 2026: 52 / 52 checks on the dev host (5 repeat runs clean) and in CI on both runners, including the 0.3 (14) and 0.4 (17) spike checks ported to the daemon ([PR #3](https://github.com/rcrsr/escrowd/pull/3)). **1.3 done**, Oct 4, 2026: 66 / 66 checks on the dev host (5 repeat runs clean) and in CI on both runners ([PR #5](https://github.com/rcrsr/escrowd/pull/5)). **1.4 done**, Oct 4, 2026: 78 / 78 checks on the dev host (5 repeat runs clean) and in CI on both runners ([PR #6](https://github.com/rcrsr/escrowd/pull/6)). Next: 1.5.
+**Status, Oct 3, 2026: 1.1 done** (12 / 12 checks on the dev host and in CI on `ubuntu-24.04` and `ubuntu-26.04`, [PR #1](https://github.com/rcrsr/escrowd/pull/1)). **1.2 done**, Oct 4, 2026: 52 / 52 checks on the dev host (5 repeat runs clean) and in CI on both runners, including the 0.3 (14) and 0.4 (17) spike checks ported to the daemon ([PR #3](https://github.com/rcrsr/escrowd/pull/3)). **1.3 done**, Oct 4, 2026: 66 / 66 checks on the dev host (5 repeat runs clean) and in CI on both runners ([PR #5](https://github.com/rcrsr/escrowd/pull/5)). **1.4 done**, Oct 4, 2026: 78 / 78 checks on the dev host (5 repeat runs clean) and in CI on both runners ([PR #6](https://github.com/rcrsr/escrowd/pull/6)). **1.5 done**, Oct 4, 2026: 96 / 96 checks on the dev host (5 repeat runs clean) and in CI on both runners ([PR #7](https://github.com/rcrsr/escrowd/pull/7)). Next: 1.6.
 
 Phase 1 delivers escrowd, a minimal Python SDK and a CLI test app. Together they prove the scope model from the [escrowd proposal](escrowd-proposal.md) on Linux. Phase 0 cleared every mechanic this phase relies on ([go/no-go report](../spikes/results/phase-0-report.md)). Phase 1 turns the spikes into product code and adds the parts phase 0 never built: the RPC socket, the journal, commit, conflicts, the launcher and unscoped modes.
 
@@ -60,7 +60,7 @@ flowchart LR
 | 1.2 | Overlay store and router (**done**, Oct 4, 2026) | One FUSE mount serves many scopes, created and dropped over RPC instead of `mkdir`; whiteouts, opaque directories and the per-scope version table persist in each scope's store; the 0.3 (14) and 0.4 (17) spike checks pass when ported to the new daemon | 1 (staging half) |
 | 1.3 | Scope lifecycle, gate and ledger (**done**, Oct 4, 2026) | `open_scope`, `close_scope` and `decide` work end to end: close flushes and returns the change set (diff, reads, labels); discard drops the store; read rules load from a policy file; every operation lands in the ledger with its scope | 1, 6 |
 | 1.4 | Journal, commit, conflicts, pre-images (**done**, Oct 4, 2026) | Commit applies the whole change set through the journal, or none of it if any step fails; a changed base file triggers the conflict policy (default discard); open scopes keep their snapshot through the pre-image layer; a fault injected at each apply step leaves the base byte-identical; the daemon rolls back an unfinished journal on start | 4, 5, 8 |
-| 1.5 | Launcher, sandbox, unscoped modes | `escrow run --project P -- cmd` starts the daemon and runs `cmd` in bwrap with the unscoped view over `$PROJECT`; the spawn helper starts a scope's child in its own sandbox with ordinary `Popen` semantics; `passthrough`, `implicit` and `deny` behave as the proposal's table says; sandboxes hide the state directory, other scopes' views, the socket (from scope children) and everything outside the bind list | 2, 7 |
+| 1.5 | Launcher, sandbox, unscoped modes (**done**, Oct 4, 2026) | `escrow run --project P -- cmd` starts the daemon and runs `cmd` in bwrap with the unscoped view over `$PROJECT`; the spawn helper starts a scope's child in its own sandbox with ordinary `Popen` semantics; `passthrough`, `implicit` and `deny` behave as the proposal's table says; sandboxes hide the state directory, other scopes' views, the socket (from scope children) and everything outside the bind list | 2, 7 |
 | 1.6 | Python SDK | `escrow.init`, `escrow.scope(...)` as an async context manager and decide callbacks work; scopes live in `contextvars`; wrapped `open`, `os.*`, `pathlib` and `subprocess` attribute IO by path; `s.outcome` reports status, paths and reasons | 3, 6 |
 | 1.7 | Conformance suite and soak | The test app and the nine checks above run as one pytest suite; CI passes it 10 consecutive times; each Lima host passes it once | All |
 
@@ -159,6 +159,21 @@ Subprocesses need a second sandbox per scope, but `--disable-userns` stops the a
 In-process code shares the harness's process, and with it the socket. Only subprocesses can be kept from the socket. A tool that must not reach the decision runs as a subprocess.
 
 `--unshare-net` stays opt-in; network capture is phase 8.
+
+As built (Oct 4, 2026):
+
+- **Unscoped root**: for `implicit` and `deny`, the daemon serves a default scope with id `unscoped` at `<mount>/unscoped/`. Its root has a fixed inode number (2), so the app's bind mount stays valid when the scope is replaced. Commit, discard or conflict open a fresh `unscoped` scope, and kernel notifications drop the cached entries. `implicit` is an ordinary scope with a snapshot. `deny` is a read-only scope over the live base: reads go through the gate and the ledger, and every change gets EROFS. `passthrough` binds the real project read-write: not captured, gated or logged ("optionally logged" stays open). `escrow daemon --unscoped` defaults to `passthrough`; `escrow run --unscoped` has no default.
+- **`escrow run`**: it hosts the daemon in-process, runs the app in bwrap and settles at exit. At exit, the implicit scope is discarded unless `--on-exit commit` is given; the outcome goes to stderr. The run exits with the app's code. The app sees:
+  - the project, as its unscoped mode says;
+  - `/escrow` (every scope's view);
+  - the sockets at `/run/escrowd/escrow.sock{,.exec}`, with `ESCROW_SOCKET` set;
+  - the `escrow` binary, read-only at its host path.
+
+  SIGTERM and SIGHUP go to bwrap. Ctrl-C reaches the app through the terminal while the launcher waits.
+- **Exec socket**: gRPC cannot carry file descriptors, so `Spawn` left the gRPC service (protocol version 2). It lives on `<socket>.exec` instead: length-prefixed protobuf frames, with stdio passed by `SCM_RIGHTS`. `escrow exec --scope ID -- cmd` relays SIGINT, SIGTERM, SIGHUP, SIGQUIT, SIGUSR1 and SIGUSR2. It exits with the child's code (128 + signal if killed), or 125 if the daemon refuses: unknown or closed scope. Relayed signals go to the command's processes, not to bwrap: bwrap dies of SIGTERM, and `--die-with-parent` would then SIGKILL the command before its handler runs. A dropped connection kills the whole sandbox. A cwd in the project or under `/escrow/<id>/` maps to the same place in the sandbox; anything else maps to the project root. The child gets the caller's environment without `ESCROW_SOCKET`.
+- **Close stops children**: a closing scope refuses new children. Close then SIGKILLs its running sandboxes and waits up to 10 s, then freezes the scope. Writes the children made before the kill are flushed as they exit, so they land in the change set. Phase 1 has no grace period before SIGKILL. Discard stops children the same way, and return accepts them again.
+- **Containment**: built as the table above says. State and views are covered by a tmpfs, and the sockets by `/dev/null`, whenever a system or `sandbox.read` path contains them. `$HOME` is an empty tmpfs. Checked from both the app and a scope child; a `find /` from scope B finds none of scope A's files.
+- Limits: argv, cwd and environment travel as UTF-8 (lossy). `escrow run` takes `--state`, `--mount` and `--socket` for tests; their defaults are under `$XDG_STATE_HOME` and `$XDG_RUNTIME_DIR/escrowd/<project-id>/`.
 
 ### 1.6 Python SDK
 

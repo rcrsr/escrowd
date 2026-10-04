@@ -4,9 +4,11 @@
 //! version: 1
 //! read:
 //!   deny: [".env", "secrets/**"]   # a pattern without '/' matches the name at any depth
+//! sandbox:
+//!   read: ["~/.local/share/mise"]  # host paths sandboxes may read besides the system dirs
 //! ```
 //!
-//! Phase 1.3 covers read rules; close-time write rules come with the decision tiers.
+//! Close-time write rules come with the decision tiers.
 
 use std::path::Path;
 
@@ -19,6 +21,38 @@ pub struct Policy {
     pub version: u32,
     #[serde(default)]
     pub read: ReadRules,
+    #[serde(default)]
+    pub sandbox: SandboxRules,
+}
+
+/// What a sandbox sees of the host besides the project and the system directories.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SandboxRules {
+    /// Absolute paths (or `~/…`) bound read-only into every sandbox: toolchains, package stores.
+    #[serde(default)]
+    pub read: Vec<String>,
+}
+
+impl SandboxRules {
+    /// The read paths with `~` expanded; relative paths are an error.
+    pub fn read_paths(&self) -> anyhow::Result<Vec<std::path::PathBuf>> {
+        self.read
+            .iter()
+            .map(|p| {
+                let path = match p.strip_prefix("~/") {
+                    Some(rest) => std::env::home_dir()
+                        .context("sandbox.read: no home directory")?
+                        .join(rest),
+                    None => std::path::PathBuf::from(p),
+                };
+                if !path.is_absolute() {
+                    bail!("sandbox.read: {p} is not absolute");
+                }
+                Ok(path)
+            })
+            .collect()
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -56,6 +90,16 @@ mod tests {
     #[test]
     fn read_section_is_optional() {
         assert!(Policy::parse("version: 1\n").unwrap().read.deny.is_empty());
+    }
+
+    #[test]
+    fn sandbox_read_expands_home_and_needs_absolute_paths() {
+        let p = Policy::parse("version: 1\nsandbox:\n  read: ['~/tools', '/opt/x']\n").unwrap();
+        let paths = p.sandbox.read_paths().unwrap();
+        assert!(paths[0].is_absolute() && paths[0].ends_with("tools"));
+        assert_eq!(paths[1], std::path::Path::new("/opt/x"));
+        let p = Policy::parse("version: 1\nsandbox:\n  read: ['rel/path']\n").unwrap();
+        assert!(p.sandbox.read_paths().is_err());
     }
 
     #[test]

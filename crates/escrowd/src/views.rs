@@ -33,6 +33,10 @@ use crate::store::{ScopeState, ScopeStore, VersionKind, moved};
 use crate::sys::{self, Version, parent};
 
 pub const ROOT: u64 = 1;
+/// The default scope behind `<mount>/unscoped/` (unscoped = implicit or deny).
+pub const UNSCOPED: &str = "unscoped";
+/// Its root keeps one inode number across resets, so a bind mount of it stays valid.
+pub const UNSCOPED_ROOT: u64 = 2;
 const SCOPE_SHIFT: u32 = 48;
 pub const UPPER_BIT: u64 = 1 << 47;
 
@@ -40,6 +44,29 @@ pub type R<T> = Result<T, Errno>;
 
 pub fn errno(e: io::Error) -> Errno {
     Errno::from_i32(e.raw_os_error().unwrap_or(libc::EIO))
+}
+
+/// IO outside any scope: what the app's sandbox sees at the project path.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Unscoped {
+    /// The real project, bound directly: real IO, not captured.
+    Passthrough,
+    /// A default scope, decided at exit or by `settle_unscoped`, then replaced by a fresh one.
+    Implicit,
+    /// A read-only view of the live project: reads pass (through the gate), changes get EROFS.
+    Deny,
+}
+
+impl std::str::FromStr for Unscoped {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "passthrough" => Ok(Unscoped::Passthrough),
+            "implicit" => Ok(Unscoped::Implicit),
+            "deny" => Ok(Unscoped::Deny),
+            _ => Err(format!("unscoped mode {s}: expected passthrough, implicit or deny")),
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -53,6 +80,8 @@ pub struct ScopeHandle {
     pub idx: u64,
     /// The base generation the scope opened at.
     pub since: u64,
+    /// Changes get EROFS (the unscoped root in `deny` mode).
+    pub readonly: bool,
     pub upper: OwnedFd,
     /// Frozen between close and the decision: new IO gets EROFS, writes on open handles EBADF.
     closed: AtomicBool,
@@ -71,6 +100,15 @@ impl ScopeHandle {
     /// New IO (opens, creates, any change) is refused while the scope is closed.
     fn check_open(&self) -> R<()> {
         if self.is_closed() { Err(Errno::EROFS) } else { Ok(()) }
+    }
+
+    /// Changes also need a writable scope.
+    fn check_write(&self) -> R<()> {
+        if self.readonly {
+            Err(Errno::EROFS)
+        } else {
+            self.check_open()
+        }
     }
 }
 
@@ -120,9 +158,17 @@ impl Tables {
         }
     }
 
-    fn forget_scope(&mut self, scope: &str) {
+    /// Forget a scope's entries; returns the top-level names the kernel may have cached.
+    fn forget_scope(&mut self, scope: &str) -> Vec<OsString> {
+        let top = self
+            .inos
+            .keys()
+            .filter(|(s, p)| s == scope && p.components().count() == 1)
+            .map(|(_, p)| p.as_os_str().to_os_string())
+            .collect();
         self.inos.retain(|(s, _), _| s != scope);
         self.paths.retain(|_, (s, _)| s != scope);
+        top
     }
 }
 
@@ -138,6 +184,8 @@ pub struct Views {
     gate: Gate,
     ledger: Ledger,
     commits: Commits,
+    unscoped: Unscoped,
+    notifier: std::sync::OnceLock<fuser::Notifier>,
     scopes: RwLock<HashMap<String, Arc<ScopeHandle>>>,
     next_idx: Mutex<u64>,
     t: Mutex<Tables>,
@@ -145,7 +193,7 @@ pub struct Views {
 
 impl Views {
     /// `lower` must be opened before the view is mounted anywhere over the project.
-    pub fn new(lower: OwnedFd, state_dir: &Path, mount: &Path, gate: Gate) -> io::Result<Self> {
+    pub fn new(lower: OwnedFd, state_dir: &Path, mount: &Path, gate: Gate, unscoped: Unscoped) -> io::Result<Self> {
         let scopes_dir = state_dir.join("scopes");
         fs::create_dir_all(&scopes_dir)?;
         let ledger = Ledger::open(&state_dir.join("ledger.log"))?;
@@ -166,6 +214,8 @@ impl Views {
             gate,
             ledger,
             commits,
+            unscoped,
+            notifier: std::sync::OnceLock::new(),
             scopes: RwLock::new(HashMap::new()),
             next_idx: Mutex::new(0),
             t: Mutex::new(Tables {
@@ -174,8 +224,56 @@ impl Views {
             }),
         };
         views.load_scopes()?;
+        views.ensure_unscoped()?;
         views.gc()?;
         Ok(views)
+    }
+
+    pub fn unscoped(&self) -> Unscoped {
+        self.unscoped
+    }
+
+    /// Lets a reset of the unscoped root drop the kernel's cached entries under it.
+    pub fn set_notifier(&self, n: fuser::Notifier) {
+        let _ = self.notifier.set(n);
+    }
+
+    /// Open the default scope the unscoped mode needs, if it is missing or of the wrong kind.
+    fn ensure_unscoped(&self) -> io::Result<()> {
+        if self.unscoped == Unscoped::Passthrough {
+            return Ok(());
+        }
+        let readonly = self.unscoped == Unscoped::Deny;
+        if let Ok(h) = self.handle(UNSCOPED) {
+            if h.readonly == readonly {
+                return Ok(());
+            }
+            self.remove_scope(UNSCOPED)?;
+        }
+        // A deny root reads the live base; an implicit one keeps a snapshot like any scope.
+        let since = if readonly { u64::MAX } else { self.commits.current() };
+        let idx = self.alloc_idx()?;
+        let store = ScopeStore::create(
+            &self.scopes_dir,
+            UNSCOPED,
+            UNSCOPED,
+            idx,
+            since,
+            readonly,
+            &HashMap::new(),
+        )?;
+        self.attach(store)?;
+        self.ledger.append(UNSCOPED, "open", Path::new(""), None, "allow");
+        Ok(())
+    }
+
+    fn alloc_idx(&self) -> io::Result<u64> {
+        let mut n = self.next_idx.lock().unwrap();
+        *n += 1;
+        if *n >= 1 << (64 - SCOPE_SHIFT) {
+            return Err(io::Error::other("scope index space exhausted"));
+        }
+        Ok(*n)
     }
 
     /// Reattach scopes left by a previous daemon run.
@@ -197,6 +295,7 @@ impl Views {
             id: store.id.clone(),
             idx: store.idx,
             since: store.since,
+            readonly: store.readonly,
             upper,
             closed: AtomicBool::new(store.state == ScopeState::Closed),
             store: Mutex::new(store),
@@ -209,16 +308,9 @@ impl Views {
 
     /// Create a scope; returns its id and its root inside the mount.
     pub fn open_scope(&self, name: &str, labels: &HashMap<String, String>) -> io::Result<(String, PathBuf)> {
-        let idx = {
-            let mut n = self.next_idx.lock().unwrap();
-            *n += 1;
-            *n
-        };
-        if idx >= 1 << (64 - SCOPE_SHIFT) {
-            return Err(io::Error::other("scope index space exhausted"));
-        }
+        let idx = self.alloc_idx()?;
         let id = format!("s{idx}");
-        let store = ScopeStore::create(&self.scopes_dir, &id, name, idx, self.commits.current(), labels)?;
+        let store = ScopeStore::create(&self.scopes_dir, &id, name, idx, self.commits.current(), false, labels)?;
         let h = self.attach(store)?;
         self.ledger.append(&h.id, "open", Path::new(""), None, "allow");
         Ok((id.clone(), self.mount.join(&id)))
@@ -282,6 +374,7 @@ impl Views {
                 if let Some(g) = generation {
                     self.commits.scope_dropped(*g)?;
                 }
+                self.ensure_unscoped()?;
             }
             Outcome::Conflict(paths) => {
                 for p in paths {
@@ -289,6 +382,7 @@ impl Views {
                 }
                 self.ledger.append(id, "decide", Path::new(""), None, "conflict");
                 self.remove_scope(id)?;
+                self.ensure_unscoped()?;
             }
         }
         self.gc()?;
@@ -300,6 +394,7 @@ impl Views {
         self.handle(id)?;
         self.ledger.append(id, "decide", Path::new(""), None, "discard");
         self.remove_scope(id)?;
+        self.ensure_unscoped()?;
         self.gc()
     }
 
@@ -316,7 +411,14 @@ impl Views {
             .unwrap()
             .remove(id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no scope {id}")))?;
-        self.t().forget_scope(id);
+        let names = self.t().forget_scope(id);
+        if id == UNSCOPED
+            && let Some(n) = self.notifier.get()
+        {
+            for name in names {
+                let _ = n.inval_entry(fuser::INodeNo(UNSCOPED_ROOT), &name);
+            }
+        }
         // FUSE calls in flight may still hold the handle; they fail once the directory is gone.
         h.store().destroy()
     }
@@ -340,6 +442,9 @@ impl Views {
     pub fn node(&self, ino: u64) -> R<Node> {
         if ino == ROOT {
             return Ok(Node::Root);
+        }
+        if ino == UNSCOPED_ROOT {
+            return Ok(Node::In(self.scope(UNSCOPED)?, PathBuf::new()));
         }
         let (s, p) = self.t().paths.get(&ino).cloned().ok_or(Errno::ENOENT)?;
         Ok(Node::In(self.scope(&s)?, p))
@@ -383,6 +488,9 @@ impl Views {
 
     /// The scope's inode for `rel`: a pinned number, else the base st_ino, else a new upper number.
     pub fn ino_for(&self, h: &ScopeHandle, rel: &Path) -> R<u64> {
+        if h.id == UNSCOPED && rel.as_os_str().is_empty() {
+            return Ok(UNSCOPED_ROOT);
+        }
         let key = (h.id.clone(), rel.to_path_buf());
         if let Some(&ino) = self.t().inos.get(&key) {
             return Ok(ino);
@@ -492,7 +600,7 @@ impl Views {
         size: Option<u64>,
         times: Option<(rustix::fs::Timespec, rustix::fs::Timespec)>,
     ) -> R<Stat> {
-        h.check_open()?;
+        h.check_write()?;
         self.copy_up(h, rel)?;
         let up = h.upper.as_fd();
         self.log(h, "setattr", rel, "allow");
@@ -523,7 +631,7 @@ impl Views {
     }
 
     pub fn mkdir(&self, h: &ScopeHandle, rel: &Path, mode: u32) -> R<()> {
-        h.check_open()?;
+        h.check_write()?;
         if self.locate(h, rel).is_ok() {
             return Err(Errno::EEXIST);
         }
@@ -535,7 +643,7 @@ impl Views {
     }
 
     pub fn unlink(&self, h: &ScopeHandle, rel: &Path, dir: bool) -> R<()> {
-        h.check_open()?;
+        h.check_write()?;
         let (loc, st) = self.locate(h, rel)?;
         if dir != sys::is_dir(&st) {
             return Err(if dir { Errno::ENOTDIR } else { Errno::EISDIR });
@@ -567,7 +675,7 @@ impl Views {
     }
 
     pub fn symlink(&self, h: &ScopeHandle, rel: &Path, target: &Path) -> R<()> {
-        h.check_open()?;
+        h.check_write()?;
         if self.locate(h, rel).is_ok() {
             return Err(Errno::EEXIST);
         }
@@ -579,7 +687,7 @@ impl Views {
     }
 
     pub fn rename(&self, h: &ScopeHandle, from: &Path, to: &Path, flags: u32) -> R<()> {
-        h.check_open()?;
+        h.check_write()?;
         if flags & libc::RENAME_EXCHANGE != 0 {
             return Err(Errno::EINVAL);
         }
@@ -630,7 +738,7 @@ impl Views {
     }
 
     pub fn link(&self, h: &ScopeHandle, ino: u64, src: &Path, dst: &Path) -> R<()> {
-        h.check_open()?;
+        h.check_write()?;
         if self.locate(h, dst).is_ok() {
             return Err(Errno::EEXIST);
         }
@@ -666,6 +774,9 @@ impl Views {
         let acc = flags & libc::O_ACCMODE;
         let writes = acc != libc::O_RDONLY || flags & libc::O_TRUNC != 0;
         h.check_open()?;
+        if writes {
+            h.check_write()?;
+        }
         if acc != libc::O_WRONLY && !self.gate.read_allowed(rel) {
             h.store().record_denied(rel).map_err(errno)?;
             self.log(h, "read", rel, "deny");
@@ -689,7 +800,7 @@ impl Views {
     }
 
     pub fn create(&self, h: &ScopeHandle, rel: &Path, mode: u32, flags: i32) -> R<File> {
-        h.check_open()?;
+        h.check_write()?;
         let exists = self.locate(h, rel).is_ok();
         if exists && flags & libc::O_EXCL != 0 {
             return Err(Errno::EEXIST);
