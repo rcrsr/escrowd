@@ -38,7 +38,7 @@ Architecture as planned (proposal "Architecture" and "Isolation"):
 - **One mount, many scopes**: inode numbers are per scope (scope index << 48 | lower st_ino), or the kernel shares page cache between scopes.
 - **Overhead (0.6)**: plain FUSE meets 1.5× on the test suite and agent pipeline; cold metadata/read-heavy operations cost 5–30× per operation in any FUSE (bindfs too). No root helper needed.
 - Package stores (pnpm) are writable shared state outside the project; pnpm 12 fails offline with a read-only store.
-- **Snapshots (0.5)**: copy/reflink snapshots cost 13–23 µs per entry per scope open (reflink saves space, not time); btrfs subvolume snapshots are 8 ms. Recommended (unconfirmed): pre-images at commit + per-file version check.
+- **Snapshots (0.5)**: copy/reflink snapshots cost 13–23 µs per entry per scope open (reflink saves space, not time); btrfs subvolume snapshots are 8 ms. Decided: pre-images at commit + per-file version check at commit; btrfs subvolume snapshot as an optional fast path.
 - Minimum kernel 6.8 (Ubuntu 24.04 GA). WSL2 is the dev host only; targets are general Linux, then macOS (phase 7).
 
 ## Environment
