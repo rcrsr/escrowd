@@ -1,0 +1,27 @@
+name: PR area labels
+
+# Auto-applies `area:*` labels to PRs from their changed-file paths, per the
+# glob map in .github/labeler.yml. Additive only (sync-labels false), never
+# strips a label a maintainer added by hand. Fork PRs get a read-only token,
+# so the job is gated to same-repo PRs.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr-labels-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  area:
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    steps:
+      - uses: actions/labeler@v7
+        with:
+          sync-labels: false

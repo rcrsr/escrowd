@@ -1,0 +1,53 @@
+# escrowd area taxonomy: `area:*` labels applied by .github/workflows/pr-labels.yml.
+# Every label whose glob matches a changed path is applied; a PR spanning areas
+# carries several. PR titles keep conventional-commit format (`feat(daemon): …`).
+#
+#   area:daemon   crates/escrowd and proto/: capture, scopes, journal, gate, ledger, protocol
+#   area:cli      crates/escrow-cli: the `escrow` command
+#   area:sdk      sdk/: language SDKs
+#   area:sandbox  packaging/: escrowd's bwrap and AppArmor profile
+#   area:tests    tests/ and examples/: the conformance suite and test app
+#   area:docs     docs/: design and phase plans
+#   area:spikes   spikes/: phase 0 throwaway spikes and results
+#   area:dx       CI, toolchain, root config and the .claude workspace
+
+area:daemon:
+  - changed-files:
+      - any-glob-to-any-file: ["crates/escrowd/**", "proto/**"]
+
+area:cli:
+  - changed-files:
+      - any-glob-to-any-file: ["crates/escrow-cli/**"]
+
+area:sdk:
+  - changed-files:
+      - any-glob-to-any-file: ["sdk/**"]
+
+area:sandbox:
+  - changed-files:
+      - any-glob-to-any-file: ["packaging/**"]
+
+area:tests:
+  - changed-files:
+      - any-glob-to-any-file: ["tests/**", "examples/**"]
+
+area:docs:
+  - changed-files:
+      - any-glob-to-any-file: ["docs/**"]
+
+area:spikes:
+  - changed-files:
+      - any-glob-to-any-file: ["spikes/**"]
+
+area:dx:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+          - ".claude/**"
+          - "mise.toml"
+          - "rust-toolchain.toml"
+          - "rustfmt.toml"
+          - ".python-version"
+          - "Cargo.toml"
+          - "CLAUDE.md"
+          - ".gitignore"

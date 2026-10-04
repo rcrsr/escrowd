@@ -1,0 +1,20 @@
+[package]
+name = "escrowd"
+description = "escrowd daemon: scopes, capture, journal, gate and ledger"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+prost.workspace = true
+tokio.workspace = true
+tokio-stream.workspace = true
+tonic.workspace = true
+tonic-prost.workspace = true
+
+[build-dependencies]
+protoc-bin-vendored.workspace = true
+tonic-prost-build.workspace = true

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Status
 
-escrowd has no product code yet: the repo holds the design, the phase 0 plan and throwaway spikes (Cargo workspace in `spikes/`). Phase 0 is complete: go for phase 1 (`spikes/results/phase-0-report.md`).
+Phase 1 (CLI POC) is in progress: sub-phase 1.1 (skeleton, protocol, CI) is built; the daemon serves only `Ping`. Phase 0 is complete (`spikes/results/phase-0-report.md`); its throwaway spikes stay in `spikes/`, a separate Cargo workspace.
 
 - `docs/escrowd-proposal.md`: the design (scopes, escrow, FUSE capture, bwrap isolation, roadmap phases 0–8).
 - `docs/phase-1-poc.md`: the active plan (draft). Sub-phases 1.1–1.7 toward the proposal's seven exit tests, plus open questions. Update it when a decision is made or an open question closes (tick the box, add the date).
@@ -42,6 +42,26 @@ Architecture as planned (proposal "Architecture" and "Isolation"):
 - **Snapshots (0.5)**: copy/reflink snapshots cost 13–23 µs per entry per scope open (reflink saves space, not time); btrfs subvolume snapshots are 8 ms. Decided: pre-images at commit + per-file version check at commit; btrfs subvolume snapshot as an optional fast path.
 - **AgentFS is rejected (0.7)**: its OverlayFS rename leaves inode maps stale (breaks git), 246 crates, Turso beta. escrowd builds its own overlay from the spike 0.3 lineage.
 - Minimum kernel 6.8 (Ubuntu 24.04 GA). WSL2 is the dev host only; targets are general Linux, then macOS (phase 7).
+
+## Layout and commands
+
+- `crates/escrowd/`: daemon library (gRPC service in `rpc.rs`; stubs generated from `proto/` by `build.rs` with vendored protoc).
+- `crates/escrow-cli/`: the `escrow` binary (`escrow daemon --socket PATH`).
+- `proto/escrow/v1/escrow.proto`: the one protocol schema (gRPC over a Unix socket, `ESCROW_SOCKET`).
+- `sdk/python/`: uv project, package `escrow`; generated stubs in `src/escrow/v1/` are committed.
+- `tests/conformance/`: pytest suite run against the built binary; `packaging/ubuntu/`: escrowd's bwrap and AppArmor profile.
+
+```bash
+cargo build && cargo clippy --all-targets -- -D warnings && cargo fmt --check
+sdk/python/gen.sh                                                  # after editing proto/; CI diffs the stubs
+uv run --project sdk/python --frozen ruff check && uv run --project sdk/python --frozen ruff format --check
+uv run --project sdk/python --frozen ty check --project sdk/python
+uv run --project sdk/python --frozen pytest -q tests/conformance  # needs target/debug/escrow (or ESCROW_BIN)
+```
+
+grpcio clients must set `grpc.default_authority` (the SDK uses `localhost`): grpcio sends the socket path as `:authority` and tonic rejects it with RST_STREAM. On Ubuntu, run `packaging/ubuntu/install.sh` once before the suite. CI follows the conventions of the user's other repos (`../celscale`): `.github/workflows/ci.yml` runs on pull requests only (not pushes to main), with a paths-filter `changes` job, Rust, Python, Conformance (`ubuntu-24.04` and `ubuntu-26.04`) and Lockfiles jobs, and a `CI Gate` job to require. `pr-labels.yml` applies `area:*` labels from `.github/labeler.yml`; Dependabot updates actions, cargo and pip weekly, grouped. Rust is pinned in `rust-toolchain.toml` (keep `mise.toml` in sync), Python in `.python-version`; ruff config is the root `ruff.toml`, limited to `*.py` because ruff also formats Python blocks in Markdown. Lint workflows with `actionlint` (pinned in `mise.toml`).
+
+Git hooks: lefthook (`lefthook.yml`, pinned in `mise.toml`); run `lefthook install` once per clone. pre-commit fixes staged files (rustfmt, ruff) and regenerates Python stubs when a `.proto` is staged; pre-push runs cargo fmt, clippy, ruff, ty, the lockfile checks and actionlint. The conformance suite runs only in CI.
 
 ## Environment
 

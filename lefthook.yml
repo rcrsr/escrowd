@@ -1,0 +1,56 @@
+# Lefthook git hook manager: auto-fix staged files before commit, check before push.
+# Install: mise install && lefthook install (once per clone).
+# Skip:    LEFTHOOK=0 git commit ...   or   git commit --no-verify
+#
+# pre-commit jobs fix only staged files and re-stage the result (stage_fixed).
+# They run sequentially because ruff check --fix and ruff format touch the same files.
+# pre-push mirrors the fast CI checks; the conformance suite stays in CI.
+
+pre-commit:
+  parallel: false
+  jobs:
+    - name: rustfmt
+      glob: "*.rs"
+      exclude: ["spikes/**"]
+      run: rustfmt --edition 2024 {staged_files}
+      stage_fixed: true
+
+    - name: ruff
+      glob: "*.py"
+      run: |
+        uv run --project sdk/python --frozen ruff check --fix --force-exclude {staged_files} && \
+        uv run --project sdk/python --frozen ruff format --force-exclude {staged_files}
+      stage_fixed: true
+
+    - name: proto-stubs
+      glob: "proto/**/*.proto"
+      run: sdk/python/gen.sh && git add sdk/python/src/escrow/v1
+
+pre-push:
+  parallel: true
+  jobs:
+    - name: cargo-fmt
+      glob: "*.rs"
+      run: cargo fmt --check
+
+    - name: clippy
+      glob: "{crates/**,proto/**,Cargo.toml,Cargo.lock,rust-toolchain.toml}"
+      run: cargo clippy --locked --all-targets -- -D warnings
+
+    - name: ruff-check
+      glob: "*.py"
+      run: |
+        uv run --project sdk/python --frozen ruff check && \
+        uv run --project sdk/python --frozen ruff format --check
+
+    - name: ty-check
+      glob: "sdk/python/src/**/*.py"
+      run: uv run --project sdk/python --frozen ty check --project sdk/python
+
+    - name: lockfiles
+      glob: "{Cargo.toml,Cargo.lock,crates/*/Cargo.toml,sdk/python/pyproject.toml,sdk/python/uv.lock}"
+      run: cargo metadata --locked --format-version=1 > /dev/null && uv lock --check --project sdk/python
+
+    - name: actionlint
+      glob: ".github/workflows/*.yml"
+      run: actionlint
