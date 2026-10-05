@@ -23,7 +23,7 @@ use std::fs::{self, File};
 use std::io;
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use fuser::{Errno, FileType};
@@ -100,6 +100,10 @@ pub struct ScopeHandle {
     pub upper: OwnedFd,
     /// Frozen between close and the decision: new IO gets EROFS, writes on open handles EBADF.
     closed: AtomicBool,
+    /// `Views::unscoped_changes` when the scope opened (or reopened); 0 after a restart.
+    unscoped_at: AtomicU64,
+    /// Changes the unscoped mode saw while the scope was open, fixed at close.
+    unscoped_seen: AtomicU64,
     store: RwLock<ScopeStore>,
 }
 
@@ -290,6 +294,8 @@ pub struct Views {
     released: std::sync::Condvar,
     /// The app has exited: deciding the unscoped scope opens no new one.
     last_settle: AtomicBool,
+    /// Changes to captured paths the unscoped scope was asked for (allowed or EROFS), since start.
+    unscoped_changes: AtomicU64,
     /// Files whose writeback starts off the request threads (a slow disk must not stall them).
     writeback: Mutex<std::sync::mpsc::Sender<Arc<File>>>,
 }
@@ -347,6 +353,7 @@ impl Views {
             }),
             released: std::sync::Condvar::new(),
             last_settle: AtomicBool::new(false),
+            unscoped_changes: AtomicU64::new(0),
             writeback: Mutex::new(writeback_thread()),
         };
         views.load_scopes()?;
@@ -474,6 +481,8 @@ impl Views {
             readonly: store.readonly,
             upper,
             closed: AtomicBool::new(store.state == ScopeState::Closed),
+            unscoped_at: AtomicU64::new(self.unscoped_changes.load(Ordering::Relaxed)),
+            unscoped_seen: AtomicU64::new(0),
             store: RwLock::new(store),
         });
         self.scopes.write().unwrap().insert(h.id.clone(), h.clone());
@@ -535,6 +544,7 @@ impl Views {
             changes: Vec::new(),
             reads: Vec::new(),
             labels: HashMap::new(),
+            unscoped: 0,
         };
         for h in hs {
             let cs = changeset::build(&self.base(h), h)?;
@@ -599,20 +609,29 @@ impl Views {
         let hs = self.handles(id)?;
         if !hs[0].is_closed() {
             self.settle_dead_handles(id, stopped, std::time::Duration::from_secs(5));
+            if id != UNSCOPED {
+                let now = self.unscoped_changes.load(Ordering::Relaxed);
+                let at = hs[0].unscoped_at.load(Ordering::Relaxed);
+                hs[0].unscoped_seen.store(now.saturating_sub(at), Ordering::Relaxed);
+            }
             for h in &hs {
                 h.store().set_state(ScopeState::Closed)?;
                 h.closed.store(true, Ordering::Release);
             }
             self.ledger.append(id, "close", Path::new(""), None, "allow");
         }
-        self.change_set(&hs)
+        let mut cs = self.change_set(&hs)?;
+        cs.unscoped = hs[0].unscoped_seen.load(Ordering::Relaxed);
+        Ok(cs)
     }
 
     /// Return to agent: the decision's reasons go back and the scope accepts IO again.
     pub fn reopen_scope(&self, id: &str) -> io::Result<()> {
         let hs = self.closed_handles(id)?;
+        let now = self.unscoped_changes.load(Ordering::Relaxed);
         for h in &hs {
             h.store().set_state(ScopeState::Open)?;
+            h.unscoped_at.store(now, Ordering::Relaxed);
             h.closed.store(false, Ordering::Release);
         }
         self.ledger.append(id, "decide", Path::new(""), None, "return");
@@ -941,10 +960,24 @@ impl Views {
     }
 
     /// `rel` may change: the scope is open, the rules capture it (or keep it
-    /// ephemeral), and the scope is writable (ephemeral paths always are).
+    /// ephemeral), and the scope is writable (ephemeral paths always are). A change
+    /// to a captured path of the unscoped scope counts in `unscoped_changes`.
     fn may_change(&self, h: &ScopeHandle, op: &str, rel: &Path) -> R<()> {
+        self.check_change(h, op, rel, true)
+    }
+
+    /// The second path of a rename or a link: checked, not counted again.
+    fn may_change_too(&self, h: &ScopeHandle, op: &str, rel: &Path) -> R<()> {
+        self.check_change(h, op, rel, false)
+    }
+
+    fn check_change(&self, h: &ScopeHandle, op: &str, rel: &Path, count: bool) -> R<()> {
         h.check_open()?;
-        match h.access(rel) {
+        let access = h.access(rel);
+        if count && access == Access::Capture && h.group == UNSCOPED {
+            self.unscoped_changes.fetch_add(1, Ordering::Relaxed);
+        }
+        match access {
             Access::Capture if h.readonly => Err(Errno::EROFS),
             Access::Capture | Access::Ephemeral => Ok(()),
             Access::Deny | Access::Stub => {
@@ -1064,7 +1097,7 @@ impl Views {
 
     pub fn rename(&self, h: &ScopeHandle, from: &Path, to: &Path, flags: u32) -> R<()> {
         self.may_change(h, "rename", from)?;
-        self.may_change(h, "rename", to)?;
+        self.may_change_too(h, "rename", to)?;
         if flags & libc::RENAME_EXCHANGE != 0 {
             return Err(Errno::EINVAL);
         }
@@ -1120,7 +1153,7 @@ impl Views {
 
     pub fn link(&self, h: &ScopeHandle, ino: u64, src: &Path, dst: &Path) -> R<()> {
         self.may_change(h, "link", src)?;
-        self.may_change(h, "link", dst)?;
+        self.may_change_too(h, "link", dst)?;
         if self.locate(h, dst).is_ok() {
             return Err(Errno::EEXIST);
         }

@@ -2,14 +2,16 @@
 
 Every known limit of escrowd as built, in one place. Each entry says where it is tracked. Update this file when a limit is found or lifted; the plans keep the detail.
 
-Status as of Oct 5, 2026: phase 2, after sub-phase 2.5.
+Status as of Oct 5, 2026: phase 2, after sub-phase 2.6.
 
 ## Capture
 
 | Limit | Status |
 | --- | --- |
 | Native code and `mmap` doing their own IO fall to the `unscoped` mode. | By design (proposal risk table); run such work in a subprocess for full capture. |
-| `os.system`, `os.posix_spawn*` and `os.chdir` into the project bypass the SDK's scope. | Planned: 2.6 (#14). |
+| `os.spawn*`, `os.exec*` and `os.fork` bypass the SDK's scope (`os.system`, `os.posix_spawn*` and `subprocess` run in it since 2.6). | Carried; each scope's outcome counts what reached the unscoped mode (`s.outcome.unscoped`). |
+| `os.chdir` into the project moves the whole process's working directory into the scope's view: another task's native code with relative paths follows it until the scope is decided. | By design (2.6): the working directory is per process. |
+| `s.outcome.unscoped` counts every change the unscoped mode saw while the scope was open, including other tasks' and threads' (and from daemon start, after a restart); 0 in `passthrough` mode. | By design (2.6). |
 | Child file descriptors beyond 0–2 are not passed to `escrow exec` children. | Carried since 1.5. |
 | `passthrough` mode IO is unlogged: one ledger line at start only. | By design, decided Oct 4, 2026; `deny` is the mode for agent hosts (2.6, 2.7). |
 | Paths outside `$HOME`, `/tmp` and the project are not captured: other host paths are read-only binds (`roots.other.read`) or unescrowed passthrough binds. | By design (2.4). |
@@ -50,14 +52,13 @@ Status as of Oct 5, 2026: phase 2, after sub-phase 2.5.
 | Linux only, kernel 6.8 or later. | macOS in phase 7. |
 | Ubuntu 24.04+ needs escrowd's own bwrap and AppArmor profile (`packaging/ubuntu/install.sh`); never set the userns sysctl to 0. | By design (0.1, 0.2). |
 | Ubuntu 26.04 confines `fusermount3` to mountpoints under `$HOME`, `/mnt`, `/run/user/<uid>`, `/media` and `/tmp`; views live under `$XDG_RUNTIME_DIR`. | By design. |
-| The Python SDK needs Python 3.14. | Planned: 3.11+ in 2.6 (#16). |
 
 ## Interface and operations
 
 | Limit | Status |
 | --- | --- |
 | Anyone who can reach the socket can close, decide or exec in any scope. | Planned: scope token in 2.7 (#15). |
-| Errors reach the SDK as plain `OSError`. | Planned: `EscrowUnscopedError`, `EscrowStaleHandleError` in 2.6. |
+| `EscrowUnscopedError` covers project paths only; a write outside a scope to a served `$HOME` or `/tmp` path in `deny` mode is a plain EROFS. Native code and children see raw EROFS and EBADF. | By design (2.6). |
 | The diff shows no content for binary files and files over `diff.file_bytes` (size and SHA-256 only) or under `read.deny` (mode only); `git apply` cannot apply those sections. | By design (2.5). |
 | A permission change git's modes cannot show (0644 to 0600) is a `# escrow: mode of …` line at the end of the diff, not an `old mode`/`new mode` header. | By design (2.5). |
 | `escrow diff` and `GetChangeSet` need a closed, undecided scope; an open scope has no diff yet, and a decided scope's diff lives only in the caller's change set and outcome. | By design (2.5). |

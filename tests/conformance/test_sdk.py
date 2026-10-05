@@ -247,3 +247,111 @@ def test_home_paths_are_rewritten_into_the_scope(escrow_bin, runtime_dir):
     assert out["realpath"] == gitconfig
     assert out["outcome"] == ["committed", ["~/.gitconfig"]]
     assert (sdk.home / ".gitconfig").read_text() == "scoped\n"
+
+
+# ---- 2.6: unscoped escapes and typed errors (#14, #16) ----
+
+
+def test_os_system_and_posix_spawn_run_in_the_scope(sdk):
+    out = sdk.run("""
+        with escrow.scope("spawn") as s:
+            out["system"] = os.system("echo x > sys.txt")
+            out["exit3"] = os.system("exit 3")
+            pid = os.posix_spawnp("sh", ["sh", "-c", "echo y > spawnp.txt"], os.environ)
+            out["spawnp"] = os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1])
+            redirect = (os.POSIX_SPAWN_OPEN, 1, str(P / "fa.txt"),
+                        os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+            pid = os.posix_spawn("/bin/sh", ["sh", "-c", "echo z"], os.environ,
+                                 file_actions=[redirect])
+            out["spawn"] = os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1])
+            out["staged"] = sorted(os.listdir(P))
+        out["paths"] = sorted(s.outcome.paths)
+        out["unscoped"] = s.outcome.unscoped
+    """)
+    assert out["system"] == 0 and out["exit3"] == 3 << 8
+    assert out["spawnp"] == 0 and out["spawn"] == 0
+    assert out["staged"] == out["paths"] == ["fa.txt", "spawnp.txt", "sys.txt"]
+    assert out["unscoped"] == 0
+    assert (sdk.project / "fa.txt").read_text() == "z\n"
+
+
+def test_chdir_moves_into_the_view_and_back(sdk):
+    out = sdk.run("""
+        import ctypes, escrow._sdk as sdk_impl
+        real_cwd = sdk_impl._cfg.orig["os.getcwd"]
+        libc = ctypes.CDLL(None, use_errno=True)
+        with escrow.scope("cd") as s:
+            os.mkdir(P / "d")
+            os.chdir(P / "d")
+            out["cwd"] = os.getcwd()
+            out["real_in_view"] = real_cwd().startswith(s.root)
+            fd = libc.creat(b"native.txt", 0o644)  # native code, relative path
+            out["native_fd_ok"] = fd >= 0
+            os.close(fd)
+        out["after"] = real_cwd()
+        out["paths"] = sorted(s.outcome.paths)
+    """)
+    assert out["cwd"] == str(sdk.project / "d")
+    assert out["real_in_view"] and out["native_fd_ok"]
+    assert out["after"] == str(sdk.project / "d")
+    assert out["paths"] == ["d", "d/native.txt"]
+
+
+def test_unscoped_error_names_the_fix(sdk):
+    out = sdk.run("""
+        try:
+            (P / "outside.txt").write_text("x")
+        except escrow.EscrowUnscopedError as e:
+            out["error"] = [e.errno, e.filename, isinstance(e, PermissionError),
+                            isinstance(e, OSError), "escrow.scope" in str(e)]
+        try:
+            os.mkdir(P / "dir")
+        except escrow.EscrowUnscopedError as e:
+            out["mkdir"] = e.errno
+        try:
+            open("/proc/version", "w")
+        except OSError as e:
+            out["other"] = [type(e).__name__, e.errno]
+    """)
+    assert out["error"] == [30, str(sdk.project / "outside.txt"), True, True, True]
+    assert out["mkdir"] == 30
+    assert out["other"][0] != "EscrowUnscopedError"
+
+
+def test_write_on_a_closed_scope_file_is_a_stale_handle(sdk):
+    out = sdk.run("""
+        with escrow.scope("stale", decide=lambda cs: escrow.discard()) as s:
+            f = open(P / "kept.txt", "w")
+            f.write("in scope\\n")
+        try:
+            f.write("after\\n")
+            f.flush()
+            os.fsync(f.fileno())
+            out["error"] = None
+        except escrow.EscrowStaleHandleError as e:
+            out["error"] = [e.errno, isinstance(e, OSError), s.id in str(e)]
+        except OSError as e:
+            out["error"] = ["plain", e.errno]
+    """)
+    assert out["error"] == [9, True, True]  # EBADF
+
+
+def test_native_escape_counts_as_unscoped(sdk):
+    out = sdk.run(
+        """
+        import ctypes, warnings
+        libc = ctypes.CDLL(None, use_errno=True)
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            with escrow.scope("leak", decide=lambda cs: escrow.discard()) as s:
+                fd = libc.creat(str(P / "leak.txt").encode(), 0o644)  # not rewritten
+                os.close(fd)
+            out["warned"] = [x.category.__name__ for x in w]
+        out["unscoped"] = s.outcome.unscoped
+        out["paths"] = s.outcome.paths
+        """,
+        mode="implicit",
+    )
+    assert out["unscoped"] >= 1
+    assert out["warned"] == ["EscrowUnscopedWarning"]
+    assert out["paths"] == []

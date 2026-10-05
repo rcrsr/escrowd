@@ -72,6 +72,7 @@ fn to_proto(views: &Views, scope_id: String, cs: changeset::ChangeSet, diff: Str
             .collect(),
         labels: cs.labels,
         diff,
+        unscoped_ops: cs.unscoped,
     }
 }
 

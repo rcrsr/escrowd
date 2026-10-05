@@ -2,7 +2,8 @@ name: Conformance
 
 # Reusable: the conformance suite on every Ubuntu LTS runner (24.04: restriction without
 # a bwrap profile; 26.04: also confines fusermount3). It needs the daemon binary, the
-# Python SDK and the AppArmor profile. `ci.yml` runs the suite once per pull request;
+# Python SDK and the AppArmor profile; the SDK's oldest Python (3.11) runs on 24.04 beside
+# the pinned one (.python-version). `ci.yml` runs the suite once per pull request;
 # `ci-repeat.yml` runs it `runs` times in a row (check 8: 10 consecutive passes).
 
 on:
@@ -19,12 +20,18 @@ on:
 
 jobs:
   suite:
-    name: Conformance (${{ matrix.os }})
+    name: Conformance (${{ matrix.os }}, Python ${{ matrix.python }})
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, ubuntu-26.04]
+        python: ["3.14"]
+        include:
+          - os: ubuntu-24.04
+            python: "3.11"
     runs-on: ${{ matrix.os }}
+    env:
+      UV_PYTHON: ${{ matrix.python }}
     steps:
       - uses: actions/checkout@v7
 
@@ -46,7 +53,7 @@ jobs:
           path: |
             sdk/python/.venv
             ${{ env.UV_PYTHON_INSTALL_DIR }}
-          key: venv-${{ matrix.os }}-py${{ hashFiles('.python-version') }}-${{ hashFiles('sdk/python/uv.lock') }}
+          key: venv-${{ matrix.os }}-py${{ matrix.python }}-${{ hashFiles('.python-version') }}-${{ hashFiles('sdk/python/uv.lock') }}
 
       - name: escrowd bwrap and AppArmor profile
         run: packaging/ubuntu/install.sh

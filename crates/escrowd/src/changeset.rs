@@ -51,6 +51,8 @@ pub struct ChangeSet {
     /// (path, allowed): base reads the gate allowed, and reads it denied.
     pub reads: Vec<(PathBuf, bool)>,
     pub labels: HashMap<String, String>,
+    /// Changes the unscoped mode saw while the scope was open (set by close).
+    pub unscoped: u64,
 }
 
 pub fn build(base: &Base, h: &ScopeHandle) -> io::Result<ChangeSet> {
@@ -60,6 +62,7 @@ pub fn build(base: &Base, h: &ScopeHandle) -> io::Result<ChangeSet> {
             changes: Vec::new(),
             reads: store.reads(),
             labels: store.labels()?,
+            unscoped: 0,
         });
     }
     drop(store);
@@ -107,6 +110,7 @@ pub fn build(base: &Base, h: &ScopeHandle) -> io::Result<ChangeSet> {
         changes,
         reads: store.reads(),
         labels: store.labels()?,
+        unscoped: 0,
     })
 }
 

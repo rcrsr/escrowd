@@ -8,7 +8,9 @@ python app.py PROJECT MODE POLICY CHECK
 ```
 
 `escrow.init()` re-executes the app under `escrow run` with PROJECT in the unscoped MODE
-(`passthrough`, `implicit` or `deny`) and the policy file POLICY. CHECK is one of
+(`passthrough`, `implicit` or `deny`) and the policy file POLICY. The checks run every
+mode; an agent host should use `deny`, where a write outside a scope raises
+`EscrowUnscopedError` instead of reaching the project. CHECK is one of
 `escrowed`, `child`, `concurrent`, `discarded`, `atomic`, `conflict`, `denied-read`,
 `unscoped` and `snapshot`. The app prints one JSON object: what it saw, each scope's
 outcome and, under `scopes`, the path prefixes each scope id may touch.
