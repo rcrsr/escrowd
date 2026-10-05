@@ -14,8 +14,18 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 
 # The suite must not depend on the host's git config (a global signing program outside
-# the sandbox's bind list fails every commit; issue #11). Children inherit these.
-os.environ |= {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+# the sandbox's bind list fails every commit; issue #11). Children inherit these. No
+# background maintenance or gc either: a detached `git maintenance` after a commit
+# creates and deletes .git/objects/maintenance.lock while a check copies the repo.
+os.environ |= {
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_SYSTEM": "/dev/null",
+    "GIT_CONFIG_COUNT": "2",
+    "GIT_CONFIG_KEY_0": "maintenance.auto",
+    "GIT_CONFIG_VALUE_0": "false",
+    "GIT_CONFIG_KEY_1": "gc.auto",
+    "GIT_CONFIG_VALUE_1": "0",
+}
 
 
 @pytest.fixture(scope="session")
