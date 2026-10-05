@@ -25,6 +25,15 @@ pub fn at(rel: &Path) -> &Path {
     }
 }
 
+/// Fill `buf` from the kernel's random source (getrandom(2)), blocking until it is seeded.
+pub fn random(buf: &mut [u8]) -> io::Result<()> {
+    let mut done = 0;
+    while done < buf.len() {
+        done += rustix::rand::getrandom(&mut buf[done..], rustix::rand::GetRandomFlags::empty())?;
+    }
+    Ok(())
+}
+
 pub fn parent(rel: &Path) -> &Path {
     rel.parent().unwrap_or(Path::new(""))
 }

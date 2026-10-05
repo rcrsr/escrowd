@@ -2,7 +2,7 @@
 
 Every known limit of escrowd as built, in one place. Each entry says where it is tracked. Update this file when a limit is found or lifted; the plans keep the detail.
 
-Status as of Oct 5, 2026: phase 2, after sub-phase 2.6.
+Status as of Oct 5, 2026: phase 2, after sub-phase 2.7.
 
 ## Capture
 
@@ -13,7 +13,7 @@ Status as of Oct 5, 2026: phase 2, after sub-phase 2.6.
 | `os.chdir` into the project moves the whole process's working directory into the scope's view: another task's native code with relative paths follows it until the scope is decided. | By design (2.6): the working directory is per process. |
 | `s.outcome.unscoped` counts every change the unscoped mode saw while the scope was open, including other tasks' and threads' (and from daemon start, after a restart); 0 in `passthrough` mode. | By design (2.6). |
 | Child file descriptors beyond 0–2 are not passed to `escrow exec` children. | Carried since 1.5. |
-| `passthrough` mode IO is unlogged: one ledger line at start only. | By design, decided Oct 4, 2026; `deny` is the mode for agent hosts (2.6, 2.7). |
+| `passthrough` mode IO is unlogged: one `op=passthrough` ledger line at daemon start only. | By design, decided Oct 4, 2026 (logging each operation would route it through FUSE); built in 2.7. `deny` is the mode for agent hosts. |
 | Paths outside `$HOME`, `/tmp` and the project are not captured: other host paths are read-only binds (`roots.other.read`) or unescrowed passthrough binds. | By design (2.4). |
 | `passthrough` paths (package caches) are shared and unescrowed: one ledger line per bind at sandbox start, the IO itself unlogged. | By design (2.4, #11). |
 | In `passthrough` unscoped mode, the app's own `$HOME` and `/tmp` stay empty tmpfs even when the policy serves them; its scopes get their views. | By design, decided Oct 5, 2026: no unscoped scope exists to serve them. |
@@ -57,13 +57,17 @@ Status as of Oct 5, 2026: phase 2, after sub-phase 2.6.
 
 | Limit | Status |
 | --- | --- |
-| Anyone who can reach the socket can close, decide or exec in any scope. | Planned: scope token in 2.7 (#15). |
+| The scope token stops callers that know only a scope id; in-process code that reads the SDK's memory can take a token (the proposal's threat model trusts in-process code). | By design (2.7, #15): untrusted code runs as subprocesses, which get no socket and no token. |
+| The unscoped scope has no token: any socket client can settle and decide it, as before. | By design (2.7): it is the host's own default scope. |
+| `GetChangeSet` (`escrow diff`) needs no token. | By design (2.7): it only reads a closed scope's change set, `read.deny` content withheld. |
+| Scopes opened before protocol 6 have no token and take any. | By design (2.7): they predate it. |
 | `EscrowUnscopedError` covers project paths only; a write outside a scope to a served `$HOME` or `/tmp` path in `deny` mode is a plain EROFS. Native code and children see raw EROFS and EBADF. | By design (2.6). |
 | The diff shows no content for binary files and files over `diff.file_bytes` (size and SHA-256 only) or under `read.deny` (mode only); `git apply` cannot apply those sections. | By design (2.5). |
 | A permission change git's modes cannot show (0644 to 0600) is a `# escrow: mode of …` line at the end of the diff, not an `old mode`/`new mode` header. | By design (2.5). |
 | `escrow diff` and `GetChangeSet` need a closed, undecided scope; an open scope has no diff yet, and a decided scope's diff lives only in the caller's change set and outcome. | By design (2.5). |
 | `escrow run --on-exit` settles the default scope without building a diff. | By design (2.5): nothing reads it. |
-| Conflict policy is discard only; read conflicts are not checked. | Planned: 2.7 options. |
+| A conflict under `conflict.verdict: return` reopens the scope on its old snapshot: a path that conflicted conflicts again while the scope still touches it (or, with `conflict.reads`, has read it). The agent drops that change or redoes the work in a new scope. | By design (2.7); rebase stays out of phase 2. |
+| `conflict.reads` checks files read through the scope's view; reads not yet written to the store when the daemon was killed drop out of the check, as they drop out of the change set. | By design (2.7, 2.3). |
 | One daemon per `escrow run`; nested scopes are not supported. | Carried. |
 | A `deny` rule lets lookups pass: a denied file's name, size and times are visible to `stat`, its contents and listings are not. | By design, decided Oct 5, 2026 (listed paths inside a denied directory must stay reachable). |
 | A scope's view of a root the policy stops serving is dropped (with its changes) at the next daemon start. | By design (2.4). |

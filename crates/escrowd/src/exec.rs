@@ -7,7 +7,8 @@
 //! `pid`, then `exit_code`; its other views (`$HOME`, `/tmp`) are mounted over
 //! their roots. `SpawnSignal` frames are delivered to the command's
 //! processes; a dropped connection kills the whole sandbox. The child gets no socket, so
-//! it cannot reach the daemon.
+//! it cannot reach the daemon. The request carries the scope's token; the child's
+//! environment gets neither the socket nor the token (`ESCROW_SCOPE_TOKEN`).
 //!
 //! Frames: a little-endian u32 length, then one protobuf message.
 
@@ -34,6 +35,9 @@ use crate::sandbox::{Mount, Sandbox};
 use crate::views::{RootView, Views};
 
 const MAX_FRAME: usize = 16 << 20;
+
+/// Where `escrow exec` takes the scope's token from; never passed to the child.
+pub const TOKEN_ENV: &str = "ESCROW_SCOPE_TOKEN";
 
 /// The exec socket beside the gRPC socket.
 pub fn exec_socket(socket: &Path) -> PathBuf {
@@ -304,6 +308,7 @@ impl ExecServer {
         // Held while checking and spawning, so close never misses a child.
         let mut g = self.children.inner.lock().unwrap();
         let h = self.views.scope(id).map_err(|_| invalid(format!("no scope {id}")))?;
+        self.views.check_token(id, &req.token)?;
         if h.is_closed() || g.closing.contains(id) {
             return Err(invalid(format!("scope {id} is closed")));
         }
@@ -312,8 +317,11 @@ impl ExecServer {
         let mut mounts = vec![Mount::Bind(self.mount.join(id), self.project.clone())];
         mounts.extend(roots.iter().map(|r| Mount::Bind(r.view.clone(), r.host.clone())));
         let mut cmd = self.sandbox.command(&mounts, &self.chdir(id, &req.cwd, &roots), &argv);
-        cmd.env_clear()
-            .envs(req.env.iter().filter(|(k, _)| !k.starts_with("ESCROW_SOCKET")));
+        cmd.env_clear().envs(
+            req.env
+                .iter()
+                .filter(|(k, _)| !k.starts_with("ESCROW_SOCKET") && *k != TOKEN_ENV),
+        );
         // A home view is mounted at the daemon's $HOME.
         if let Some(home) = roots
             .iter()

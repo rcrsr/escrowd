@@ -8,7 +8,8 @@
 //!   path they now sit at (upper-only files, renamed files), so inode numbers
 //!   survive a daemon restart,
 //! - scope name, labels, index, lifecycle state, the base generation it opened at
-//!   (its snapshot) and the upper-only inode counter.
+//!   (its snapshot), the upper-only inode counter and the SHA-256 of the scope's
+//!   token (project views only; the token itself is never stored).
 //!
 //! Hot lookups (hidden, pinned inode) hit in-memory copies; every change is
 //! written through to SQLite before the FUSE reply, except pins of upper-only
@@ -58,6 +59,9 @@ pub struct ScopeStore {
     pub since: u64,
     /// Reads only (the unscoped root in `deny` mode): every change gets EROFS.
     pub readonly: bool,
+    /// SHA-256 of the scope's token, hex; None: no token (the unscoped scope, views
+    /// of other roots, scopes opened before protocol 6).
+    token_sha256: Option<String>,
     dir: PathBuf,
     /// Shared lookups take the store's read lock; the connection has its own lock.
     db: Mutex<Connection>,
@@ -151,7 +155,8 @@ pub fn moved(p: &Path, from: &Path, to: &Path) -> Option<PathBuf> {
 }
 
 impl ScopeStore {
-    /// Create a new scope directory.
+    /// Create a new scope directory; `token_sha256`: the hash of its token, if it has one.
+    #[allow(clippy::too_many_arguments)]
     pub fn create(
         scopes_dir: &Path,
         id: &str,
@@ -160,6 +165,7 @@ impl ScopeStore {
         since: u64,
         readonly: bool,
         labels: &HashMap<String, String>,
+        token_sha256: Option<&str>,
     ) -> io::Result<Self> {
         let dir = scopes_dir.join(id);
         fs::create_dir(&dir)?;
@@ -174,6 +180,10 @@ impl ScopeStore {
             params![name, idx as i64, since as i64, readonly as i64],
         )
         .map_err(sql)?;
+        if let Some(t) = token_sha256 {
+            tx.execute("INSERT INTO meta VALUES ('token_sha256', ?1)", [t])
+                .map_err(sql)?;
+        }
         for (k, v) in labels {
             tx.execute("INSERT INTO labels VALUES (?1, ?2)", params![k, v])
                 .map_err(sql)?;
@@ -215,6 +225,10 @@ impl ScopeStore {
         let since = int(meta("since")?)?;
         let readonly = int(meta("readonly")?)? != 0;
         let next_upper_ino = int(meta("next_upper_ino")?)?;
+        let token_sha256 = db
+            .query_row("SELECT value FROM meta WHERE key = 'token_sha256'", [], |r| r.get(0))
+            .optional()
+            .map_err(sql)?;
         let state = match meta("state")? {
             rusqlite::types::Value::Text(t) if t == "closed" => ScopeState::Closed,
             _ => ScopeState::Open,
@@ -253,6 +267,7 @@ impl ScopeStore {
             idx,
             since,
             readonly,
+            token_sha256,
             dir,
             db: Mutex::new(db),
             whiteouts,
@@ -281,6 +296,12 @@ impl ScopeStore {
                 Err(e)
             }
         }
+    }
+
+    /// Whether `sha256` (hex, of a caller's token) matches the scope's token; a scope
+    /// without a token takes any.
+    pub fn token_matches(&self, sha256: &str) -> bool {
+        self.token_sha256.as_deref().is_none_or(|t| t == sha256)
     }
 
     pub fn upper_dir(&self) -> PathBuf {

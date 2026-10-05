@@ -10,6 +10,7 @@ use tokio_stream::wrappers::UnixListenerStream;
 use tonic::{Request, Response, Status};
 
 use crate::exec::Children;
+use crate::policy::ConflictVerdict;
 use crate::proto::escrow_server::{Escrow, EscrowServer};
 use crate::proto::*;
 use crate::views::{UNSCOPED, Unscoped, Views};
@@ -25,6 +26,7 @@ fn io_status(e: std::io::Error) -> Status {
     match e.kind() {
         std::io::ErrorKind::NotFound => Status::not_found(e.to_string()),
         std::io::ErrorKind::InvalidInput => Status::failed_precondition(e.to_string()),
+        std::io::ErrorKind::PermissionDenied => Status::permission_denied(e.to_string()),
         std::io::ErrorKind::Interrupted => Status::aborted(e.to_string()),
         _ => Status::internal(e.to_string()),
     }
@@ -82,13 +84,12 @@ impl Service {
     }
 
     /// Stop the scope's children (their last writes flush on exit), then freeze it.
-    async fn close(&self, id: String) -> Result<ChangeSet, Status> {
+    async fn close(&self, id: String, token: String) -> Result<ChangeSet, Status> {
         let (children, caps) = (self.children.clone(), self.diff);
         let id2 = id.clone();
         let (cs, diff) = self
             .blocking(move |v| {
-                v.scope(&id2)
-                    .map_err(|_| io::Error::new(io::ErrorKind::NotFound, format!("no scope {id2}")))?;
+                v.check_token(&id2, &token)?;
                 let stopped = children.stop(&id2);
                 let cs = v.close_scope_after(&id2, &stopped)?;
                 let diff = v.diff(&id2, &cs, caps)?;
@@ -122,16 +123,17 @@ impl Escrow for Service {
 
     async fn open_scope(&self, req: Request<OpenScopeRequest>) -> Result<Response<OpenScopeResponse>, Status> {
         let req = req.into_inner();
-        let (scope_id, root, roots) = self
+        let (opened, roots) = self
             .blocking(move |v| {
-                let (id, root) = v.open_scope(&req.name, &req.labels)?;
-                let roots = v.root_views(&id);
-                Ok((id, root, roots))
+                let opened = v.open_scope(&req.name, &req.labels)?;
+                let roots = v.root_views(&opened.id);
+                Ok((opened, roots))
             })
             .await?;
         Ok(Response::new(OpenScopeResponse {
-            scope_id,
-            root: path_str(&root),
+            scope_id: opened.id,
+            root: path_str(&opened.root),
+            token: opened.token,
             roots: roots
                 .into_iter()
                 .map(|r| ScopeRoot {
@@ -144,16 +146,19 @@ impl Escrow for Service {
     }
 
     async fn close_scope(&self, req: Request<CloseScopeRequest>) -> Result<Response<ChangeSet>, Status> {
-        let id = req.into_inner().scope_id;
-        Ok(Response::new(self.close(id).await?))
+        let req = req.into_inner();
+        Ok(Response::new(self.close(req.scope_id, req.token).await?))
     }
 
     /// Commit applies a closed scope's change set (or reports the conflicting paths and
-    /// drops the scope); discard drops the scope (open or closed); return reopens a closed scope.
+    /// drops or reopens the scope, per the policy's conflict.verdict); discard drops the
+    /// scope (open or closed); return reopens a closed scope.
     async fn decide(&self, req: Request<DecideRequest>) -> Result<Response<Outcome>, Status> {
         let req = req.into_inner();
+        let (id, token) = (req.scope_id.clone(), req.token.clone());
+        self.blocking(move |v| v.check_token(&id, &token)).await?;
         let (id, mut reasons) = (req.scope_id.clone(), req.reasons);
-        let mut paths = vec![];
+        let (mut paths, mut reopened) = (vec![], false);
         let status = match Verdict::try_from(req.verdict) {
             Ok(Verdict::Discard) => {
                 let children = self.children.clone();
@@ -176,6 +181,7 @@ impl Escrow for Service {
                     Ok(())
                 })
                 .await?;
+                reopened = true;
                 OutcomeStatus::Returned
             }
             Ok(Verdict::Commit) => {
@@ -200,6 +206,7 @@ impl Escrow for Service {
                         OutcomeStatus::Committed
                     }
                     commit::Outcome::Conflict(conflicts) => {
+                        reopened = self.views.conflict().verdict == ConflictVerdict::Return;
                         paths = conflicts.iter().map(|p| path_str(p)).collect();
                         reasons = paths
                             .iter()
@@ -216,6 +223,7 @@ impl Escrow for Service {
             status: status.into(),
             paths,
             reasons,
+            reopened,
         }))
     }
 
@@ -224,7 +232,7 @@ impl Escrow for Service {
         if self.views.unscoped() != Unscoped::Implicit {
             return Err(Status::failed_precondition("settle_unscoped needs unscoped = implicit"));
         }
-        Ok(Response::new(self.close(UNSCOPED.to_string()).await?))
+        Ok(Response::new(self.close(UNSCOPED.to_string(), String::new()).await?))
     }
 
     async fn get_change_set(&self, req: Request<GetChangeSetRequest>) -> Result<Response<ChangeSet>, Status> {

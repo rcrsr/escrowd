@@ -85,7 +85,9 @@ class EscrowServicer:
 
     def CloseScope(self, request, context):
         """Close a scope: the caller has fsynced its open files; the daemon stops the
-        scope's sandboxes, freezes the scope and returns its change set.
+        scope's sandboxes, freezes the scope and returns its change set. Close, Decide
+        and the exec socket need the scope's token (from OpenScope); a missing or wrong
+        token fails with PERMISSION_DENIED. The unscoped scope has no token.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')

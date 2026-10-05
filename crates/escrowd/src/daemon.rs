@@ -269,7 +269,8 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
         });
     }
     let home = specs[roots::HOME].served.then(|| specs[roots::HOME].host.clone());
-    let views = Arc::new(Views::new(specs, &state, &mount, gate, config.unscoped).context("loading scopes")?);
+    let views =
+        Arc::new(Views::new(specs, &state, &mount, gate, config.unscoped, policy.conflict).context("loading scopes")?);
     let session = fuse::mount(views.clone(), &mount, config.threads)
         .with_context(|| format!("mounting views at {}", mount.display()))?;
     views.set_notifier(session.notifier());

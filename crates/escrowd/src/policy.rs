@@ -19,6 +19,10 @@
 //! diff:
 //!   file_bytes: 262144              # a file larger on either side is summarized (size, SHA-256)
 //!   max_bytes: 1048576              # the change set's diff stops before passing this
+//! conflict:
+//!   verdict: discard                # on a conflicting commit: discard the scope, or return
+//!                                   # (reopen it; the conflicting paths are the reasons)
+//!   reads: false                    # also conflict on files the scope only read
 //! ```
 //!
 //! Close-time write rules come with the decision tiers.
@@ -42,6 +46,31 @@ pub struct Policy {
     pub close: CloseRules,
     #[serde(default)]
     pub diff: DiffRules,
+    #[serde(default)]
+    pub conflict: ConflictRules,
+}
+
+/// What a commit that conflicts with the project does.
+#[derive(Debug, Default, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConflictRules {
+    /// The verdict a conflict turns into [default: discard].
+    #[serde(default)]
+    pub verdict: ConflictVerdict,
+    /// A file the scope only read that changed in the project since its snapshot also
+    /// conflicts [default: false].
+    #[serde(default)]
+    pub reads: bool,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConflictVerdict {
+    /// Drop the scope and its changes.
+    #[default]
+    Discard,
+    /// Reopen the scope with its changes; the conflicting paths go back as reasons.
+    Return,
 }
 
 /// Size caps of the change set's content diff.
@@ -295,6 +324,17 @@ mod tests {
         assert_eq!((d.file_bytes, d.max_bytes), (256 * 1024, 1024 * 1024));
         let d = Policy::parse("version: 1\ndiff: {file_bytes: 10}\n").unwrap().diff;
         assert_eq!((d.file_bytes, d.max_bytes), (10, 1024 * 1024));
+    }
+
+    #[test]
+    fn conflict_rules_default_and_parse() {
+        let c = Policy::parse("version: 1\n").unwrap().conflict;
+        assert_eq!((c.verdict, c.reads), (ConflictVerdict::Discard, false));
+        let c = Policy::parse("version: 1\nconflict: {verdict: return, reads: true}\n")
+            .unwrap()
+            .conflict;
+        assert_eq!((c.verdict, c.reads), (ConflictVerdict::Return, true));
+        assert!(Policy::parse("version: 1\nconflict: {verdict: rebase}\n").is_err());
     }
 
     #[test]

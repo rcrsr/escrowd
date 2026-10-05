@@ -5,8 +5,9 @@
 //!
 //! 1. **Conflict check**: every path the commit touches must still be as the
 //!    scope first saw it (the version it recorded, else its snapshot's), and
-//!    the parents of new entries must still be directories. Any mismatch is a
-//!    conflict and nothing is written.
+//!    the parents of new entries must still be directories. With the policy's
+//!    `conflict.reads`, so must every captured file the scope only read. Any
+//!    mismatch is a conflict and nothing is written.
 //! 2. **Journal**: the generation's intent (each path, the original's metadata,
 //!    each new file's temporary name) is on disk before anything changes.
 //! 3. **Pre-images**: each base entry about to be overwritten or deleted is
@@ -279,9 +280,16 @@ impl Commits {
         self.journal().clear_scope(generation)
     }
 
-    /// Commit `cs` (built from the views `hs` of one scope, one per root); `show`
-    /// names paths in the outcome.
-    pub fn commit(&self, lowers: &Lowers, hs: &[&ScopeHandle], cs: &ChangeSet, show: Show) -> io::Result<Outcome> {
+    /// Commit `cs` (built from the views `hs` of one scope, one per root); `reads`: files
+    /// the scope only read conflict too; `show` names paths in the outcome.
+    pub fn commit(
+        &self,
+        lowers: &Lowers,
+        hs: &[&ScopeHandle],
+        cs: &ChangeSet,
+        reads: bool,
+        show: Show,
+    ) -> io::Result<Outcome> {
         let _serial = self.serial.lock().unwrap();
         let mut parts = Vec::new();
         for h in hs {
@@ -298,7 +306,7 @@ impl Commits {
         let mut conflicts = Vec::new();
         for part in &parts {
             let base = Base::new(part.lower, &self.gens[part.root], part.h.since);
-            conflicts.extend(self.conflicts(&base, part)?.iter().map(|p| show(part.root, p)));
+            conflicts.extend(self.conflicts(&base, part, reads)?.iter().map(|p| show(part.root, p)));
         }
         if !conflicts.is_empty() {
             return Ok(Outcome::Conflict(conflicts));
@@ -376,7 +384,7 @@ impl Commits {
         Ok(Outcome::Committed(Some(generation), paths))
     }
 
-    fn conflicts(&self, base: &Base, part: &Part) -> io::Result<Vec<PathBuf>> {
+    fn conflicts(&self, base: &Base, part: &Part, reads: bool) -> io::Result<Vec<PathBuf>> {
         let (lower, h, plan, root) = (part.lower, part.h, &part.plan, part.root);
         let touched = plan.touched();
         let removes: HashSet<&PathBuf> = plan.removes.iter().collect();
@@ -400,6 +408,19 @@ impl Commits {
         };
         let store = h.store_read();
         let mut out = BTreeSet::new();
+        if reads {
+            // Files read from the base (never from the upper: those are the scope's own),
+            // kept only where they would commit: an ephemeral read changes nothing.
+            for (p, _) in store.reads().into_iter().filter(|(_, allowed)| *allowed) {
+                if touched.contains(&p) || h.access(&p) != roots::Access::Capture {
+                    continue;
+                }
+                let live = sys::lstat(lower, &p).ok();
+                if !same(&p, store.base_version(&p)?, live.as_ref().map(Version::of)) {
+                    out.insert(p);
+                }
+            }
+        }
         for p in &touched {
             let want = match store.base_version(p)? {
                 Some(v) => Some(v),
