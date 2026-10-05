@@ -9,7 +9,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use escrowd::commit::Outcome;
 use escrowd::daemon::{Config, default_runtime_dir};
 use escrowd::exec::{ExecConn, exec_socket};
-use escrowd::proto::SpawnRequest;
+use escrowd::proto::escrow_client::EscrowClient;
+use escrowd::proto::{GetChangeSetRequest, SpawnRequest};
 use escrowd::sandbox::Mount;
 use escrowd::views::{UNSCOPED, Unscoped};
 use tokio::signal::unix::{SignalKind, signal};
@@ -104,6 +105,17 @@ enum Command {
         #[arg(long, default_value_t = 4)]
         threads: usize,
     },
+    /// Print a closed scope's diff against its snapshot (git format), before it is decided.
+    Diff {
+        /// Daemon socket [default: the socket of `escrow run --project`].
+        #[arg(long, env = "ESCROW_SOCKET")]
+        socket: Option<PathBuf>,
+        /// Project directory (locates the socket of `escrow run`).
+        #[arg(long)]
+        project: Option<PathBuf>,
+        /// Scope id (`unscoped` for the implicit default scope).
+        scope: String,
+    },
     /// Print the ledger, optionally for one scope.
     Log {
         /// Project directory (locates the default state directory).
@@ -115,6 +127,34 @@ enum Command {
         /// Only lines for this scope id.
         scope: Option<String>,
     },
+}
+
+async fn diff(socket: Option<PathBuf>, project: Option<PathBuf>, scope: String) -> anyhow::Result<()> {
+    let socket = match (socket, project) {
+        (Some(s), _) => s,
+        (None, Some(p)) => default_runtime_dir(&p.canonicalize()?)?.join("escrow.sock"),
+        (None, None) => anyhow::bail!("pass --socket (or ESCROW_SOCKET) or --project"),
+    };
+    let path = socket.clone();
+    let channel = tonic::transport::Endpoint::from_static("http://localhost")
+        .connect_with_connector(tower::service_fn(move |_| {
+            let path = path.clone();
+            async move {
+                Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(
+                    tokio::net::UnixStream::connect(path).await?,
+                ))
+            }
+        }))
+        .await
+        .with_context(|| format!("connecting to {}", socket.display()))?;
+    let cs = EscrowClient::new(channel)
+        .max_decoding_message_size(usize::MAX)
+        .get_change_set(GetChangeSetRequest { scope_id: scope })
+        .await
+        .map_err(|s| anyhow::anyhow!("{}", s.message()))?
+        .into_inner();
+    std::io::stdout().lock().write_all(cs.diff.as_bytes())?;
+    Ok(())
 }
 
 fn log(project: Option<PathBuf>, state: Option<PathBuf>, scope: Option<String>) -> anyhow::Result<()> {
@@ -379,6 +419,7 @@ async fn main() -> anyhow::Result<()> {
             };
             escrowd::daemon::run(config, shutdown).await
         }
+        Command::Diff { socket, project, scope } => diff(socket, project, scope).await,
         Command::Log { project, state, scope } => log(project, state, scope),
     }
 }

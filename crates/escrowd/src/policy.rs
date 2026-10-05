@@ -16,6 +16,9 @@
 //!     passthrough: ["~/.cache/pnpm"] # host paths sandboxes may write, outside escrow
 //! close:
 //!   grace_ms: 2000                  # SIGTERM to a closing scope's children, SIGKILL after this
+//! diff:
+//!   file_bytes: 262144              # a file larger on either side is summarized (size, SHA-256)
+//!   max_bytes: 1048576              # the change set's diff stops before passing this
 //! ```
 //!
 //! Close-time write rules come with the decision tiers.
@@ -37,6 +40,46 @@ pub struct Policy {
     pub roots: Roots,
     #[serde(default)]
     pub close: CloseRules,
+    #[serde(default)]
+    pub diff: DiffRules,
+}
+
+/// Size caps of the change set's content diff.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DiffRules {
+    /// A file larger than this on either side is summarized (default 256 KiB).
+    #[serde(default = "DiffRules::default_file_bytes")]
+    pub file_bytes: u64,
+    /// The diff stops before the file that would take it past this (default 1 MiB).
+    #[serde(default = "DiffRules::default_max_bytes")]
+    pub max_bytes: u64,
+}
+
+impl DiffRules {
+    fn default_file_bytes() -> u64 {
+        256 * 1024
+    }
+
+    fn default_max_bytes() -> u64 {
+        1024 * 1024
+    }
+
+    pub fn caps(&self) -> crate::diff::Caps {
+        crate::diff::Caps {
+            file_bytes: self.file_bytes,
+            max_bytes: self.max_bytes,
+        }
+    }
+}
+
+impl Default for DiffRules {
+    fn default() -> Self {
+        DiffRules {
+            file_bytes: Self::default_file_bytes(),
+            max_bytes: Self::default_max_bytes(),
+        }
+    }
 }
 
 /// How a scope's close treats its running children.
@@ -244,6 +287,14 @@ mod tests {
         assert_eq!(Policy::parse("version: 1\n").unwrap().close.grace_ms, 2000);
         let p = Policy::parse("version: 1\nclose:\n  grace_ms: 0\n").unwrap();
         assert_eq!(p.close.grace_ms, 0);
+    }
+
+    #[test]
+    fn diff_caps_default_and_parse() {
+        let d = Policy::parse("version: 1\n").unwrap().diff;
+        assert_eq!((d.file_bytes, d.max_bytes), (256 * 1024, 1024 * 1024));
+        let d = Policy::parse("version: 1\ndiff: {file_bytes: 10}\n").unwrap().diff;
+        assert_eq!((d.file_bytes, d.max_bytes), (10, 1024 * 1024));
     }
 
     #[test]

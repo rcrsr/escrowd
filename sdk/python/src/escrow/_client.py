@@ -11,9 +11,14 @@ class Client:
     def __init__(self, socket: str):
         self.socket = socket
         # grpcio sends the socket path as :authority, which tonic's HTTP/2 stack rejects
-        # (RST_STREAM PROTOCOL_ERROR); any valid host name works.
+        # (RST_STREAM PROTOCOL_ERROR); any valid host name works. A change set's diff
+        # can pass grpcio's 4 MiB receive limit (policy diff.max_bytes): no limit.
         self._channel = grpc.insecure_channel(
-            f"unix:{socket}", options=[("grpc.default_authority", "localhost")]
+            f"unix:{socket}",
+            options=[
+                ("grpc.default_authority", "localhost"),
+                ("grpc.max_receive_message_length", -1),
+            ],
         )
         self._stub = escrow_pb2_grpc.EscrowStub(self._channel)
 
@@ -49,6 +54,12 @@ class Client:
     def settle_unscoped(self, timeout: float = 30.0) -> escrow_pb2.ChangeSet:
         """Close the implicit default scope and return its change set (scope id "unscoped")."""
         return self._stub.SettleUnscoped(escrow_pb2.SettleUnscopedRequest(), timeout=timeout)
+
+    def get_change_set(self, scope_id: str, timeout: float = 30.0) -> escrow_pb2.ChangeSet:
+        """A closed, undecided scope's change set and diff; an open scope fails."""
+        return self._stub.GetChangeSet(
+            escrow_pb2.GetChangeSetRequest(scope_id=scope_id), timeout=timeout
+        )
 
     def discard(self, scope_id: str, timeout: float = 30.0) -> escrow_pb2.Outcome:
         return self.decide(scope_id, escrow_pb2.VERDICT_DISCARD, timeout=timeout)

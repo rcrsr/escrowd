@@ -125,7 +125,7 @@ class Read(_message.Message):
     def __init__(self, path: _Optional[str] = ..., decision: _Optional[_Union[ReadDecision, str]] = ...) -> None: ...
 
 class ChangeSet(_message.Message):
-    __slots__ = ("scope_id", "changes", "reads", "labels")
+    __slots__ = ("scope_id", "changes", "reads", "labels", "diff")
     class LabelsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -137,11 +137,19 @@ class ChangeSet(_message.Message):
     CHANGES_FIELD_NUMBER: _ClassVar[int]
     READS_FIELD_NUMBER: _ClassVar[int]
     LABELS_FIELD_NUMBER: _ClassVar[int]
+    DIFF_FIELD_NUMBER: _ClassVar[int]
     scope_id: str
     changes: _containers.RepeatedCompositeFieldContainer[Change]
     reads: _containers.RepeatedCompositeFieldContainer[Read]
     labels: _containers.ScalarMap[str, str]
-    def __init__(self, scope_id: _Optional[str] = ..., changes: _Optional[_Iterable[_Union[Change, _Mapping]]] = ..., reads: _Optional[_Iterable[_Union[Read, _Mapping]]] = ..., labels: _Optional[_Mapping[str, str]] = ...) -> None: ...
+    diff: str
+    def __init__(self, scope_id: _Optional[str] = ..., changes: _Optional[_Iterable[_Union[Change, _Mapping]]] = ..., reads: _Optional[_Iterable[_Union[Read, _Mapping]]] = ..., labels: _Optional[_Mapping[str, str]] = ..., diff: _Optional[str] = ...) -> None: ...
+
+class GetChangeSetRequest(_message.Message):
+    __slots__ = ("scope_id",)
+    SCOPE_ID_FIELD_NUMBER: _ClassVar[int]
+    scope_id: str
+    def __init__(self, scope_id: _Optional[str] = ...) -> None: ...
 
 class DecideRequest(_message.Message):
     __slots__ = ("scope_id", "verdict", "reasons")

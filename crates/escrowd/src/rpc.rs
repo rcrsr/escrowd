@@ -13,11 +13,12 @@ use crate::exec::Children;
 use crate::proto::escrow_server::{Escrow, EscrowServer};
 use crate::proto::*;
 use crate::views::{UNSCOPED, Unscoped, Views};
-use crate::{changeset, commit};
+use crate::{changeset, commit, diff};
 
 pub struct Service {
     views: Arc<Views>,
     children: Arc<Children>,
+    diff: diff::Caps,
 }
 
 fn io_status(e: std::io::Error) -> Status {
@@ -34,7 +35,7 @@ fn path_str(p: &std::path::Path) -> String {
 }
 
 /// The change set with each path as the caller sees it (`~/x` in `$HOME`).
-fn to_proto(views: &Views, scope_id: String, cs: changeset::ChangeSet) -> ChangeSet {
+fn to_proto(views: &Views, scope_id: String, cs: changeset::ChangeSet, diff: String) -> ChangeSet {
     let kind = |k| match k {
         changeset::Kind::Create => ChangeKind::Create,
         changeset::Kind::Modify => ChangeKind::Modify,
@@ -70,27 +71,30 @@ fn to_proto(views: &Views, scope_id: String, cs: changeset::ChangeSet) -> Change
             })
             .collect(),
         labels: cs.labels,
+        diff,
     }
 }
 
 impl Service {
-    pub fn new(views: Arc<Views>, children: Arc<Children>) -> Self {
-        Service { views, children }
+    pub fn new(views: Arc<Views>, children: Arc<Children>, diff: diff::Caps) -> Self {
+        Service { views, children, diff }
     }
 
     /// Stop the scope's children (their last writes flush on exit), then freeze it.
     async fn close(&self, id: String) -> Result<ChangeSet, Status> {
-        let children = self.children.clone();
+        let (children, caps) = (self.children.clone(), self.diff);
         let id2 = id.clone();
-        let cs = self
+        let (cs, diff) = self
             .blocking(move |v| {
                 v.scope(&id2)
                     .map_err(|_| io::Error::new(io::ErrorKind::NotFound, format!("no scope {id2}")))?;
                 let stopped = children.stop(&id2);
-                v.close_scope_after(&id2, &stopped)
+                let cs = v.close_scope_after(&id2, &stopped)?;
+                let diff = v.diff(&id2, &cs, caps)?;
+                Ok((cs, diff))
             })
             .await?;
-        Ok(to_proto(&self.views, id, cs))
+        Ok(to_proto(&self.views, id, cs, diff))
     }
 
     /// Filesystem work runs off the async executor.
@@ -220,6 +224,19 @@ impl Escrow for Service {
             return Err(Status::failed_precondition("settle_unscoped needs unscoped = implicit"));
         }
         Ok(Response::new(self.close(UNSCOPED.to_string()).await?))
+    }
+
+    async fn get_change_set(&self, req: Request<GetChangeSetRequest>) -> Result<Response<ChangeSet>, Status> {
+        let (id, caps) = (req.into_inner().scope_id, self.diff);
+        let id2 = id.clone();
+        let (cs, diff) = self
+            .blocking(move |v| {
+                let cs = v.closed_change_set(&id2)?;
+                let diff = v.diff(&id2, &cs, caps)?;
+                Ok((cs, diff))
+            })
+            .await?;
+        Ok(Response::new(to_proto(&self.views, id, cs, diff)))
     }
 }
 

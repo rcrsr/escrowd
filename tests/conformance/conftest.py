@@ -41,7 +41,13 @@ def runtime_dir():
 
 
 def write_policy(
-    work: Path, deny_read=(".env",), sandbox_read=(), sandbox_write=(), grace_ms=None, roots=""
+    work: Path,
+    deny_read=(".env",),
+    sandbox_read=(),
+    sandbox_write=(),
+    grace_ms=None,
+    roots="",
+    extra="",
 ) -> Path:
     policy = work / "policy.yaml"
 
@@ -53,6 +59,7 @@ def write_policy(
         f"roots:\n  other:\n    read: [{items(sandbox_read)}]\n"
         f"    passthrough: [{items(sandbox_write)}]\n{roots}"
         + (f"close:\n  grace_ms: {grace_ms}\n" if grace_ms is not None else "")
+        + extra
     )
     return policy
 
@@ -82,11 +89,13 @@ class Daemon:
         sandbox_write=(),
         grace_ms=None,
         roots="",
+        policy="",
     ):
         """`deny_read`, `sandbox_read` and `sandbox_write` become the policy file's
         read.deny, roots.other.read and roots.other.passthrough lists, `grace_ms` its
         close.grace_ms; `roots` is YAML for more keys under roots: (`home`, `tmp`), indented
-        by two spaces; `env` adds to the environment."""
+        by two spaces; `policy` is YAML for more top-level keys; `env` adds to the
+        environment."""
         self.work = work
         self.bin = bin
         self.socket = work / "escrow.sock"
@@ -94,7 +103,9 @@ class Daemon:
         self.state = work / "state"
         self.mount = work / "mnt"
         self.project.mkdir(parents=True, exist_ok=True)
-        self.policy = write_policy(work, deny_read, sandbox_read, sandbox_write, grace_ms, roots)
+        self.policy = write_policy(
+            work, deny_read, sandbox_read, sandbox_write, grace_ms, roots, policy
+        )
         args = [bin, "daemon", "--socket", self.socket, "--project", self.project]
         args += ["--state", self.state, "--mount", self.mount, "--policy", self.policy]
         if unscoped:
