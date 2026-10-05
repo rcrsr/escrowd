@@ -1,6 +1,7 @@
 #!/bin/sh
 # Run bench/run.sh in the benchmark VM (spikes/lima/bench-ubuntu-24.04.yaml).
-#   [RUNS=7] [ESCROW=bin] [LOG=file] bench/lima.sh   (log: bench/results/bench-ubuntu-24.04.log)
+#   [RUNS=7] [MODES=…] [JOBS=…] [ESCROW=bin] [LOG=file] bench/lima.sh
+#   (log: bench/results/bench-ubuntu-24.04.log; MODES and JOBS as in run.sh)
 # The VM has no toolchain or mise: the host resolves node, pnpm, uv and Python to real
 # paths (Lima's sshfs home mount fails readlink) and the VM runs them read-only.
 set -eu
@@ -21,6 +22,7 @@ rg=$(realpath "$(mise which rg)")
 limactl start "$vm" >/dev/null 2>&1 || true
 limactl shell "$vm" sudo sysctl -q vm.drop_caches=3
 limactl shell "$vm" sudo "$root/packaging/ubuntu/install.sh" >/dev/null
-limactl shell "$vm" env RUNS="${RUNS:-7}" ESCROW="$escrow" UV="$uv" PY="$py" PYALIAS="$(dirname "$(dirname "$py")")" \
+limactl shell "$vm" env RUNS="${RUNS:-7}" MODES="${MODES:-native sandbox escrow}" \
+  JOBS="${JOBS:-}" ESCROW="$escrow" UV="$uv" PY="$py" PYALIAS="$(dirname "$(dirname "$py")")" \
   NODE="$node" PNPM="$pnpm" RG="$rg" bash "$root/bench/run.sh" >"$log" 2>&1
 python3 "$root/bench/summarize.py" <"$log"

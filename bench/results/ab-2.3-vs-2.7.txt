@@ -1,0 +1,16 @@
+Oct 5, 2026, benchmark VM: release binaries of 16a8cf4 (2.3) and 7b0ea97 (2.7), escrow mode
+only, the 2.3 binary with its own bench/ scripts. Medians (and minimums) in seconds.
+
+Batches of 5 runs, express A and cpython C, alternating binaries:
+round 1 16a8cf4: A:install=0.471  A:test=2.163  A:wall=3.746  C:log_warm=0.107  C:rg_warm=0.104  C:wall=1.256
+round 1 7b0ea97: A:install=0.585  A:test=2.730  A:wall=4.427  C:log_warm=0.094  C:rg_warm=0.110  C:wall=1.202
+round 2 16a8cf4: A:install=0.610  A:test=2.400  A:wall=4.053  C:log_warm=0.105  C:rg_warm=0.114  C:wall=1.300
+round 2 7b0ea97: A:install=0.627  A:test=2.762  A:wall=4.620  C:log_warm=0.101  C:rg_warm=0.107  C:wall=1.268
+
+6 rounds of 3 runs, express A only, alternating binaries (n=18 each):
+16a8cf4: clone med 0.630 min 0.539  install med 0.613 min 0.551  test med 2.606 min 2.183  wall med 4.524 min 3.796
+7b0ea97: clone med 0.643 min 0.546  install med 0.876 min 0.508  test med 2.762 min 2.192  wall med 4.811 min 3.654
+
+Another project's test runs loaded the host (load average up to 9) during the rounds.
+Best runs match (wall 3.80 vs 3.65 s, test 2.18 vs 2.19 s); warm git log -p is the same
+for both binaries (about 0.1 s, against 0.057 s in the 2.3 log).
