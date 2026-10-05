@@ -2,7 +2,7 @@
 
 Oct 4, 2026 · Andre Bremer · Draft
 
-**Status, Oct 4, 2026: 2.1 done**: baseline for workloads A, B and C on the dev host and the benchmark VM at `564c36f`; suite 126 / 126 in CI on both runners ([PR #17](https://github.com/rcrsr/escrowd/pull/17)). **2.2 done**, Oct 4, 2026: 1,000 crash runs with 0 partial commits and 1,000 closes under load with 0 lost writes on the dev host; suite 132 / 132 and 50 crash runs with 0 partial in CI on both runners ([PR #18](https://github.com/rcrsr/escrowd/pull/18)). Next: 2.3. Plan revised Oct 4, 2026 for issues [#11](https://github.com/rcrsr/escrowd/issues/11)–[#16](https://github.com/rcrsr/escrowd/issues/16).
+**Status, Oct 4, 2026: 2.1 done**: baseline for workloads A, B and C on the dev host and the benchmark VM at `564c36f`; suite 126 / 126 in CI on both runners ([PR #17](https://github.com/rcrsr/escrowd/pull/17)). **2.2 done**, Oct 4, 2026: 1,000 crash runs with 0 partial commits and 1,000 closes under load with 0 lost writes on the dev host; suite 132 / 132 and 50 crash runs with 0 partial in CI on both runners ([PR #18](https://github.com/rcrsr/escrowd/pull/18)). **2.3 done**, Oct 5, 2026: in the benchmark VM every A and B workload's wall is ≤ 1.5× native (express A and B 1.46×, attrs 1.09× and 1.07×; express A was 13.32×) and workload C warm is under native in sum (`rg` 3.55×, kept); 1,000 crash runs with 0 partial and 1,000 closes with 0 lost on the dev host; suite 138 / 138 in CI on both runners ([PR #19](https://github.com/rcrsr/escrowd/pull/19)). Next: 2.4. Plan revised Oct 4, 2026 for issues [#11](https://github.com/rcrsr/escrowd/issues/11)–[#16](https://github.com/rcrsr/escrowd/issues/16).
 
 Phase 2 takes the phase 1 POC to something an agent harness can lean on: commits that survive a crash at any point, real repositories at near-native speed, paths outside the project under the same rules as the project, and errors that tell the caller what went wrong. Phase 3 freezes the protocol on top of it, so every protocol change (path roots, diff, scope token, policy options) lands here or waits for a protocol version bump.
 
@@ -148,6 +148,29 @@ The commit in the crash soak takes 148 ms on the dev host (debug build), short o
 
 Kernel passthrough stays a root-helper fallback, out of scope: it removes data-path cost but not lookup and open round trips.
 
+As built (Oct 4, 2026), each step measured in the benchmark VM (logs in `bench/results/bench-ubuntu-24.04-2.3-*.log`):
+
+1. **Commit.** Express A's commit spent 11 of its 11.6 s in apply: 9,114 entries at 1.2 ms each, the per-file fsync that 2.2 showed redundant. Dropped. A new or rewritten file is hard-linked from the upper beside its target and renamed over it (copied across filesystems); the upper keeps its link, so a rollback still has it. A base file the scope only renamed (same type, mode, mtime and bytes) is renamed in the project and keeps its inode (#16); it waits under a temporary name at the project root while the removes run, and a rollback restores it from its pre-image. Generation allocation joins `begin`, GC forgets every finished generation and the rollback copies in one transaction, the state filesystem is synced only when pre-images were copied, and a released upper file starts its writeback at once (`sync_file_range` on a background thread), so the flush before `done` finds little left. Express A wall: 13.32× → 2.22×.
+2. **Locks and the store.** Profiling the FUSE handlers (no `perf` on the WSL kernel) put the cost in the scope store, not the inode table: every new entry wrote its counter and pin to SQLite, every first read its version, statements were re-parsed on each call, prefix queries scanned whole tables (`substr`), and rename scanned the inode table. Now: cached statements; index ranges for prefix queries; pins of upper-only numbers, the counter and first reads written behind (with the next base-derived pin, every 4,096 changes, at close and at shutdown; a daemon killed in between renumbers upper-only entries, which no process can see across the dead mount, and drops those reads from the change set); a read-write lock on the store, so lookups share it; a lock-free ledger (one `O_APPEND` write per line); rename and unlink scan tables only for directories and hard links. Scope stores are created in one transaction and skip the WAL checkpoint on close; a dropped scope's directory moves to `<state>/trash/` and is deleted on a background thread (joined at shutdown, swept at start); the last settle of `escrow run` opens no new unscoped scope.
+3. **READDIRPLUS**, with listings built lazily (inode numbers only for the entries that fit the reply), and no FLUSH: the handler did nothing, so it answers ENOSYS and the kernel stops sending it.
+4. **Cache lifetimes.** A snapshot scope changes only through its own requests, so its entries, attributes, absent names (negative entries) and listings (`FOPEN_CACHE_DIR`) are cached for 60 s; the mount root and the deny root keep 1 s, and the unscoped root, which resets in place, caches no absent names (kernel 7.0 keeps a negative entry through its invalidation; found by CI on Ubuntu 26.04). A file keeps its pages (`FOPEN_KEEP_CACHE`) while its base version is unchanged; the first read-only open of a base file of up to 128 KiB stores its pages ahead of the reads (`FUSE_NOTIFY_STORE`), saving the READ round trip. A reset unscoped root invalidates the names its scope created or deleted. Found while testing, present since phase 0: with the writeback cache the kernel keeps its own size of a file it has an inode for, so an editor's change to a base file's size reaches a scope only once the kernel drops the inode (risk table, carried limits).
+
+Wall time over native in the benchmark VM, median of 7 runs (`bench/results/`):
+
+| Workload | 2.1 baseline | 1. Commit | 2.–4. Locks, store, cache | Final |
+| --- | --- | --- | --- | --- |
+| express A | 13.32× | 2.22× | 1.56× | **1.46×** |
+| express B | 2.16× | 2.03× | 1.71× | **1.46×** |
+| attrs A | 1.73× | 1.17× | 1.09× | **1.09×** |
+| attrs B | 1.13× | 1.13× | 1.12× | **1.07×** |
+| cpython C (no target) | 3.17× | 3.99× | 3.15× | 1.76× |
+
+The test suites run at 1.14× (express A), 1.11× (express B), 1.05× and 1.03× (attrs). Workload C warm takes 0.209 s against 0.286 s native: `git log -p` 1.03×, `git status` 0.29× (native `git status` re-hashes the index's racily clean entries right after the clone and swings between 0.012 and 0.204 s across logs), `rg` **3.55×**. Every file `rg` reads costs an OPEN and a RELEASE round trip, even with its pages cached; removing them needs the kernel's no-open mode, which would also drop the per-open gate check, the ledger's open records and the handle tracking that close relies on (2.2). Kept, decided Oct 5, 2026 (open questions).
+
+The soaks after 2.3 on the dev host (`tests/soak/results/*-2.3.log`): 1,000 crash runs (259 with a second kill during recovery), 806 rolled back, 194 committed, **0 partial**; 1,000 closes under a busy writer, **0 lost**; close latency p50 1.4 / 5.9 / 25.8 ms with 0 / 1 / 10 children.
+
+The benchmark VM runs nested in WSL2 and shares the host's disk: while other work loads the host, runs stall for 10–70 s in every mode (native too). The final log has no stalled run; earlier logs keep theirs. Express A in the final run spends about 0.4 s outside its steps (start, commit of 9,114 entries, unmount).
+
 ### 2.4 Path roots for `$HOME` and `/tmp`
 
 From [#11](https://github.com/rcrsr/escrowd/issues/11). Sandboxes mount `$HOME` as an empty tmpfs today, so tools that need user config (git above all) break inside a scope. Each root is served through the same FUSE layer as the project, with a rule per path:
@@ -212,10 +235,11 @@ Checks 1 to 8 run on the final commit; logs go to `tests/soak/results/` and `ben
 
 ## Carried limits
 
-Out of phase 2, by design:
+All known limits are collected in [LIMITATIONS.md](../LIMITATIONS.md). Out of phase 2, by design:
 
 - Whole-file copy-up; block-level copy-up only if a workload in 2.1 shows large-file cost.
 - No power-loss testing: process kills only (the fsync audit covers what kills cannot).
+- With the writeback cache, the kernel keeps its own size of a file it has an inode for: an editor outside escrowd that changes a base file's size is seen by a scope only once the kernel drops the inode (since phase 0; found in 2.3).
 - Native code and `mmap` doing their own IO still fall to the `unscoped` mode; passthrough IO stays unlogged.
 - No network capture (phase 8); nested scopes stay deferred.
 - One daemon per `escrow run`.
@@ -235,4 +259,5 @@ Out of phase 2, by design:
 - [x] Read-heavy workload (#13): workload C joins 2.1; warm ≤ 1.5×, cold reported, decided Oct 4, 2026.
 - [x] Python 3.11+ for the SDK (#16): phase 2, decided Oct 4, 2026; CI tests 3.11 and 3.14. Built in 2.6.
 - [x] Rust stable (#16): a CI job on stable, not required by the CI Gate, decided Oct 4, 2026. Ride-along in 2.1.
+- [x] `rg` warm (3.55× after 2.3): keep the OPEN and RELEASE round trips, decided Oct 5, 2026. The kernel's no-open mode would remove both but also the per-open gate check, the ledger's open records and the handles close waits on (2.2).
 - [x] Sub-phase order: crash soak and audit first, then performance, path roots, diff, escapes and errors, token and policy, exit runs; decided Oct 4, 2026.

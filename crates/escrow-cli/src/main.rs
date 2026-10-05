@@ -281,6 +281,7 @@ async fn run(
     if unscoped == Unscoped::Implicit {
         let settled = tokio::task::spawn_blocking(move || -> std::io::Result<String> {
             // The app has exited; its last processes may still be writing back.
+            views.settle_last();
             let stopped = children.stop(UNSCOPED);
             let cs = views.close_scope_after(UNSCOPED, &stopped)?;
             let n = cs.changes.len();
@@ -289,7 +290,7 @@ async fn run(
                     views.drop_scope(UNSCOPED)?;
                     format!("{n} unscoped change(s) discarded")
                 }
-                OnExit::Commit => match views.commit_scope(UNSCOPED)? {
+                OnExit::Commit => match views.commit_closed(UNSCOPED, &cs)? {
                     Outcome::Committed(..) => format!("{n} unscoped change(s) committed"),
                     Outcome::Conflict(paths) => format!(
                         "unscoped changes discarded, conflict on: {}",

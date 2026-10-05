@@ -214,6 +214,7 @@ impl Daemon {
         tokio::task::spawn_blocking(move || session.umount_and_join())
             .await?
             .context("unmounting views")?;
+        self.views.flush().context("writing scope stores")?;
         served
     }
 }

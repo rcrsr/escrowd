@@ -53,7 +53,7 @@ pub fn build(base: &Base, h: &ScopeHandle) -> io::Result<ChangeSet> {
     let mut kinds: BTreeMap<PathBuf, Kind> = BTreeMap::new();
     let mut deletes: BTreeSet<PathBuf> = BTreeSet::new();
     walk_upper(base, upper, Path::new(""), &mut kinds, &mut deletes)?;
-    let store = h.store();
+    let store = h.store_read();
     for w in store.whiteouts() {
         if !kinds.contains_key(w) && base.lstat(w).is_ok() {
             deletes.insert(w.clone());
@@ -125,7 +125,7 @@ fn differs(base: &Base, upper: BorrowedFd, rel: &Path, old: &Stat, up: &Stat) ->
     }
 }
 
-fn same_bytes(mut a: impl Read, mut b: impl Read) -> io::Result<bool> {
+pub(crate) fn same_bytes(mut a: impl Read, mut b: impl Read) -> io::Result<bool> {
     let (mut x, mut y) = (vec![0u8; 64 * 1024], vec![0u8; 64 * 1024]);
     loop {
         let n = a.read(&mut x)?;

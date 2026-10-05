@@ -1,23 +1,33 @@
 //! fuser adapter: translates kernel requests into `Views` calls and replies.
 
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::FileExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use fuser::{
-    AccessFlags, BackgroundSession, Config, Errno, FileHandle, FileType, Filesystem, FopenFlags, Generation, INodeNo,
-    InitFlags, KernelConfig, LockOwner, MountOption, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate, ReplyData,
-    ReplyDirectory, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, Request, TimeOrNow, WriteFlags,
+    AccessFlags, BackgroundSession, Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation,
+    INodeNo, InitFlags, KernelConfig, LockOwner, MountOption, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate,
+    ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, Request,
+    TimeOrNow, WriteFlags,
 };
 
 use crate::sys::{self, NOW, OMIT};
-use crate::views::{Node, R, ROOT, ScopeHandle, Views, errno};
+use crate::views::{Node, Pages, R, ROOT, ScopeHandle, UNSCOPED, Views, errno};
 
+/// The mount root lists scopes, which RPC calls add and remove.
 const TTL: Duration = Duration::from_secs(1);
+/// A scope's view changes only through its own requests (it reads a snapshot of the
+/// base), so the kernel may cache its entries, attributes and absent names for long.
+/// The deny root reads the live base, which commits change.
+const SNAPSHOT_TTL: Duration = Duration::from_secs(60);
+
+fn ttl(h: &ScopeHandle) -> &'static Duration {
+    if h.readonly { &TTL } else { &SNAPSHOT_TTL }
+}
 
 pub struct FuseView(pub Arc<Views>);
 
@@ -35,11 +45,17 @@ pub fn mount(views: Arc<Views>, mount: &Path, threads: usize) -> io::Result<Back
 }
 
 fn reply_entry(v: &Views, h: &ScopeHandle, rel: &Path, reply: ReplyEntry) {
+    // A scope's root sits in the mount root, which RPC calls change.
+    let ttl = if rel.as_os_str().is_empty() { &TTL } else { ttl(h) };
     match v
         .locate(h, rel)
         .and_then(|(_, st)| Ok(sys::attr(v.ino_for(h, rel)?, &st)))
     {
-        Ok(a) => reply.entry(&TTL, &a, Generation(0)),
+        Ok(a) => reply.entry(ttl, &a, Generation(0)),
+        // A negative entry: the kernel caches the absence (a create replaces it). Not under
+        // the unscoped root, which resets in place: kernel 7.0 keeps a negative entry
+        // through its invalidation.
+        Err(Errno::ENOENT) if !h.readonly && h.id != UNSCOPED => reply.entry(ttl, &sys::absent(), Generation(0)),
         Err(e) => reply.error(e),
     }
 }
@@ -51,6 +67,81 @@ fn reply_empty(r: R<()>, reply: ReplyEmpty) {
     }
 }
 
+/// The largest base file whose pages a first read-only open stores ahead of the reads.
+const PREFILL_MAX: u64 = 128 * 1024;
+
+/// Store the whole file in the kernel's page cache, saving the READ round trips that
+/// would follow the open (most files opened are read whole); false if that failed.
+fn prefill(v: &Views, ino: u64, f: &std::fs::File, size: u64) -> bool {
+    let mut buf = vec![0u8; size as usize];
+    let mut got = 0;
+    while got < buf.len() {
+        match f.read_at(&mut buf[got..], got as u64) {
+            Ok(0) => break,
+            Ok(n) => got += n,
+            Err(_) => return false,
+        }
+    }
+    got == buf.len() && (got == 0 || v.store_pages(ino, &buf))
+}
+
+/// A directory: its scope and path (None for the mount root).
+type Dir = Option<(Arc<ScopeHandle>, PathBuf)>;
+
+/// Directory `ino`'s entries, `.` and `..` first; a listing from offset 0 is logged.
+fn listing(v: &Views, ino: u64, offset: u64) -> R<(Dir, Vec<(FileType, OsString)>)> {
+    let mut entries = vec![
+        (FileType::Directory, OsString::from(".")),
+        (FileType::Directory, OsString::from("..")),
+    ];
+    match v.node(ino)? {
+        Node::Root => {
+            entries.extend(v.scope_ids().into_iter().map(|id| (FileType::Directory, id.into())));
+            Ok((None, entries))
+        }
+        Node::In(h, rel) => {
+            if offset == 0 {
+                v.log(&h, "list", &rel, "allow");
+            }
+            entries.extend(v.list(&h, &rel)?.into_iter().map(|(name, kind)| (kind, name)));
+            Ok((Some((h, rel)), entries))
+        }
+    }
+}
+
+/// The inode number of entry `name` of directory `dir_ino`.
+fn entry_ino(v: &Views, dir_ino: u64, at: &Dir, name: &OsStr) -> R<u64> {
+    match (name.as_bytes(), at) {
+        (b".", _) => Ok(dir_ino),
+        (b"..", Some((h, rel))) if !rel.as_os_str().is_empty() => v.ino_for(h, sys::parent(rel)),
+        (b"..", _) => Ok(ROOT),
+        (_, None) => {
+            let h = v.scope(&name.to_string_lossy())?;
+            v.ino_for(&h, Path::new(""))
+        }
+        (_, Some((h, rel))) => v.ino_for(h, &rel.join(name)),
+    }
+}
+
+/// The cache lifetime and attributes of entry `name` (the kernel ignores those of `.` and `..`).
+fn entry_attr(v: &Views, dir_ino: u64, at: &Dir, name: &OsStr) -> R<(&'static Duration, FileAttr)> {
+    let ino = entry_ino(v, dir_ino, at, name)?;
+    match (name.as_bytes(), at) {
+        (b"." | b"..", _) => Ok((
+            &TTL,
+            FileAttr {
+                ino: INodeNo(ino),
+                ..sys::absent()
+            },
+        )),
+        (_, None) => {
+            let h = v.scope(&name.to_string_lossy())?;
+            Ok((&TTL, sys::attr(ino, &v.locate(&h, Path::new(""))?.1)))
+        }
+        (_, Some((h, rel))) => Ok((ttl(h), sys::attr(ino, &v.locate(h, &rel.join(name))?.1))),
+    }
+}
+
 impl Filesystem for FuseView {
     fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> io::Result<()> {
         // Unprivileged cache flags; passthrough needs CAP_SYS_ADMIN and is not used.
@@ -59,7 +150,9 @@ impl Filesystem for FuseView {
                 | InitFlags::FUSE_WRITEBACK_CACHE
                 | InitFlags::FUSE_PARALLEL_DIROPS
                 | InitFlags::FUSE_CACHE_SYMLINKS
-                | InitFlags::FUSE_NO_OPENDIR_SUPPORT,
+                | InitFlags::FUSE_NO_OPENDIR_SUPPORT
+                | InitFlags::FUSE_DO_READDIRPLUS
+                | InitFlags::FUSE_READDIRPLUS_AUTO,
         );
         Ok(())
     }
@@ -79,12 +172,12 @@ impl Filesystem for FuseView {
     fn getattr(&self, _req: &Request, ino: INodeNo, _fh: Option<FileHandle>, reply: ReplyAttr) {
         let v = &self.0;
         let r = match v.node(ino.0) {
-            Ok(Node::Root) => v.root_stat().map(|st| sys::attr(ROOT, &st)),
-            Ok(Node::In(h, p)) => v.locate(&h, &p).map(|(_, st)| sys::attr(ino.0, &st)),
+            Ok(Node::Root) => v.root_stat().map(|st| (&TTL, sys::attr(ROOT, &st))),
+            Ok(Node::In(h, p)) => v.locate(&h, &p).map(|(_, st)| (ttl(&h), sys::attr(ino.0, &st))),
             Err(e) => Err(e),
         };
         match r {
-            Ok(a) => reply.attr(&TTL, &a),
+            Ok((ttl, a)) => reply.attr(ttl, &a),
             Err(e) => reply.error(e),
         }
     }
@@ -113,12 +206,12 @@ impl Filesystem for FuseView {
             Some(TimeOrNow::SpecificTime(t)) => sys::timespec(t),
         };
         let times = (atime.is_some() || mtime.is_some()).then(|| (ts(atime), ts(mtime)));
-        let r = self
-            .0
-            .key(ino.0)
-            .and_then(|(h, rel)| self.0.setattr(&h, &rel, mode, (uid, gid), size, times));
+        let r = self.0.key(ino.0).and_then(|(h, rel)| {
+            let st = self.0.setattr(&h, &rel, mode, (uid, gid), size, times)?;
+            Ok((ttl(&h), st))
+        });
         match r {
-            Ok(st) => reply.attr(&TTL, &sys::attr(ino.0, &st)),
+            Ok((ttl, st)) => reply.attr(ttl, &sys::attr(ino.0, &st)),
             Err(e) => reply.error(e),
         }
     }
@@ -212,9 +305,21 @@ impl Filesystem for FuseView {
         match self
             .0
             .key(ino.0)
-            .and_then(|(h, rel)| Ok((self.0.open(&h, &rel, flags.0)?, h)))
+            .and_then(|(h, rel)| Ok((self.0.open(&h, ino.0, &rel, flags.0)?, h)))
         {
-            Ok((f, h)) => reply.opened(FileHandle(self.0.add_file(h, f, req.pid())), FopenFlags::empty()),
+            Ok(((f, pages), h)) => {
+                let keep = match pages {
+                    Pages::Keep => true,
+                    Pages::Drop => false,
+                    Pages::Empty(size) => size <= PREFILL_MAX && prefill(&self.0, ino.0, &f, size),
+                };
+                let flags = if keep {
+                    FopenFlags::FOPEN_KEEP_CACHE
+                } else {
+                    FopenFlags::empty()
+                };
+                reply.opened(FileHandle(self.0.add_file(h, f, req.pid())), flags)
+            }
             Err(e) => reply.error(e),
         }
     }
@@ -264,8 +369,10 @@ impl Filesystem for FuseView {
         }
     }
 
+    /// Nothing to do at close: the kernel writes dirty pages back before FLUSH, and
+    /// ENOSYS tells it to skip the round trip on every later close.
     fn flush(&self, _req: &Request, _ino: INodeNo, _fh: FileHandle, _lock_owner: LockOwner, reply: ReplyEmpty) {
-        reply.ok()
+        reply.error(Errno::ENOSYS)
     }
 
     fn release(
@@ -290,40 +397,47 @@ impl Filesystem for FuseView {
         reply_empty(r, reply)
     }
 
-    fn readdir(&self, _req: &Request, ino: INodeNo, _fh: FileHandle, offset: u64, mut reply: ReplyDirectory) {
-        let v = &self.0;
-        let r = (|| {
-            let mut entries: Vec<(u64, FileType, std::ffi::OsString)> = vec![
-                (ino.0, FileType::Directory, ".".into()),
-                (ROOT, FileType::Directory, "..".into()),
-            ];
-            match v.node(ino.0)? {
-                Node::Root => {
-                    for id in v.scope_ids() {
-                        let h = v.scope(&id)?;
-                        entries.push((v.ino_for(&h, Path::new(""))?, FileType::Directory, id.into()));
-                    }
-                }
-                Node::In(h, rel) => {
-                    if offset == 0 {
-                        v.log(&h, "list", &rel, "allow");
-                    }
-                    if !rel.as_os_str().is_empty() {
-                        entries[1].0 = v.ino_for(&h, sys::parent(&rel))?;
-                    }
-                    for (name, kind) in v.list(&h, &rel)? {
-                        entries.push((v.ino_for(&h, &rel.join(&name))?, kind, name));
-                    }
-                }
-            }
-            Ok(entries)
-        })();
-        let entries = match r {
-            Ok(e) => e,
+    /// A scope's listings change only through its own requests: the kernel may cache them
+    /// across opens. The mount root (scopes come and go) and the deny root (the live base) do not.
+    fn opendir(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
+        let flags = match self.0.node(ino.0) {
+            Ok(Node::In(h, _)) if !h.readonly => FopenFlags::FOPEN_CACHE_DIR | FopenFlags::FOPEN_KEEP_CACHE,
+            Ok(_) => FopenFlags::empty(),
             Err(e) => return reply.error(e),
         };
-        for (i, (ino, kind, name)) in entries.into_iter().enumerate().skip(offset as usize) {
-            if reply.add(INodeNo(ino), (i + 1) as u64, kind, name) {
+        reply.opened(FileHandle(0), flags)
+    }
+
+    fn readdir(&self, _req: &Request, ino: INodeNo, _fh: FileHandle, offset: u64, mut reply: ReplyDirectory) {
+        let v = &self.0;
+        let (at, entries) = match listing(v, ino.0, offset) {
+            Ok(l) => l,
+            Err(e) => return reply.error(e),
+        };
+        // Inode numbers only for the entries that fit: the kernel asks again from the next offset.
+        for (i, (kind, name)) in entries.iter().enumerate().skip(offset as usize) {
+            let Ok(child) = entry_ino(v, ino.0, &at, name) else {
+                continue;
+            };
+            if reply.add(INodeNo(child), (i + 1) as u64, *kind, name) {
+                break;
+            }
+        }
+        reply.ok()
+    }
+
+    /// A listing with each entry's attributes: saves the kernel a lookup per entry.
+    fn readdirplus(&self, _req: &Request, ino: INodeNo, _fh: FileHandle, offset: u64, mut reply: ReplyDirectoryPlus) {
+        let v = &self.0;
+        let (at, entries) = match listing(v, ino.0, offset) {
+            Ok(l) => l,
+            Err(e) => return reply.error(e),
+        };
+        for (i, (_, name)) in entries.iter().enumerate().skip(offset as usize) {
+            let Ok((ttl, attr)) = entry_attr(v, ino.0, &at, name) else {
+                continue;
+            };
+            if reply.add(attr.ino, (i + 1) as u64, name, ttl, &attr, Generation(0)) {
                 break;
             }
         }
@@ -370,7 +484,7 @@ impl Filesystem for FuseView {
         })();
         match r {
             Ok((attr, f, h)) => reply.created(
-                &TTL,
+                ttl(&h),
                 &attr,
                 Generation(0),
                 FileHandle(v.add_file(h, f, req.pid())),

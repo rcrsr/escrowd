@@ -1,0 +1,106 @@
+host: Ubuntu 24.04.4 LTS, kernel 6.8.0-142-generic, 4 CPUs, node v24.21.0, pnpm 12.7.0, ripgrep 15.2.0, Python 3.14.7, escrow 0.1.0 (f354914-dirty), runs 7
+run=1 mode=sandbox repo=express workload=A clone=0.450122 install=0.373558 test=1.81046 passing=1238 wall=2.73751
+run=1 mode=escrow repo=express workload=A clone=0.525592 install=0.577407 test=1.96042 passing=1238 wall=3.50053
+run=1 mode=native repo=express workload=A clone=0.426917 install=0.121496 test=2.04832 passing=1238 wall=2.61827
+run=1 mode=sandbox repo=express workload=B status=0.010219 readall=0.101541 test=2.24875 passing=1238 wall=2.44358
+run=1 mode=escrow repo=express workload=B status=0.041794 readall=0.656165 test=2.51805 passing=1238 wall=3.38154
+run=1 mode=native repo=express workload=B status=0.009619 readall=0.072918 test=2.08411 passing=1238 wall=2.18761
+run=1 mode=sandbox repo=attrs workload=A clone=0.310169 install=0.976208 test=7.70589 passing=1380 wall=9.07902
+run=1 mode=escrow repo=attrs workload=A clone=0.372143 install=0.781946 test=7.81493 passing=1380 wall=9.15674
+run=1 mode=native repo=attrs workload=A clone=0.324732 install=0.610725 test=7.26207 passing=1380 wall=8.2226
+run=1 mode=sandbox repo=attrs workload=B status=0.007627 readall=0.02934 test=5.87791 passing=1380 wall=6.01409
+run=1 mode=escrow repo=attrs workload=B status=0.016813 readall=0.094593 test=5.71171 passing=1380 wall=5.98828
+run=1 mode=native repo=attrs workload=B status=0.020541 readall=0.025263 test=5.39072 passing=1380 wall=5.4571
+run=1 mode=sandbox repo=cpython workload=C rg_cold=0.028084 status_cold=0.213483 log_cold=0.057727 rg_warm=0.025404 status_warm=0.210785 log_warm=0.055526 wall=0.684545
+run=1 mode=escrow repo=cpython workload=C rg_cold=0.11712 status_cold=0.492133 log_cold=0.080878 rg_warm=0.072067 status_warm=0.046005 log_warm=0.057454 wall=1.06034
+run=1 mode=native repo=cpython workload=C rg_cold=0.027135 status_cold=0.06857 log_cold=0.057831 rg_warm=0.025622 status_warm=0.068118 log_warm=0.056733 wall=0.334306
+run=2 mode=escrow repo=express workload=A clone=0.498373 install=0.419055 test=2.06548 passing=1238 wall=3.3849
+run=2 mode=native repo=express workload=A clone=0.446026 install=0.117134 test=1.77532 passing=1238 wall=2.35986
+run=2 mode=sandbox repo=express workload=A clone=0.426896 install=0.121825 test=1.79712 passing=1238 wall=2.43973
+run=2 mode=escrow repo=express workload=B status=0.045765 readall=0.727316 test=1.99594 passing=1238 wall=2.89776
+run=2 mode=native repo=express workload=B status=0.011525 readall=0.084979 test=2.04517 passing=1238 wall=2.16374
+run=2 mode=sandbox repo=express workload=B status=0.010381 readall=0.0963 test=2.32705 passing=1238 wall=2.52
+run=2 mode=escrow repo=attrs workload=A clone=0.339865 install=0.707439 test=7.66919 passing=1380 wall=8.89633
+run=2 mode=native repo=attrs workload=A clone=0.314783 install=0.621104 test=7.42326 passing=1380 wall=8.38115
+run=2 mode=sandbox repo=attrs workload=A clone=0.283869 install=0.604764 test=7.23337 passing=1380 wall=8.22736
+run=2 mode=escrow repo=attrs workload=B status=0.016157 readall=0.097774 test=6.0802 passing=1380 wall=6.36718
+run=2 mode=native repo=attrs workload=B status=0.019285 readall=0.025403 test=5.56693 passing=1380 wall=5.63322
+run=2 mode=sandbox repo=attrs workload=B status=0.020123 readall=0.029194 test=5.44518 passing=1380 wall=5.59162
+run=2 mode=escrow repo=cpython workload=C rg_cold=0.11412 status_cold=0.399726 log_cold=0.081332 rg_warm=0.087869 status_warm=0.374763 log_warm=0.059562 wall=1.29592
+run=2 mode=native repo=cpython workload=C rg_cold=0.027059 status_cold=0.211496 log_cold=0.057756 rg_warm=0.024503 status_warm=0.204267 log_warm=0.055991 wall=0.61015
+run=2 mode=sandbox repo=cpython workload=C rg_cold=0.027097 status_cold=0.132982 log_cold=0.058683 rg_warm=0.02505 status_warm=0.127429 log_warm=0.0568 wall=0.523951
+run=3 mode=native repo=express workload=A clone=0.402178 install=0.091345 test=1.75421 passing=1238 wall=2.26944
+run=3 mode=sandbox repo=express workload=A clone=0.4161 install=0.124284 test=1.76012 passing=1238 wall=2.39423
+run=3 mode=escrow repo=express workload=A clone=0.498108 install=0.52918 test=1.99882 passing=1238 wall=3.41581
+run=3 mode=native repo=express workload=B status=0.011473 readall=0.084371 test=1.7827 passing=1238 wall=1.90045
+run=3 mode=sandbox repo=express workload=B status=0.010121 readall=0.104875 test=2.01262 passing=1238 wall=2.78068
+run=3 mode=escrow repo=express workload=B status=0.048831 readall=0.755693 test=2.62103 passing=1238 wall=3.56579
+run=3 mode=native repo=attrs workload=A clone=0.315125 install=0.621196 test=7.33263 passing=1380 wall=8.28936
+run=3 mode=sandbox repo=attrs workload=A clone=0.299156 install=0.624682 test=7.40453 passing=1380 wall=8.4564
+run=3 mode=escrow repo=attrs workload=A clone=0.36813 install=0.72035 test=7.62866 passing=1380 wall=8.91705
+run=3 mode=native repo=attrs workload=B status=0.007425 readall=0.025216 test=5.84149 passing=1380 wall=5.89484
+run=3 mode=sandbox repo=attrs workload=B status=0.019276 readall=0.028353 test=5.50513 passing=1380 wall=5.62939
+run=3 mode=escrow repo=attrs workload=B status=0.016652 readall=0.092227 test=5.58891 passing=1380 wall=5.87032
+run=3 mode=native repo=cpython workload=C rg_cold=0.026751 status_cold=0.205585 log_cold=0.056603 rg_warm=0.027893 status_warm=0.210544 log_warm=0.06616 wall=0.621947
+run=3 mode=sandbox repo=cpython workload=C rg_cold=0.025577 status_cold=0.135587 log_cold=0.056168 rg_warm=0.02368 status_warm=0.131179 log_warm=0.057558 wall=0.51902
+run=3 mode=escrow repo=cpython workload=C rg_cold=0.129598 status_cold=0.113881 log_cold=0.082002 rg_warm=0.097993 status_warm=0.490725 log_warm=0.05724 wall=1.14864
+run=4 mode=sandbox repo=express workload=A clone=0.396461 install=0.108944 test=1.7646 passing=1238 wall=2.38082
+run=4 mode=escrow repo=express workload=A clone=0.504706 install=0.524838 test=2.04006 passing=1238 wall=3.47137
+run=4 mode=native repo=express workload=A clone=0.456802 install=0.111829 test=1.75753 passing=1238 wall=2.34642
+run=4 mode=sandbox repo=express workload=B status=0.010033 readall=0.095531 test=1.76423 passing=1238 wall=1.96162
+run=4 mode=escrow repo=express workload=B status=0.036692 readall=0.710451 test=2.30861 passing=1238 wall=3.18844
+run=4 mode=native repo=express workload=B status=0.010048 readall=0.072346 test=2.22938 passing=1238 wall=2.33331
+run=4 mode=sandbox repo=attrs workload=A clone=0.300775 install=0.624758 test=7.31229 passing=1380 wall=8.32245
+run=4 mode=escrow repo=attrs workload=A clone=0.35679 install=0.740068 test=7.95972 passing=1380 wall=9.24176
+run=4 mode=native repo=attrs workload=A clone=0.309221 install=0.598217 test=7.43477 passing=1380 wall=8.36457
+run=4 mode=sandbox repo=attrs workload=B status=0.021023 readall=0.026744 test=5.86463 passing=1380 wall=5.99078
+run=4 mode=escrow repo=attrs workload=B status=0.039206 readall=0.091883 test=5.73948 passing=1380 wall=6.02754
+run=4 mode=native repo=attrs workload=B status=0.00708 readall=0.023581 test=5.52919 passing=1380 wall=5.58053
+run=4 mode=sandbox repo=cpython workload=C rg_cold=0.025336 status_cold=0.213066 log_cold=0.058686 rg_warm=0.024574 status_warm=0.013806 log_warm=0.056858 wall=0.484101
+run=4 mode=escrow repo=cpython workload=C rg_cold=0.117027 status_cold=0.491248 log_cold=0.083006 rg_warm=0.088298 status_warm=0.059572 log_warm=0.058707 wall=1.06254
+run=4 mode=native repo=cpython workload=C rg_cold=0.025364 status_cold=0.209026 log_cold=0.056229 rg_warm=0.025087 status_warm=0.203548 log_warm=0.071585 wall=0.619473
+run=5 mode=escrow repo=express workload=A clone=0.468446 install=0.424092 test=1.99491 passing=1238 wall=3.28325
+run=5 mode=native repo=express workload=A clone=0.427429 install=0.112866 test=1.7333 passing=1238 wall=2.29387
+run=5 mode=sandbox repo=express workload=A clone=0.431634 install=0.131722 test=1.85592 passing=1238 wall=2.50911
+run=5 mode=escrow repo=express workload=B status=0.036491 readall=0.691707 test=2.01142 passing=1238 wall=2.87345
+run=5 mode=native repo=express workload=B status=0.009058 readall=0.088282 test=2.14759 passing=1238 wall=2.26664
+run=5 mode=sandbox repo=express workload=B status=0.010601 readall=0.097252 test=2.25394 passing=1238 wall=2.43493
+run=5 mode=escrow repo=attrs workload=A clone=0.357805 install=0.728113 test=7.46987 passing=1380 wall=8.72255
+run=5 mode=native repo=attrs workload=A clone=0.32515 install=0.582142 test=7.35976 passing=1380 wall=8.2884
+run=5 mode=sandbox repo=attrs workload=A clone=0.296887 install=0.580385 test=7.52775 passing=1380 wall=8.50452
+run=5 mode=escrow repo=attrs workload=B status=0.039 readall=0.104062 test=6.10825 passing=1380 wall=6.40929
+run=5 mode=native repo=attrs workload=B status=0.020524 readall=0.025117 test=5.34436 passing=1380 wall=5.41088
+run=5 mode=sandbox repo=attrs workload=B status=0.019397 readall=0.02969 test=5.51227 passing=1380 wall=5.63841
+run=5 mode=escrow repo=cpython workload=C rg_cold=0.117401 status_cold=0.464372 log_cold=0.082859 rg_warm=0.090265 status_warm=0.058306 log_warm=0.063286 wall=1.03918
+run=5 mode=native repo=cpython workload=C rg_cold=0.024978 status_cold=0.204051 log_cold=0.055623 rg_warm=0.024096 status_warm=0.205277 log_warm=0.056277 wall=0.597551
+run=5 mode=sandbox repo=cpython workload=C rg_cold=0.026235 status_cold=0.139651 log_cold=0.0573 rg_warm=0.025041 status_warm=0.140014 log_warm=0.056294 wall=0.540461
+run=6 mode=native repo=express workload=A clone=0.401635 install=0.093589 test=1.72211 passing=1238 wall=2.23939
+run=6 mode=sandbox repo=express workload=A clone=0.419402 install=0.128446 test=1.74138 passing=1238 wall=2.37352
+run=6 mode=escrow repo=express workload=A clone=0.501061 install=0.487169 test=2.00247 passing=1238 wall=3.42022
+run=6 mode=native repo=express workload=B status=0.010621 readall=0.079298 test=1.78667 passing=1238 wall=1.89791
+run=6 mode=sandbox repo=express workload=B status=0.010864 readall=0.104611 test=2.0681 passing=1238 wall=2.27268
+run=6 mode=escrow repo=express workload=B status=0.048988 readall=0.742901 test=2.50265 passing=1238 wall=3.42147
+run=6 mode=native repo=attrs workload=A clone=0.301433 install=0.582249 test=7.49773 passing=1380 wall=8.40195
+run=6 mode=sandbox repo=attrs workload=A clone=0.302379 install=0.589006 test=7.19411 passing=1380 wall=8.19339
+run=6 mode=escrow repo=attrs workload=A clone=0.354671 install=0.73137 test=7.79497 passing=1380 wall=9.06758
+run=6 mode=native repo=attrs workload=B status=0.007981 readall=0.02528 test=6.06889 passing=1380 wall=6.12313
+run=6 mode=sandbox repo=attrs workload=B status=0.019607 readall=0.029037 test=5.52871 passing=1380 wall=5.67024
+run=6 mode=escrow repo=attrs workload=B status=0.014761 readall=0.088819 test=5.63381 passing=1380 wall=5.90737
+run=6 mode=native repo=cpython workload=C rg_cold=0.026551 status_cold=0.208308 log_cold=0.058447 rg_warm=0.02543 status_warm=0.213179 log_warm=0.05789 wall=0.617808
+run=6 mode=sandbox repo=cpython workload=C rg_cold=0.025746 status_cold=0.08132 log_cold=0.056337 rg_warm=0.023979 status_warm=0.080604 log_warm=0.056779 wall=0.416006
+run=6 mode=escrow repo=cpython workload=C rg_cold=0.121507 status_cold=0.492858 log_cold=0.083529 rg_warm=0.091652 status_warm=0.05267 log_warm=0.059811 wall=1.0712
+run=7 mode=sandbox repo=express workload=A clone=0.394232 install=0.109506 test=1.76474 passing=1238 wall=2.38837
+run=7 mode=escrow repo=express workload=A clone=0.497412 install=0.531255 test=2.00122 passing=1238 wall=3.42943
+run=7 mode=native repo=express workload=A clone=0.478606 install=0.121183 test=1.76632 passing=1238 wall=2.387
+run=7 mode=sandbox repo=express workload=B status=0.013003 readall=0.112252 test=1.78385 passing=1238 wall=2.00444
+run=7 mode=escrow repo=express workload=B status=0.050676 readall=0.661585 test=2.31056 passing=1238 wall=3.15979
+run=7 mode=native repo=express workload=B status=0.009837 readall=0.072679 test=2.3164 passing=1238 wall=2.41996
+run=7 mode=sandbox repo=attrs workload=A clone=0.298165 install=0.620157 test=7.42267 passing=1380 wall=8.42915
+run=7 mode=escrow repo=attrs workload=A clone=0.376223 install=0.795763 test=7.75707 passing=1380 wall=9.13166
+run=7 mode=native repo=attrs workload=A clone=0.303361 install=0.626534 test=7.33205 passing=1380 wall=8.28236
+run=7 mode=sandbox repo=attrs workload=B status=0.019481 readall=0.025834 test=5.7542 passing=1380 wall=5.88215
+run=7 mode=escrow repo=attrs workload=B status=0.016987 readall=0.097175 test=5.61295 passing=1380 wall=5.8922
+run=7 mode=native repo=attrs workload=B status=0.007215 readall=0.024772 test=5.37809 passing=1380 wall=5.43184
+run=7 mode=sandbox repo=cpython workload=C rg_cold=0.026483 status_cold=0.22131 log_cold=0.063605 rg_warm=0.029273 status_warm=0.014794 log_warm=0.059339 wall=0.505339
+run=7 mode=escrow repo=cpython workload=C rg_cold=0.112567 status_cold=0.473939 log_cold=0.084103 rg_warm=0.100732 status_warm=0.458928 log_warm=0.056314 wall=1.44877
+run=7 mode=native repo=cpython workload=C rg_cold=0.027105 status_cold=0.209373 log_cold=0.057127 rg_warm=0.02553 status_warm=0.012083 log_warm=0.055764 wall=0.415327

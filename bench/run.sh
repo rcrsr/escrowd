@@ -71,13 +71,16 @@ setup() {
 COMMON='set -e
 X=$(mktemp -d)
 export XDG_STATE_HOME=$X XDG_DATA_HOME=$X
-t() { date +%s.%N; }
+t() { perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e "printf qq{%.6f\n}, clock_gettime(CLOCK_MONOTONIC)"; }
 d() { awk "BEGIN{print $2-$1}"; }'
 
 express_install="cp $here/express-pnpm-lock.yaml pnpm-lock.yaml && XDG_CACHE_HOME=$CACHE/pnpm-cache pnpm install --frozen-lockfile --offline --store-dir $CACHE/store --package-import-method copy >/dev/null"
 express_test='XDG_CACHE_HOME='$CACHE'/pnpm-cache pnpm test >$X/test.log 2>&1 || true; passing=$(grep -o "[0-9]* passing" $X/test.log | cut -d" " -f1)'
 attrs_install='uv sync -q --frozen --offline --no-default-groups --group tests'
 attrs_test='uv run -q --frozen --offline --no-sync pytest -q -p no:cacheprovider --ignore tests/test_pyright.py >$X/test.log 2>&1 || true; passing=$(grep -o "[0-9]* passed" $X/test.log | cut -d" " -f1)'
+
+# Monotonic seconds: WSL steps the wall clock (`date` gave negative durations in 2.1).
+mono() { perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e "printf qq{%.6f\n}, clock_gettime(CLOCK_MONOTONIC)"; }
 
 steps() { # steps <repo> <A|B>
   local repo=$1 wl=$2 tag install test
@@ -139,7 +142,7 @@ sandbox:
   write: ['$CACHE/store', '$CACHE/pnpm-cache', '$CACHE/uv-cache']
 EOF2
   rt=$(mktemp -d "$RT/escrow-bench.XXXXXX")
-  t0=$(date +%s.%N)
+  t0=$(mono)
   case $mode in
   native) out=$(cd "$proj" && bash -c "$script" 2>&1) ;;
   sandbox | escrow)
@@ -150,7 +153,7 @@ EOF2
       -- bash -c "$script" 2>&1)
     ;;
   esac
-  t1=$(date +%s.%N)
+  t1=$(mono)
   echo "run=$i mode=$mode repo=$repo workload=$wl $(echo "$out" | grep -E '^(clone|status|rg_cold)=' | tail -1) wall=$(awk "BEGIN{print $t1-$t0}")"
   if [ "$mode" = escrow ] && ! echo "$out" | grep -q "change(s) committed"; then
     echo "run=$i mode=$mode repo=$repo workload=$wl error=no-commit $(echo "$out" | tail -3 | tr '\n' ' ')"

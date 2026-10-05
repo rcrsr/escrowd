@@ -275,6 +275,39 @@ def small_mutate(root):
     os.symlink("c2.txt", root / "link")
 
 
+def test_a_renamed_file_keeps_its_inode(daemon):
+    """A base file the scope only renamed is renamed in the project, out of a directory
+    the scope deletes and into one it creates (file watchers see a rename); a renamed
+    and edited file and a new file are the scope's copies, with no second link."""
+    d = daemon
+    (d.project / "old").mkdir()
+    (d.project / "old" / "a.txt").write_text("a\n")
+    (d.project / "old" / "x.txt").write_text("x\n")
+    (d.project / "b.txt").write_text("b\n")
+    ino = (d.project / "old" / "a.txt").stat().st_ino
+
+    def change(root):
+        (root / "new").mkdir()
+        os.rename(root / "old" / "a.txt", root / "new" / "a.txt")
+        shutil.rmtree(root / "old")
+        os.rename(root / "b.txt", root / "b2.txt")
+        with open(root / "b2.txt", "a") as f:
+            f.write("more\n")
+        (root / "n.txt").write_text("n\n")
+
+    want = reference(d.work, lambda r: shutil.copytree(d.project, r, dirs_exist_ok=True), change)
+    with client(d) as c:
+        sid, root = open_root(d, c)
+        change(root)
+        c.close_scope(sid)
+        assert c.commit(sid).status == pb.OUTCOME_STATUS_COMMITTED
+    assert tree(d.project) == want
+    assert (d.project / "new" / "a.txt").stat().st_ino == ino
+    assert (d.project / "b2.txt").read_text() == "b\nmore\n"
+    assert (d.project / "n.txt").stat().st_nlink == 1
+    assert leftovers(d.project) == []
+
+
 def run_with_fault(escrow_bin, spec: str) -> bool:
     """Commit the small scenario with ESCROWD_FAULT=spec. Returns False if the fault was
     never reached (the commit succeeded); otherwise checks the rollback and the retry."""

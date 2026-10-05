@@ -67,9 +67,13 @@ pub struct Journal {
     db: Connection,
 }
 
-const SCHEMA: &str = "
-PRAGMA journal_mode = WAL;
+// synchronous first, so the switch of a new journal to WAL runs under it.
+const PRAGMAS: &str = "
 PRAGMA synchronous = FULL;
+PRAGMA journal_mode = WAL;
+";
+
+const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS gens (gen INTEGER PRIMARY KEY, scope TEXT NOT NULL, state TEXT NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS entries (
@@ -124,7 +128,9 @@ fn version(r: &rusqlite::Row, at: usize) -> rusqlite::Result<Version> {
 impl Journal {
     pub fn open(path: &Path) -> io::Result<Self> {
         let db = Connection::open(path).map_err(sql)?;
-        db.execute_batch(SCHEMA).map_err(sql)?;
+        db.execute_batch(PRAGMAS).map_err(sql)?;
+        // One transaction: a new journal costs one sync, not one per table.
+        db.execute_batch(&format!("BEGIN; {SCHEMA} COMMIT;")).map_err(sql)?;
         Ok(Journal { db })
     }
 
@@ -142,16 +148,10 @@ impl Journal {
         self.meta("current")
     }
 
-    /// A new generation number; numbers never repeat, even after old generations are dropped.
-    pub fn alloc(&self) -> io::Result<u64> {
-        let generation = self.meta("last")?.max(self.current()?) + 1;
-        self.db
-            .execute(
-                "INSERT INTO meta VALUES ('last', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                [generation as i64],
-            )
-            .map_err(sql)?;
-        Ok(generation)
+    /// The next generation number; `begin` takes it. Numbers never repeat, even after
+    /// old generations are dropped (commits are serialized).
+    pub fn next(&self) -> io::Result<u64> {
+        Ok(self.meta("last")?.max(self.current()?) + 1)
     }
 
     /// Record a commit's intent in one transaction.
@@ -163,6 +163,11 @@ impl Journal {
         dirs: &[DirTimes],
     ) -> io::Result<()> {
         let tx = self.db.transaction().map_err(sql)?;
+        tx.execute(
+            "INSERT INTO meta VALUES ('last', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [generation as i64],
+        )
+        .map_err(sql)?;
         tx.execute(
             "INSERT INTO gens VALUES (?1, ?2, ?3)",
             params![generation as i64, scope, GenState::Journaled.as_str()],
@@ -313,10 +318,25 @@ impl Journal {
 
     /// Drop a generation's rows (rolled back, or no longer read by any scope).
     pub fn forget(&mut self, generation: u64) -> io::Result<()> {
+        self.forget_all(&[generation], false, None)
+    }
+
+    /// Forget `generations` and, with `restored`, the rollback copies, and record that
+    /// the scope of generation `dropped` is gone, in one transaction.
+    pub fn forget_all(&mut self, generations: &[u64], restored: bool, dropped: Option<u64>) -> io::Result<()> {
         let tx = self.db.transaction().map_err(sql)?;
-        for table in ["gens", "entries", "dirs"] {
-            tx.execute(&format!("DELETE FROM {table} WHERE gen = ?1"), [generation as i64])
+        if let Some(g) = dropped {
+            tx.execute("UPDATE gens SET scope = '' WHERE gen = ?1", [g as i64])
                 .map_err(sql)?;
+        }
+        for g in generations {
+            for table in ["gens", "entries", "dirs"] {
+                tx.execute(&format!("DELETE FROM {table} WHERE gen = ?1"), [*g as i64])
+                    .map_err(sql)?;
+            }
+        }
+        if restored {
+            tx.execute("DELETE FROM restored", []).map_err(sql)?;
         }
         tx.commit().map_err(sql)
     }
@@ -354,10 +374,5 @@ impl Journal {
             .query_map([], |r| Ok((sys::path_from(r.get(0)?), version(r, 1)?, version(r, 5)?)))
             .map_err(sql)?;
         rows.collect::<Result<_, _>>().map_err(sql)
-    }
-
-    pub fn clear_restored(&self) -> io::Result<()> {
-        self.db.execute("DELETE FROM restored", []).map_err(sql)?;
-        Ok(())
     }
 }
