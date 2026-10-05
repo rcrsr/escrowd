@@ -2,7 +2,7 @@
 
 Every known limit of escrowd as built, in one place. Each entry says where it is tracked. Update this file when a limit is found or lifted; the plans keep the detail.
 
-Status as of Oct 5, 2026: phase 2, after sub-phase 2.3.
+Status as of Oct 5, 2026: phase 2, after sub-phase 2.4.
 
 ## Capture
 
@@ -12,7 +12,10 @@ Status as of Oct 5, 2026: phase 2, after sub-phase 2.3.
 | `os.system`, `os.posix_spawn*` and `os.chdir` into the project bypass the SDK's scope. | Planned: 2.6 (#14). |
 | Child file descriptors beyond 0–2 are not passed to `escrow exec` children. | Carried since 1.5. |
 | `passthrough` mode IO is unlogged: one ledger line at start only. | By design, decided Oct 4, 2026; `deny` is the mode for agent hosts (2.6, 2.7). |
-| Paths outside the project (`$HOME`, `/tmp`) are not captured; `sandbox.write` binds package stores unescrowed. | Planned: 2.4 `roots:` rules (#11). |
+| Paths outside `$HOME`, `/tmp` and the project are not captured: other host paths are read-only binds (`roots.other.read`) or unescrowed passthrough binds. | By design (2.4). |
+| `passthrough` paths (package caches) are shared and unescrowed: one ledger line per bind at sandbox start, the IO itself unlogged. | By design (2.4, #11). |
+| In `passthrough` unscoped mode, the app's own `$HOME` and `/tmp` stay empty tmpfs even when the policy serves them; its scopes get their views. | By design, decided Oct 5, 2026: no unscoped scope exists to serve them. |
+| The SDK rewrites absolute paths under a served root (`os.path.expanduser` gives one); a literal `~/x` passed to `open` is a relative path, as in Python. | By design. |
 | No network capture; `--unshare-net` blocks the network. | Phase 8. |
 
 ## Filesystem semantics
@@ -58,4 +61,6 @@ Status as of Oct 5, 2026: phase 2, after sub-phase 2.3.
 | The change set lists paths, not a diff. | Planned: 2.5 (#12). |
 | Conflict policy is discard only; read conflicts are not checked. | Planned: 2.7 options. |
 | One daemon per `escrow run`; nested scopes are not supported. | Carried. |
+| A `deny` rule lets lookups pass: a denied file's name, size and times are visible to `stat`, its contents and listings are not. | By design, decided Oct 5, 2026 (listed paths inside a denied directory must stay reachable). |
+| A scope's view of a root the policy stops serving is dropped (with its changes) at the next daemon start. | By design (2.4). |
 | `escrow exec` passes argv, cwd and environment as UTF-8 (lossy). | Carried since 1.5. |

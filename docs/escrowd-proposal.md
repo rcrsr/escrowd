@@ -123,7 +123,8 @@ A local daemon owns capture and isolation; the SDK in each language only marks s
 FUSE captures project IO; bwrap contains everything else, so nothing reaches the project except through capture.
 
 - **Only one way to the project.** The FUSE view is mounted over `$PROJECT`; the real directory is never mounted in the sandbox.
-- **No uncaptured writes elsewhere.** The rest of the filesystem is read-only, with tmpfs for `/tmp` and home, or those routed through FUSE too if they matter.
+- **No uncaptured writes elsewhere.** The rest of the filesystem is read-only, with tmpfs for `/tmp` and home unless the policy's `roots:` routes them through FUSE (2.4).
+- **Paths outside the project (2.4).** `$HOME` and `/tmp` can be served like the project, each scope with its own view (`<id>.home/`, `<id>.tmp/`) mounted over the root in its sandbox. A rule per path decides: `capture` (staged, committed with the project in one journaled generation), `ephemeral` (staged, always discarded), `passthrough` (bound directly, outside escrow, logged at sandbox start) and `deny` (EACCES on reads, listings and changes, logged; the default for unlisted paths). The project, passthrough and read paths inside a root are mount points the view never serves; escrowd's state, views and sockets are absent from it.
 - **Network.** `--unshare-net`, with the daemon's proxy socket as the only way out.
 - **Lifetime.** `--unshare-pid --die-with-parent`; a scope's processes stop when it closes.
 - **Tamper resistance.** The daemon, journal and ledger live outside the sandbox. The app gets only the RPC socket, no `/dev/fuse`, and nested user namespaces are disabled so it can't remount.
@@ -187,7 +188,9 @@ Policy files hold software rules that run in the daemon, identical across langua
 | Symlinks to absolute project paths | The daemon resolves them inside the scope's view |
 | Native code or `mmap` doing its own IO | Falls to the `unscoped` mode; run that work in a subprocess for full capture |
 | Long-lived processes outliving a scope (dev server, watcher) | Stopped when the scope closes; give them their own scope if they must run longer |
-| Shared state outside the project (`~/.cache`, `.git/index.lock`, ports) | Route those paths through FUSE too, and a network namespace per scope |
+| Shared state outside the project (`~/.cache`, `.git/index.lock`, ports) | `roots:` rules (2.4): capture or ephemeral views of `$HOME` and `/tmp`, passthrough binds for content-addressed caches; a network namespace per scope |
+| Secrets in `$HOME` (`~/.ssh`, `~/.aws`) reachable once `$HOME` is served | `deny` rules (and `deny` as the default for unlisted paths): reads, listings and changes get EACCES and a ledger line. Lookups pass, so a denied file's name, size and times stay visible |
+| A served root contains escrowd's own state, views or sockets (the daemon must never touch its own view) | The root's rules hide them: absent from listings, ENOENT on lookup, no creates |
 | FUSE overhead on every operation | Unprivileged cache flags (writeback cache, async read, parallel dirops) by default; kernel FUSE passthrough (Linux 6.9+) needs `CAP_SYS_ADMIN`, so only through a root helper if needed; measure in phase 0 |
 | Network effects outside capture | `--unshare-net` per scope, or a proxy that tags connections with the scope ID |
 | FUSE writeback cache holds writes past the end of a scope | fsync every open handle of the scope before its decision runs; `syncfs` alone is not a barrier on plain FUSE (spike 0.4) |

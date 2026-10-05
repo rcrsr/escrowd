@@ -7,6 +7,9 @@
 //! start, the daemon rolls back every generation that is not `done`. Done
 //! generations stay as long as an open scope reads through their pre-images.
 //!
+//! Each entry names its root (`roots::PROJECT`, `HOME`, `TMP`): one generation
+//! commits every view of a scope.
+//!
 //! `restored` maps an original version to the version a rollback left in its
 //! place (a copy has a new inode and ctime), so the conflict check does not
 //! blame scopes that recorded the original.
@@ -48,6 +51,7 @@ impl GenState {
 /// One path a commit touches.
 #[derive(Clone, Debug)]
 pub struct JournalEntry {
+    pub root: usize,
     pub path: PathBuf,
     /// The base entry before the commit; None if the commit creates the path.
     pub pre: Entry,
@@ -58,6 +62,7 @@ pub struct JournalEntry {
 /// A directory whose times a rollback restores (its entries change during apply).
 #[derive(Clone, Debug)]
 pub struct DirTimes {
+    pub root: usize,
     pub path: PathBuf,
     pub atime_ns: i64,
     pub mtime_ns: i64,
@@ -78,6 +83,7 @@ CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL) S
 CREATE TABLE IF NOT EXISTS gens (gen INTEGER PRIMARY KEY, scope TEXT NOT NULL, state TEXT NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS entries (
     gen INTEGER NOT NULL,
+    root INTEGER NOT NULL,
     path BLOB NOT NULL,
     present INTEGER NOT NULL,
     mode INTEGER NOT NULL,
@@ -89,16 +95,18 @@ CREATE TABLE IF NOT EXISTS entries (
     mtime_ns INTEGER NOT NULL,
     ctime_ns INTEGER NOT NULL,
     tmp BLOB,
-    PRIMARY KEY (gen, path)
+    PRIMARY KEY (gen, root, path)
 ) STRICT;
 CREATE TABLE IF NOT EXISTS dirs (
     gen INTEGER NOT NULL,
+    root INTEGER NOT NULL,
     path BLOB NOT NULL,
     atime_ns INTEGER NOT NULL,
     mtime_ns INTEGER NOT NULL,
-    PRIMARY KEY (gen, path)
+    PRIMARY KEY (gen, root, path)
 ) STRICT;
 CREATE TABLE IF NOT EXISTS restored (
+    root INTEGER NOT NULL,
     path BLOB NOT NULL,
     old_ino INTEGER NOT NULL,
     old_size INTEGER NOT NULL,
@@ -108,8 +116,24 @@ CREATE TABLE IF NOT EXISTS restored (
     new_size INTEGER NOT NULL,
     new_mtime_ns INTEGER NOT NULL,
     new_ctime_ns INTEGER NOT NULL,
-    PRIMARY KEY (path, old_ino, old_size, old_mtime_ns, old_ctime_ns)
+    PRIMARY KEY (root, path, old_ino, old_size, old_mtime_ns, old_ctime_ns)
 ) STRICT;
+PRAGMA user_version = 1;
+";
+
+/// A journal from before roots (user_version 0) gets a root column (every row is the project's).
+const MIGRATE_ROOTS: &str = "
+ALTER TABLE entries RENAME TO entries0;
+ALTER TABLE dirs RENAME TO dirs0;
+ALTER TABLE restored RENAME TO restored0;
+";
+const MIGRATE_ROOTS_COPY: &str = "
+INSERT INTO entries SELECT gen, 0, path, present, mode, ino, size, uid, gid, atime_ns, mtime_ns, ctime_ns, tmp FROM entries0;
+INSERT INTO dirs SELECT gen, 0, path, atime_ns, mtime_ns FROM dirs0;
+INSERT INTO restored SELECT 0, * FROM restored0;
+DROP TABLE entries0;
+DROP TABLE dirs0;
+DROP TABLE restored0;
 ";
 
 fn sql(e: rusqlite::Error) -> io::Error {
@@ -129,8 +153,20 @@ impl Journal {
     pub fn open(path: &Path) -> io::Result<Self> {
         let db = Connection::open(path).map_err(sql)?;
         db.execute_batch(PRAGMAS).map_err(sql)?;
+        let version: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0)).map_err(sql)?;
+        let old: bool = db
+            .query_row("SELECT count(*) FROM sqlite_master WHERE name = 'entries'", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .map_err(sql)?
+            > 0;
         // One transaction: a new journal costs one sync, not one per table.
-        db.execute_batch(&format!("BEGIN; {SCHEMA} COMMIT;")).map_err(sql)?;
+        let batch = if old && version == 0 {
+            format!("BEGIN; {MIGRATE_ROOTS} {SCHEMA} {MIGRATE_ROOTS_COPY} COMMIT;")
+        } else {
+            format!("BEGIN; {SCHEMA} COMMIT;")
+        };
+        db.execute_batch(&batch).map_err(sql)?;
         Ok(Journal { db })
     }
 
@@ -175,7 +211,7 @@ impl Journal {
         .map_err(sql)?;
         {
             let mut st = tx
-                .prepare("INSERT INTO entries VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)")
+                .prepare("INSERT INTO entries VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)")
                 .map_err(sql)?;
             for e in entries {
                 let m = e.pre.unwrap_or(Meta {
@@ -190,6 +226,7 @@ impl Journal {
                 });
                 st.execute(params![
                     generation as i64,
+                    e.root as i64,
                     sys::path_bytes(&e.path),
                     e.pre.is_some(),
                     m.mode,
@@ -204,10 +241,13 @@ impl Journal {
                 ])
                 .map_err(sql)?;
             }
-            let mut st = tx.prepare("INSERT INTO dirs VALUES (?1, ?2, ?3, ?4)").map_err(sql)?;
+            let mut st = tx
+                .prepare("INSERT INTO dirs VALUES (?1, ?2, ?3, ?4, ?5)")
+                .map_err(sql)?;
             for d in dirs {
                 st.execute(params![
                     generation as i64,
+                    d.root as i64,
                     sys::path_bytes(&d.path),
                     d.atime_ns,
                     d.mtime_ns
@@ -268,7 +308,7 @@ impl Journal {
         let mut st = self
             .db
             .prepare(
-                "SELECT path, present, mode, ino, size, uid, gid, atime_ns, mtime_ns, ctime_ns, tmp
+                "SELECT path, present, mode, ino, size, uid, gid, atime_ns, mtime_ns, ctime_ns, tmp, root
                  FROM entries WHERE gen = ?1",
             )
             .map_err(sql)?;
@@ -290,6 +330,7 @@ impl Journal {
                     })
                     .transpose()?;
                 Ok(JournalEntry {
+                    root: r.get::<_, i64>(11)? as usize,
                     path: sys::path_from(r.get(0)?),
                     pre,
                     tmp: r.get::<_, Option<Vec<u8>>>(10)?.map(sys::path_from),
@@ -302,11 +343,12 @@ impl Journal {
     pub fn dirs(&self, generation: u64) -> io::Result<Vec<DirTimes>> {
         let mut st = self
             .db
-            .prepare("SELECT path, atime_ns, mtime_ns FROM dirs WHERE gen = ?1")
+            .prepare("SELECT path, atime_ns, mtime_ns, root FROM dirs WHERE gen = ?1")
             .map_err(sql)?;
         let rows = st
             .query_map([generation as i64], |r| {
                 Ok(DirTimes {
+                    root: r.get::<_, i64>(3)? as usize,
                     path: sys::path_from(r.get(0)?),
                     atime_ns: r.get(1)?,
                     mtime_ns: r.get(2)?,
@@ -348,11 +390,12 @@ impl Journal {
         Ok(())
     }
 
-    pub fn add_restored(&self, path: &Path, old: Version, new: Version) -> io::Result<()> {
+    pub fn add_restored(&self, root: usize, path: &Path, old: Version, new: Version) -> io::Result<()> {
         self.db
             .execute(
-                "INSERT OR REPLACE INTO restored VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT OR REPLACE INTO restored VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
+                    root as i64,
                     sys::path_bytes(path),
                     old.ino as i64,
                     old.size,
@@ -368,10 +411,18 @@ impl Journal {
         Ok(())
     }
 
-    pub fn restored(&self) -> io::Result<Vec<(PathBuf, Version, Version)>> {
+    /// (root, path, original version, the copy's version) of each rollback copy.
+    pub fn restored(&self) -> io::Result<Vec<(usize, PathBuf, Version, Version)>> {
         let mut st = self.db.prepare("SELECT * FROM restored").map_err(sql)?;
         let rows = st
-            .query_map([], |r| Ok((sys::path_from(r.get(0)?), version(r, 1)?, version(r, 5)?)))
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)? as usize,
+                    sys::path_from(r.get(1)?),
+                    version(r, 2)?,
+                    version(r, 6)?,
+                ))
+            })
             .map_err(sql)?;
         rows.collect::<Result<_, _>>().map_err(sql)
     }

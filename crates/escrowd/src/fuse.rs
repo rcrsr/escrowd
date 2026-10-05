@@ -55,7 +55,7 @@ fn reply_entry(v: &Views, h: &ScopeHandle, rel: &Path, reply: ReplyEntry) {
         // A negative entry: the kernel caches the absence (a create replaces it). Not under
         // the unscoped root, which resets in place: kernel 7.0 keeps a negative entry
         // through its invalidation.
-        Err(Errno::ENOENT) if !h.readonly && h.id != UNSCOPED => reply.entry(ttl, &sys::absent(), Generation(0)),
+        Err(Errno::ENOENT) if !h.readonly && h.group != UNSCOPED => reply.entry(ttl, &sys::absent(), Generation(0)),
         Err(e) => reply.error(e),
     }
 }
@@ -100,10 +100,8 @@ fn listing(v: &Views, ino: u64, offset: u64) -> R<(Dir, Vec<(FileType, OsString)
             Ok((None, entries))
         }
         Node::In(h, rel) => {
-            if offset == 0 {
-                v.log(&h, "list", &rel, "allow");
-            }
-            entries.extend(v.list(&h, &rel)?.into_iter().map(|(name, kind)| (kind, name)));
+            let listed = v.list_checked(&h, &rel, offset == 0)?;
+            entries.extend(listed.into_iter().map(|(name, kind)| (kind, name)));
             Ok((Some((h, rel)), entries))
         }
     }

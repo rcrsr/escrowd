@@ -33,7 +33,8 @@ fn path_str(p: &std::path::Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
-fn to_proto(scope_id: String, cs: changeset::ChangeSet) -> ChangeSet {
+/// The change set with each path as the caller sees it (`~/x` in `$HOME`).
+fn to_proto(views: &Views, scope_id: String, cs: changeset::ChangeSet) -> ChangeSet {
     let kind = |k| match k {
         changeset::Kind::Create => ChangeKind::Create,
         changeset::Kind::Modify => ChangeKind::Modify,
@@ -47,8 +48,12 @@ fn to_proto(scope_id: String, cs: changeset::ChangeSet) -> ChangeSet {
             .into_iter()
             .map(|c| Change {
                 kind: kind(c.kind).into(),
-                path: path_str(&c.path),
-                from_path: c.from.as_deref().map(path_str).unwrap_or_default(),
+                path: path_str(&views.shown(c.root, &c.path)),
+                from_path: c
+                    .from
+                    .as_deref()
+                    .map(|f| path_str(&views.shown(c.root, f)))
+                    .unwrap_or_default(),
             })
             .collect(),
         reads: cs
@@ -85,7 +90,7 @@ impl Service {
                 v.close_scope_after(&id2, &stopped)
             })
             .await?;
-        Ok(to_proto(id, cs))
+        Ok(to_proto(&self.views, id, cs))
     }
 
     /// Filesystem work runs off the async executor.
@@ -112,10 +117,24 @@ impl Escrow for Service {
 
     async fn open_scope(&self, req: Request<OpenScopeRequest>) -> Result<Response<OpenScopeResponse>, Status> {
         let req = req.into_inner();
-        let (scope_id, root) = self.blocking(move |v| v.open_scope(&req.name, &req.labels)).await?;
+        let (scope_id, root, roots) = self
+            .blocking(move |v| {
+                let (id, root) = v.open_scope(&req.name, &req.labels)?;
+                let roots = v.root_views(&id);
+                Ok((id, root, roots))
+            })
+            .await?;
         Ok(Response::new(OpenScopeResponse {
             scope_id,
             root: path_str(&root),
+            roots: roots
+                .into_iter()
+                .map(|r| ScopeRoot {
+                    path: path_str(&r.host),
+                    view: path_str(&r.view),
+                    direct: r.direct.iter().map(|p| path_str(p)).collect(),
+                })
+                .collect(),
         }))
     }
 

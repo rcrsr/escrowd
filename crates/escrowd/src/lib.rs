@@ -16,6 +16,7 @@ pub mod gate;
 pub mod journal;
 pub mod ledger;
 pub mod policy;
+pub mod roots;
 pub mod rpc;
 pub mod sandbox;
 pub mod snapshot;
@@ -25,7 +26,7 @@ pub mod views;
 
 /// Protocol version reported by `Ping`. Bumped on any incompatible change
 /// until phase 3 freezes the schema.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 pub mod proto {
     tonic::include_proto!("escrow.v1");

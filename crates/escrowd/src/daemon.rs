@@ -11,9 +11,10 @@ use fuser::BackgroundSession;
 
 use crate::exec::{self, Children, ExecServer};
 use crate::gate::Gate;
-use crate::policy::Policy;
-use crate::sandbox::{self, Sandbox};
-use crate::views::{Unscoped, Views};
+use crate::policy::{Policy, RootRules, Rule};
+use crate::roots::{self, Rules};
+use crate::sandbox::{self, Mount, Sandbox};
+use crate::views::{RootSpec, Unscoped, Views};
 use crate::{fuse, rpc, sys};
 
 pub struct Config {
@@ -31,6 +32,8 @@ pub struct Config {
     pub unscoped: Unscoped,
     /// bwrap for scope children [default: `sandbox::find_bwrap`].
     pub bwrap: Option<PathBuf>,
+    /// Host paths every sandbox may read besides the policy's (`escrow run --read`); absolute.
+    pub read: Vec<PathBuf>,
 }
 
 /// `<project basename>-<FNV-1a 64 of the canonical path>`: stable and readable.
@@ -84,8 +87,51 @@ pub struct Daemon {
     pub children: Arc<Children>,
     read: Vec<PathBuf>,
     write: Vec<PathBuf>,
+    /// `$HOME` (served or not).
+    home: Option<PathBuf>,
     bwrap: PathBuf,
     session: BackgroundSession,
+}
+
+/// A root the policy lists, resolved against the host.
+struct Resolved {
+    host: PathBuf,
+    rules: Option<(Rule, Vec<(PathBuf, Rule)>)>,
+}
+
+/// Root `key`'s rules with absolute paths; a `default: passthrough` root with no
+/// list is bound whole (its host path joins `passthrough`) and gets no view.
+fn resolve_root(
+    key: &str,
+    rules: Option<&RootRules>,
+    host: Option<PathBuf>,
+    passthrough: &mut Vec<PathBuf>,
+) -> anyhow::Result<Option<Resolved>> {
+    let Some(rules) = rules else { return Ok(None) };
+    let host = host.with_context(|| format!("{key}: the host has no such directory"))?;
+    let paths = rules.paths(key, &host)?;
+    let canonical = host
+        .canonicalize()
+        .with_context(|| format!("{key} {}", host.display()))?;
+    if rules.default == Rule::Passthrough {
+        if !paths.is_empty() {
+            bail!("{key}: default passthrough binds the whole root; it takes no path lists");
+        }
+        passthrough.push(canonical);
+        return Ok(None);
+    }
+    let mut kept = Vec::new();
+    for (p, rule) in paths {
+        let rel = p.strip_prefix(&host).expect("checked by paths()").to_path_buf();
+        match rule {
+            Rule::Passthrough => passthrough.push(p),
+            _ => kept.push((rel, rule)),
+        }
+    }
+    Ok(Some(Resolved {
+        host: canonical,
+        rules: Some((rules.default, kept)),
+    }))
 }
 
 /// Mount the views and load the scopes (rolling back an interrupted commit).
@@ -122,22 +168,107 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
         },
     };
     let gate = Gate::new(&policy.read.deny).context("policy read.deny pattern")?;
-    let read = policy.sandbox.read_paths()?;
+    let mut read = policy.roots.other.read_paths()?;
+    for r in config.read {
+        if !r.is_absolute() {
+            bail!("read path {} is not absolute", r.display());
+        }
+        read.push(r);
+    }
+    let home_dir = std::env::home_dir().filter(|h| h.is_dir());
+    let mut passthrough = policy.roots.other.passthrough_paths()?;
+    let home = resolve_root(
+        "roots.home",
+        policy.roots.home.as_ref(),
+        home_dir.clone(),
+        &mut passthrough,
+    )?;
+    let tmp = resolve_root(
+        "roots.tmp",
+        policy.roots.tmp.as_ref(),
+        Some("/tmp".into()),
+        &mut passthrough,
+    )?;
     let mut write = Vec::new();
-    for w in policy.sandbox.write_paths()? {
-        std::fs::create_dir_all(&w).with_context(|| format!("sandbox.write {}", w.display()))?;
+    for w in passthrough {
+        std::fs::create_dir_all(&w).with_context(|| format!("passthrough {}", w.display()))?;
         let w = w.canonicalize()?;
         // A writable bind must never reach the project or escrowd's own state and views.
         for (name, p) in [("project", &project), ("state", &state), ("mount", &mount)] {
             if inside(&w, p) || inside(p, &w) {
-                bail!("sandbox.write {} overlaps the {name} {}", w.display(), p.display());
+                bail!("passthrough {} overlaps the {name} {}", w.display(), p.display());
             }
         }
         write.push(w);
     }
-    // Open the base before anything is mounted, so reads of it never loop through a view.
-    let lower = sys::open_dir(&project).with_context(|| format!("opening {}", project.display()))?;
-    let views = Arc::new(Views::new(lower, &state, &mount, gate, config.unscoped).context("loading scopes")?);
+    let socket_dir = config.socket.parent().map(Path::to_path_buf).unwrap_or_default();
+    let socket_dir = socket_dir.canonicalize().unwrap_or(socket_dir);
+    let socket_name = config.socket.file_name().map(PathBuf::from).unwrap_or_default();
+    let sockets = [
+        socket_dir.join(&socket_name),
+        exec::exec_socket(&socket_dir.join(&socket_name)),
+    ];
+    // Open every base before anything is mounted, so reads of it never loop through a view.
+    // A root the policy does not serve is opened too: recovery may need it.
+    let open = |p: &Path| sys::open_dir(p).with_context(|| format!("opening {}", p.display()));
+    let mut specs = vec![RootSpec {
+        host: project.clone(),
+        lower: Some(open(&project)?),
+        served: true,
+        rules: None,
+        direct: Vec::new(),
+    }];
+    let fallback = [
+        home_dir.and_then(|h| h.canonicalize().ok()),
+        Path::new("/tmp").canonicalize().ok(),
+    ];
+    for (resolved, fallback) in [home, tmp].into_iter().zip(fallback) {
+        let Some(Resolved { host, rules }) = resolved else {
+            let lower = fallback.as_deref().and_then(|p| sys::open_dir(p).ok());
+            specs.push(RootSpec {
+                host: fallback.unwrap_or_default(),
+                lower,
+                served: false,
+                rules: None,
+                direct: Vec::new(),
+            });
+            continue;
+        };
+        if inside(&host, &project) || inside(&host, &state) || inside(&host, &mount) {
+            bail!(
+                "root {} must not lie inside the project, the state or the mount",
+                host.display()
+            );
+        }
+        // Read paths may be symlinks (bound as such): match them as given, else resolved.
+        let rel = |p: &PathBuf| {
+            let resolved = p.canonicalize().ok();
+            [Some(p), resolved.as_ref()]
+                .into_iter()
+                .flatten()
+                .find_map(|p| p.strip_prefix(&host).ok())
+                .filter(|r| !r.as_os_str().is_empty())
+                .map(Path::to_path_buf)
+        };
+        let direct: Vec<PathBuf> = write
+            .iter()
+            .chain(&read)
+            .filter(|p| rel(p).is_some())
+            .cloned()
+            .collect();
+        let stubs = std::iter::once(&project).chain(&direct).filter_map(rel).collect();
+        let hidden = [&state, &mount].into_iter().chain(&sockets).filter_map(rel).collect();
+        let (default, paths) = rules.expect("a resolved root has rules");
+        specs.push(RootSpec {
+            lower: Some(open(&host)?),
+            host,
+            served: true,
+            rules: Some(Arc::new(Rules::new(default, paths, stubs, hidden))),
+            direct,
+        });
+    }
+    let home = specs[roots::HOME].served.then(|| specs[roots::HOME].host.clone());
+    let views = Arc::new(Views::new(specs, &state, &mount, gate, config.unscoped).context("loading scopes")?);
     let session = fuse::mount(views.clone(), &mount, config.threads)
         .with_context(|| format!("mounting views at {}", mount.display()))?;
     views.set_notifier(session.notifier());
@@ -156,17 +287,13 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
         children: Arc::new(Children::new(std::time::Duration::from_millis(policy.close.grace_ms))),
         read,
         write,
+        home: home.or_else(std::env::home_dir),
         bwrap: sandbox::find_bwrap(config.bwrap.as_deref()),
         session,
     })
 }
 
 impl Daemon {
-    /// Let every sandbox read `path` too (`escrow run --read`).
-    pub fn add_read(&mut self, path: PathBuf) {
-        self.read.push(path);
-    }
-
     /// A sandbox that hides escrowd's state, views and sockets.
     pub fn sandbox(&self) -> Sandbox {
         Sandbox {
@@ -175,8 +302,17 @@ impl Daemon {
             write: self.write.clone(),
             hide_dirs: vec![self.state.clone(), self.mount.clone()],
             hide_files: vec![self.socket.clone(), exec::exec_socket(&self.socket)],
-            home: std::env::home_dir(),
+            home: self.home.clone(),
         }
+    }
+
+    /// Scope `id`'s views of the roots other than the project, as sandbox mounts.
+    pub fn root_mounts(&self, id: &str) -> Vec<Mount> {
+        self.views
+            .root_views(id)
+            .into_iter()
+            .map(|r| Mount::Bind(r.view, r.host))
+            .collect()
     }
 
     /// Serve the gRPC and exec sockets until `shutdown` resolves, then stop every

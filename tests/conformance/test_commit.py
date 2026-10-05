@@ -308,19 +308,28 @@ def test_a_renamed_file_keeps_its_inode(daemon):
     assert leftovers(d.project) == []
 
 
-def run_with_fault(escrow_bin, spec: str) -> bool:
-    """Commit the small scenario with ESCROWD_FAULT=spec. Returns False if the fault was
-    never reached (the commit succeeded); otherwise checks the rollback and the retry."""
+def run_with_fault(escrow_bin, spec: str, home: bool = False) -> bool:
+    """Commit the small scenario with ESCROWD_FAULT=spec (with `home`, the same scenario
+    in $HOME too, in the same commit). Returns False if the fault was never reached (the
+    commit succeeded); otherwise checks the rollback and the retry."""
     work = make_runtime_dir()
     crash = spec.endswith(":abort")
+    kw = {}
+    if home:
+        (work / "home").mkdir()
+        kw = {"roots": "  home: {default: capture}\n", "env": {"HOME": str(work / "home")}}
+    trees = [work / "proj", work / "home"] if home else [work / "proj"]
     try:
-        d = Daemon(escrow_bin, work, env={"ESCROWD_FAULT": spec})
-        small_seed(d.project)
+        d = Daemon(escrow_bin, work, **{**kw, "env": {**kw.get("env", {}), "ESCROWD_FAULT": spec}})
+        for t in trees:
+            small_seed(t)
         want = reference(work, small_seed, small_mutate)
-        before = fingerprint(d.project)
+        before = [fingerprint(t) for t in trees]
         with client(d) as c:
             sid, root = open_root(d, c)
             small_mutate(root)
+            if home:
+                small_mutate(d.mount / f"{sid}.home")
             c.close_scope(sid)
             try:
                 c.commit(sid, timeout=10)
@@ -328,7 +337,7 @@ def run_with_fault(escrow_bin, spec: str) -> bool:
                 code = err.code()
             else:
                 d.stop()
-                assert tree(d.project) == want
+                assert all(tree(t) == want for t in trees)
                 return False
         if crash:
             assert code == grpc.StatusCode.UNAVAILABLE
@@ -336,13 +345,13 @@ def run_with_fault(escrow_bin, spec: str) -> bool:
         else:
             assert code == grpc.StatusCode.ABORTED, spec
         d.stop()
-        d = Daemon(escrow_bin, work)  # the restart rolls back an unfinished commit
-        assert fingerprint(d.project) == before, spec
-        assert not leftovers(d.project), spec
+        d = Daemon(escrow_bin, work, **kw)  # the restart rolls back an unfinished commit
+        assert [fingerprint(t) for t in trees] == before, spec
+        assert not any(leftovers(t) for t in trees), spec
         assert d.generations() == [], spec
         with client(d) as c:  # the scope is still closed: the retry applies it
             assert c.commit(sid).status == pb.OUTCOME_STATUS_COMMITTED, spec
-        assert tree(d.project) == want, spec
+        assert all(tree(t) == want for t in trees), spec
         d.stop()
         return True
     finally:
@@ -350,12 +359,12 @@ def run_with_fault(escrow_bin, spec: str) -> bool:
         shutil.rmtree(work, ignore_errors=True)
 
 
-@pytest.mark.parametrize("mode", ["error", "crash"])
+@pytest.mark.parametrize("mode", ["error", "crash", "error+home", "crash+home"])
 def test_fault_at_every_commit_step_leaves_the_base_byte_identical(escrow_bin, mode):
-    suffix = ":abort" if mode == "crash" else ""
+    suffix = ":abort" if mode.startswith("crash") else ""
     for point in ("journal", "preimage", "apply", "done"):
         n = 0
-        while run_with_fault(escrow_bin, f"{point}:{n}{suffix}"):
+        while run_with_fault(escrow_bin, f"{point}:{n}{suffix}", home=mode.endswith("+home")):
             n += 1
         assert n > 0, f"fault point {point} never reached"
 

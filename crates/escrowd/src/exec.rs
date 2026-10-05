@@ -4,7 +4,8 @@
 //! `escrow exec` asks the daemon. It sends its stdin, stdout and stderr over
 //! SCM_RIGHTS with a `SpawnRequest`; the daemon starts the command in bwrap with
 //! the scope's view over the project, in its own process group, and reports
-//! `pid`, then `exit_code`. `SpawnSignal` frames are delivered to the command's
+//! `pid`, then `exit_code`; its other views (`$HOME`, `/tmp`) are mounted over
+//! their roots. `SpawnSignal` frames are delivered to the command's
 //! processes; a dropped connection kills the whole sandbox. The child gets no socket, so
 //! it cannot reach the daemon.
 //!
@@ -30,7 +31,7 @@ use rustix::net::{
 
 use crate::proto::{SpawnEvent, SpawnRequest, SpawnSignal, spawn_event::Event};
 use crate::sandbox::{Mount, Sandbox};
-use crate::views::Views;
+use crate::views::{RootView, Views};
 
 const MAX_FRAME: usize = 16 << 20;
 
@@ -269,16 +270,23 @@ impl ExecServer {
         r
     }
 
-    /// The caller's cwd inside the scope's sandbox.
-    fn chdir(&self, scope: &str, cwd: &str) -> PathBuf {
+    /// The caller's cwd inside the scope's sandbox: a path in a view (as the app's
+    /// sandbox or the host sees it) maps to its root, a path in a served root stays,
+    /// anything else is the project root.
+    fn chdir(&self, scope: &str, cwd: &str, roots: &[RootView]) -> PathBuf {
         let cwd = Path::new(cwd);
-        // The view as the app's sandbox sees it, and as a caller on the host sees it.
-        for view in [Path::new("/escrow").join(scope), self.mount.join(scope)] {
-            if let Ok(rest) = cwd.strip_prefix(&view) {
-                return self.project.join(rest);
+        let hosts = std::iter::once((self.mount.join(scope), self.project.as_path()))
+            .chain(roots.iter().map(|r| (r.view.clone(), r.host.as_path())));
+        for (view, host) in hosts {
+            let name = view.file_name().unwrap_or_default();
+            for view in [Path::new("/escrow").join(name), view.clone()] {
+                if let Ok(rest) = cwd.strip_prefix(&view) {
+                    return host.join(rest);
+                }
             }
         }
-        if cwd.starts_with(&self.project) {
+        let mut served = std::iter::once(self.project.as_path()).chain(roots.iter().map(|r| r.host.as_path()));
+        if served.any(|h| cwd.starts_with(h)) {
             return cwd.to_path_buf();
         }
         self.project.clone()
@@ -300,11 +308,20 @@ impl ExecServer {
             return Err(invalid(format!("scope {id} is closed")));
         }
         let argv: Vec<OsString> = req.argv.iter().map(OsString::from).collect();
-        let mounts = [Mount::Bind(self.mount.join(id), self.project.clone())];
-        let mut cmd = self.sandbox.command(&mounts, &self.chdir(id, &req.cwd), &argv);
+        let roots = self.views.root_views(id);
+        let mut mounts = vec![Mount::Bind(self.mount.join(id), self.project.clone())];
+        mounts.extend(roots.iter().map(|r| Mount::Bind(r.view.clone(), r.host.clone())));
+        let mut cmd = self.sandbox.command(&mounts, &self.chdir(id, &req.cwd, &roots), &argv);
         cmd.env_clear()
-            .envs(req.env.iter().filter(|(k, _)| !k.starts_with("ESCROW_SOCKET")))
-            .stdin(Stdio::from(stdin))
+            .envs(req.env.iter().filter(|(k, _)| !k.starts_with("ESCROW_SOCKET")));
+        // A home view is mounted at the daemon's $HOME.
+        if let Some(home) = roots
+            .iter()
+            .find(|r| Some(r.host.as_path()) == self.sandbox.home.as_deref())
+        {
+            cmd.env("HOME", &home.host);
+        }
+        cmd.stdin(Stdio::from(stdin))
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr))
             .process_group(0);

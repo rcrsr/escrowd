@@ -30,13 +30,17 @@ out = {}
 
 
 class Sdk:
-    def __init__(self, escrow_bin, runtime_dir):
+    def __init__(self, escrow_bin, runtime_dir, roots=""):
+        """`roots`: more policy keys under roots:; with them, $HOME is `<work>/home`."""
         self.bin, self.work = escrow_bin, runtime_dir
         self.project = runtime_dir / "proj"
         self.project.mkdir()
         (runtime_dir / "app").mkdir()
         (runtime_dir / "run").mkdir()
-        self.policy = write_policy(runtime_dir / "app", deny_read=(".env",))
+        self.home = runtime_dir / "home" if roots else None
+        if self.home:
+            self.home.mkdir()
+        self.policy = write_policy(runtime_dir / "app", deny_read=(".env",), roots=roots)
 
     def run(self, body: str, mode: str = "deny", check: bool = True) -> dict:
         script = self.work / "app" / "app.py"
@@ -47,6 +51,8 @@ class Sdk:
             "XDG_STATE_HOME": str(self.work / "state-home"),
             "XDG_RUNTIME_DIR": str(self.work / "run"),
         }
+        if self.home:
+            env["HOME"] = str(self.home)
         r = subprocess.run(
             [sys.executable, script, self.project, mode, self.policy],
             env=env,
@@ -198,3 +204,32 @@ def test_settle_unscoped_in_implicit_mode(sdk):
     )
     assert out["settled"] == ["committed", ["loose.txt"]]
     assert sorted(os.listdir(sdk.project)) == ["loose.txt"]
+
+
+def test_home_paths_are_rewritten_into_the_scope(escrow_bin, runtime_dir):
+    sdk = Sdk(escrow_bin, runtime_dir, roots="  home: {default: capture, deny: ['~/.ssh']}\n")
+    assert sdk.home
+    (sdk.home / ".gitconfig").write_text("base\n")
+    try:
+        out = sdk.run("""
+            home = Path(os.path.expanduser("~"))
+            with escrow.scope("cfg") as s:
+                (home / ".gitconfig").write_text("scoped\\n")
+                out["inside"] = (home / ".gitconfig").read_text()
+                cat = ["cat", str(home / ".gitconfig")]
+                out["child"] = subprocess.run(cat, capture_output=True, text=True).stdout
+                out["view"] = s.path(home / ".gitconfig")
+                out["realpath"] = os.path.realpath(home / ".gitconfig")
+                out["held"] = open("/escrow/unscoped.home/.gitconfig").read()
+            out["outcome"] = [s.outcome.status, s.outcome.paths]
+        """)
+    finally:
+        for m in (runtime_dir / "run" / "escrowd").glob("*/view"):
+            subprocess.run(["fusermount3", "-u", "-z", m], capture_output=True)
+    gitconfig = str(sdk.home / ".gitconfig")
+    assert out["inside"] == out["child"] == "scoped\n"
+    assert out["held"] == "base\n"  # the app outside the scope still sees the base
+    assert out["view"].startswith("/escrow/s") and out["view"].endswith(".home/.gitconfig")
+    assert out["realpath"] == gitconfig
+    assert out["outcome"] == ["committed", ["~/.gitconfig"]]
+    assert (sdk.home / ".gitconfig").read_text() == "scoped\n"
