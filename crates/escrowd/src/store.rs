@@ -11,16 +11,25 @@
 //!   (its snapshot) and the upper-only inode counter.
 //!
 //! Hot lookups (hidden, pinned inode) hit in-memory copies; every change is
-//! written through to SQLite before the FUSE reply.
+//! written through to SQLite before the FUSE reply, except pins of upper-only
+//! numbers, the upper-only counter and first reads: they are written with the
+//! next change to a base-derived pin (a rename of a base entry), every
+//! `PIN_BATCH` changes, on close and at shutdown, each time as one consistent
+//! snapshot. A daemon killed in between gives those entries new numbers after its
+//! restart (no process sees both, since a restart leaves the old mount dead) and
+//! drops those reads from the change set; the versions of changed paths, which
+//! the conflict check uses, are always written.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::sys::{self, Version};
+use crate::views::UPPER_BIT;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VersionKind {
@@ -50,19 +59,31 @@ pub struct ScopeStore {
     /// Reads only (the unscoped root in `deny` mode): every change gets EROFS.
     pub readonly: bool,
     dir: PathBuf,
-    db: Connection,
+    /// Shared lookups take the store's read lock; the connection has its own lock.
+    db: Mutex<Connection>,
     whiteouts: HashSet<PathBuf>,
     opaque: HashSet<PathBuf>,
     pins: HashMap<PathBuf, u64>,
     versions: HashMap<PathBuf, Seen>,
     denied: HashSet<PathBuf>,
     next_upper_ino: u64,
+    /// Pins and the counter not written yet: each path's current pin (or its absence) is.
+    unwritten_pins: HashSet<PathBuf>,
+    unwritten_counter: bool,
+    /// First reads not written yet, with the version read.
+    unwritten_reads: HashMap<PathBuf, Version>,
     pub state: ScopeState,
 }
 
-const SCHEMA: &str = "
-PRAGMA journal_mode = WAL;
+const PIN_BATCH: usize = 4096;
+
+// synchronous first, so the switch of a new database to WAL runs under it.
+const PRAGMAS: &str = "
 PRAGMA synchronous = NORMAL;
+PRAGMA journal_mode = WAL;
+";
+
+const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value ANY) STRICT;
 CREATE TABLE IF NOT EXISTS whiteouts (path BLOB PRIMARY KEY) STRICT;
 CREATE TABLE IF NOT EXISTS opaque (path BLOB PRIMARY KEY) STRICT;
@@ -84,15 +105,39 @@ fn sql(e: rusqlite::Error) -> io::Error {
     io::Error::other(e)
 }
 
-/// `path = p OR path starts with p/` for BLOB paths; `?1` is p, `?2` is p + "/", `?3` its length.
-const UNDER: &str = "(path = ?1 OR substr(path, 1, ?3) = ?2)";
+fn write_version(db: &Connection, rel: &Path, seen: Seen, v: Version) -> io::Result<()> {
+    exec(
+        db,
+        "INSERT INTO versions VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(path) DO UPDATE SET read = excluded.read, changed = excluded.changed",
+        params![
+            sys::path_bytes(rel),
+            seen.read,
+            seen.changed,
+            v.ino as i64,
+            v.size,
+            v.mtime_ns,
+            v.ctime_ns
+        ],
+    )
+    .map(|_| ())
+}
 
-fn under_params(p: &Path) -> (Vec<u8>, Vec<u8>, i64) {
+/// Run one statement, prepared once per connection.
+fn exec(db: &Connection, q: &str, p: impl rusqlite::Params) -> io::Result<usize> {
+    db.prepare_cached(q).and_then(|mut st| st.execute(p)).map_err(sql)
+}
+
+/// `path = p OR path starts with p/` for BLOB paths, as an index range: `?1` is p,
+/// `?2` is p + "/" and `?3` is p + "0" (the byte after '/').
+const UNDER: &str = "(path = ?1 OR (path >= ?2 AND path < ?3))";
+
+fn under_params(p: &Path) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
     let exact = sys::path_bytes(p).to_vec();
-    let mut prefix = exact.clone();
-    prefix.push(b'/');
-    let n = prefix.len() as i64;
-    (exact, prefix, n)
+    let (mut lo, mut hi) = (exact.clone(), exact.clone());
+    lo.push(b'/');
+    hi.push(b'/' + 1);
+    (exact, lo, hi)
 }
 
 /// `p` moved from `from` to `to`, or None if `p` is not at or under `from`.
@@ -119,25 +164,39 @@ impl ScopeStore {
         let dir = scopes_dir.join(id);
         fs::create_dir(&dir)?;
         fs::create_dir(dir.join("upper"))?;
-        let db = Connection::open(dir.join("meta.sqlite")).map_err(sql)?;
-        db.execute_batch(SCHEMA).map_err(sql)?;
-        db.execute(
+        let mut db = Connection::open(dir.join("meta.sqlite")).map_err(sql)?;
+        db.execute_batch(PRAGMAS).map_err(sql)?;
+        // One transaction: a scope opens with one write.
+        let tx = db.transaction().map_err(sql)?;
+        tx.execute_batch(SCHEMA).map_err(sql)?;
+        tx.execute(
             "INSERT INTO meta VALUES ('name', ?1), ('idx', ?2), ('since', ?3), ('readonly', ?4), ('next_upper_ino', 0), ('state', 'open')",
             params![name, idx as i64, since as i64, readonly as i64],
         )
         .map_err(sql)?;
         for (k, v) in labels {
-            db.execute("INSERT INTO labels VALUES (?1, ?2)", params![k, v])
+            tx.execute("INSERT INTO labels VALUES (?1, ?2)", params![k, v])
                 .map_err(sql)?;
         }
-        Self::load(scopes_dir, id)
+        tx.commit().map_err(sql)?;
+        Self::from_db(dir, id, db)
     }
 
     /// Reopen an existing scope directory, e.g. after a daemon restart.
     pub fn load(scopes_dir: &Path, id: &str) -> io::Result<Self> {
         let dir = scopes_dir.join(id);
         let db = Connection::open(dir.join("meta.sqlite")).map_err(sql)?;
+        db.execute_batch(PRAGMAS).map_err(sql)?;
         db.execute_batch(SCHEMA).map_err(sql)?;
+        Self::from_db(dir, id, db)
+    }
+
+    fn from_db(dir: PathBuf, id: &str, db: Connection) -> io::Result<Self> {
+        db.set_prepared_statement_cache_capacity(32);
+        // A store is closed when its scope is dropped (and deleted) or the daemon
+        // stops; a checkpoint then is wasted work, and the next open replays the WAL.
+        db.set_db_config(rusqlite::config::DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)
+            .map_err(sql)?;
         let meta = |k: &str| -> io::Result<rusqlite::types::Value> {
             db.query_row("SELECT value FROM meta WHERE key = ?1", [k], |r| r.get(0))
                 .optional()
@@ -195,24 +254,49 @@ impl ScopeStore {
             since,
             readonly,
             dir,
-            db,
+            db: Mutex::new(db),
             whiteouts,
             opaque,
             pins,
             versions,
             denied,
             next_upper_ino,
+            unwritten_pins: HashSet::new(),
+            unwritten_counter: false,
+            unwritten_reads: HashMap::new(),
             state,
         })
+    }
+
+    /// Run `f`'s changes in one transaction (the store's own groups nest as savepoints).
+    pub fn batch<T>(&mut self, f: impl FnOnce(&mut Self) -> io::Result<T>) -> io::Result<T> {
+        self.db.get_mut().unwrap().execute_batch("BEGIN").map_err(sql)?;
+        match f(self) {
+            Ok(v) => {
+                self.db.get_mut().unwrap().execute_batch("COMMIT").map_err(sql)?;
+                Ok(v)
+            }
+            Err(e) => {
+                let _ = self.db.get_mut().unwrap().execute_batch("ROLLBACK");
+                Err(e)
+            }
+        }
     }
 
     pub fn upper_dir(&self) -> PathBuf {
         self.dir.join("upper")
     }
 
-    /// Delete the scope's directory: its files and metadata.
-    pub fn destroy(&self) -> io::Result<()> {
-        fs::remove_dir_all(&self.dir)
+    /// Move the scope's directory (its files and metadata) to `trash`, whose
+    /// contents the caller deletes; returns the new path.
+    pub fn discard_to(&self, trash: &Path) -> io::Result<PathBuf> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let to = trash.join(format!("{}.{nanos}", self.id));
+        fs::rename(&self.dir, &to)?;
+        Ok(to)
     }
 
     /// Hidden by a whiteout on itself or an ancestor, or by an opaque ancestor.
@@ -231,16 +315,20 @@ impl ScopeStore {
     }
 
     pub fn set_state(&mut self, state: ScopeState) -> io::Result<()> {
+        self.flush()?;
         let v = if state == ScopeState::Closed { "closed" } else { "open" };
-        self.db
-            .execute("UPDATE meta SET value = ?1 WHERE key = 'state'", [v])
-            .map_err(sql)?;
+        exec(
+            self.db.get_mut().unwrap(),
+            "UPDATE meta SET value = ?1 WHERE key = 'state'",
+            [v],
+        )?;
         self.state = state;
         Ok(())
     }
 
     pub fn labels(&self) -> io::Result<HashMap<String, String>> {
-        let mut st = self.db.prepare("SELECT key, value FROM labels").map_err(sql)?;
+        let db = self.db.lock().unwrap();
+        let mut st = db.prepare("SELECT key, value FROM labels").map_err(sql)?;
         let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(sql)?;
         rows.collect::<Result<_, _>>().map_err(sql)
     }
@@ -270,9 +358,11 @@ impl ScopeStore {
         if self.denied.contains(rel) {
             return Ok(());
         }
-        self.db
-            .execute("INSERT OR IGNORE INTO denied VALUES (?1)", [sys::path_bytes(rel)])
-            .map_err(sql)?;
+        exec(
+            self.db.get_mut().unwrap(),
+            "INSERT OR IGNORE INTO denied VALUES (?1)",
+            [sys::path_bytes(rel)],
+        )?;
         self.denied.insert(rel.to_path_buf());
         Ok(())
     }
@@ -282,9 +372,11 @@ impl ScopeStore {
     }
 
     pub fn add_whiteout(&mut self, rel: &Path) -> io::Result<()> {
-        self.db
-            .execute("INSERT OR IGNORE INTO whiteouts VALUES (?1)", [sys::path_bytes(rel)])
-            .map_err(sql)?;
+        exec(
+            self.db.get_mut().unwrap(),
+            "INSERT OR IGNORE INTO whiteouts VALUES (?1)",
+            [sys::path_bytes(rel)],
+        )?;
         self.whiteouts.insert(rel.to_path_buf());
         Ok(())
     }
@@ -294,32 +386,39 @@ impl ScopeStore {
         if !self.whiteouts.contains(rel) {
             return Ok(false);
         }
-        self.db
-            .execute("DELETE FROM whiteouts WHERE path = ?1", [sys::path_bytes(rel)])
-            .map_err(sql)?;
+        exec(
+            self.db.get_mut().unwrap(),
+            "DELETE FROM whiteouts WHERE path = ?1",
+            [sys::path_bytes(rel)],
+        )?;
         self.whiteouts.remove(rel);
         Ok(true)
     }
 
     pub fn add_opaque(&mut self, rel: &Path) -> io::Result<()> {
-        self.db
-            .execute("INSERT OR IGNORE INTO opaque VALUES (?1)", [sys::path_bytes(rel)])
-            .map_err(sql)?;
+        exec(
+            self.db.get_mut().unwrap(),
+            "INSERT OR IGNORE INTO opaque VALUES (?1)",
+            [sys::path_bytes(rel)],
+        )?;
         self.opaque.insert(rel.to_path_buf());
         Ok(())
     }
 
     /// A directory at `rel` was removed: forget whiteouts below it and opaque marks at or below it.
     pub fn clear_below(&mut self, rel: &Path) -> io::Result<()> {
-        let (exact, prefix, n) = under_params(rel);
-        let tx = self.db.transaction().map_err(sql)?;
-        tx.execute(
-            "DELETE FROM whiteouts WHERE substr(path, 1, ?2) = ?1",
-            params![prefix, n],
-        )
-        .map_err(sql)?;
-        tx.execute(&format!("DELETE FROM opaque WHERE {UNDER}"), params![exact, prefix, n])
-            .map_err(sql)?;
+        let (exact, lo, hi) = under_params(rel);
+        let tx = self.db.get_mut().unwrap().savepoint().map_err(sql)?;
+        exec(
+            &tx,
+            "DELETE FROM whiteouts WHERE path >= ?1 AND path < ?2",
+            params![lo, hi],
+        )?;
+        exec(
+            &tx,
+            &format!("DELETE FROM opaque WHERE {UNDER}"),
+            params![exact, lo, hi],
+        )?;
         tx.commit().map_err(sql)?;
         self.whiteouts.retain(|p| !p.starts_with(rel) || p == rel);
         self.opaque.retain(|p| !p.starts_with(rel));
@@ -330,69 +429,109 @@ impl ScopeStore {
         self.pins.get(rel).copied()
     }
 
-    pub fn set_pin(&mut self, rel: &Path, ino: u64) -> io::Result<()> {
-        self.db
-            .execute(
-                "INSERT OR REPLACE INTO pins VALUES (?1, ?2)",
-                params![sys::path_bytes(rel), ino as i64],
-            )
-            .map_err(sql)?;
-        self.pins.insert(rel.to_path_buf(), ino);
+    /// Write the pins changed since the last flush, and the counter, in one transaction.
+    pub fn flush(&mut self) -> io::Result<()> {
+        if self.unwritten_pins.is_empty() && !self.unwritten_counter && self.unwritten_reads.is_empty() {
+            return Ok(());
+        }
+        let tx = self.db.get_mut().unwrap().savepoint().map_err(sql)?;
+        for p in &self.unwritten_pins {
+            match self.pins.get(p) {
+                Some(ino) => exec(
+                    &tx,
+                    "INSERT OR REPLACE INTO pins VALUES (?1, ?2)",
+                    params![sys::path_bytes(p), *ino as i64],
+                ),
+                None => exec(&tx, "DELETE FROM pins WHERE path = ?1", [sys::path_bytes(p)]),
+            }?;
+        }
+        if self.unwritten_counter {
+            exec(
+                &tx,
+                "UPDATE meta SET value = ?1 WHERE key = 'next_upper_ino'",
+                [self.next_upper_ino as i64],
+            )?;
+        }
+        for (p, v) in &self.unwritten_reads {
+            write_version(
+                &tx,
+                p,
+                Seen {
+                    read: true,
+                    changed: false,
+                },
+                *v,
+            )?;
+        }
+        tx.commit().map_err(sql)?;
+        self.unwritten_pins.clear();
+        self.unwritten_counter = false;
+        self.unwritten_reads.clear();
         Ok(())
     }
 
-    /// Forget pins at or under `rel` (the entry was removed).
-    pub fn unpin_below(&mut self, rel: &Path) -> io::Result<()> {
-        let (exact, prefix, n) = under_params(rel);
-        self.db
-            .execute(&format!("DELETE FROM pins WHERE {UNDER}"), params![exact, prefix, n])
-            .map_err(sql)?;
-        self.pins.retain(|p, _| !p.starts_with(rel));
-        Ok(())
+    /// `paths` changed their pins; a change to a base-derived number (`durable`) is
+    /// written now, so a rename of a base file survives a crash.
+    fn pins_changed(&mut self, paths: impl IntoIterator<Item = PathBuf>, durable: bool) -> io::Result<()> {
+        self.unwritten_pins.extend(paths);
+        self.maybe_flush(durable)
+    }
+
+    fn maybe_flush(&mut self, now: bool) -> io::Result<()> {
+        if now || self.unwritten_pins.len() + self.unwritten_reads.len() >= PIN_BATCH {
+            self.flush()
+        } else {
+            Ok(())
+        }
+    }
+
+    pub fn set_pin(&mut self, rel: &Path, ino: u64) -> io::Result<()> {
+        self.set_pins(&[(rel.to_path_buf(), ino)])
+    }
+
+    pub fn set_pins(&mut self, pins: &[(PathBuf, u64)]) -> io::Result<()> {
+        self.pins.extend(pins.iter().cloned());
+        let durable = pins.iter().any(|(_, ino)| ino & UPPER_BIT == 0);
+        self.pins_changed(pins.iter().map(|(p, _)| p.clone()), durable)
+    }
+
+    /// Remove and return the pins at `rel` and, for a directory, under it.
+    fn take_pins(&mut self, rel: &Path, dir: bool) -> Vec<(PathBuf, u64)> {
+        if !dir {
+            return self.pins.remove_entry(rel).into_iter().collect();
+        }
+        let keys: Vec<PathBuf> = self.pins.keys().filter(|p| p.starts_with(rel)).cloned().collect();
+        keys.into_iter().filter_map(|k| self.pins.remove_entry(&k)).collect()
+    }
+
+    /// Forget pins at or under `rel` (the entry was removed; `dir`: it was a directory).
+    pub fn unpin_below(&mut self, rel: &Path, dir: bool) -> io::Result<()> {
+        let gone = self.take_pins(rel, dir);
+        let durable = gone.iter().any(|(_, ino)| ino & UPPER_BIT == 0);
+        self.pins_changed(gone.into_iter().map(|(p, _)| p), durable)
     }
 
     /// Pins at or under `from` move under `to`; pins under `to` (the replaced target) go.
-    pub fn move_pins(&mut self, from: &Path, to: &Path) -> io::Result<()> {
-        self.unpin_below(to)?;
-        let (exact, prefix, n) = under_params(from);
-        let tx = self.db.transaction().map_err(sql)?;
-        let rows: Vec<(Vec<u8>, i64)> = {
-            let mut st = tx
-                .prepare(&format!("SELECT path, ino FROM pins WHERE {UNDER}"))
-                .map_err(sql)?;
-            let rows = st
-                .query_map(params![exact, prefix, n], |r| Ok((r.get(0)?, r.get(1)?)))
-                .map_err(sql)?;
-            rows.collect::<Result<_, _>>().map_err(sql)?
-        };
-        tx.execute(&format!("DELETE FROM pins WHERE {UNDER}"), params![exact, prefix, n])
-            .map_err(sql)?;
-        let mut renamed = Vec::with_capacity(rows.len());
-        for (old, ino) in rows {
-            let new = moved(&sys::path_from(old), from, to).expect("selected on prefix");
-            tx.execute(
-                "INSERT OR REPLACE INTO pins VALUES (?1, ?2)",
-                params![sys::path_bytes(&new), ino],
-            )
-            .map_err(sql)?;
-            renamed.push((new, ino as u64));
+    /// `from_dir`, `to_dir`: which of the two are directories.
+    pub fn move_pins(&mut self, from: &Path, to: &Path, from_dir: bool, to_dir: bool) -> io::Result<()> {
+        let gone = self.take_pins(to, to_dir);
+        let moving = self.take_pins(from, from_dir);
+        let durable = gone.iter().chain(&moving).any(|(_, ino)| ino & UPPER_BIT == 0);
+        let mut changed: Vec<PathBuf> = gone.into_iter().map(|(p, _)| p).collect();
+        for (old, ino) in moving {
+            let new = moved(&old, from, to).expect("taken on prefix");
+            changed.push(old);
+            changed.push(new.clone());
+            self.pins.insert(new, ino);
         }
-        tx.commit().map_err(sql)?;
-        self.pins.retain(|p, _| !p.starts_with(from));
-        self.pins.extend(renamed);
-        Ok(())
+        self.pins_changed(changed, durable)
     }
 
-    /// Next upper-only inode counter value, persisted before it is handed out.
-    pub fn alloc_upper_ino(&mut self) -> io::Result<u64> {
+    /// Next upper-only inode counter value; written with its pin.
+    pub fn alloc_upper_ino(&mut self) -> u64 {
         self.next_upper_ino += 1;
-        self.db
-            .execute(
-                "UPDATE meta SET value = ?1 WHERE key = 'next_upper_ino'",
-                [self.next_upper_ino as i64],
-            )
-            .map_err(sql)?;
-        Ok(self.next_upper_ino)
+        self.unwritten_counter = true;
+        self.next_upper_ino
     }
 
     /// The base version of `rel` the scope first saw, if it read or changed it.
@@ -400,21 +539,33 @@ impl ScopeStore {
         if !self.versions.contains_key(rel) {
             return Ok(None);
         }
+        if let Some(v) = self.unwritten_reads.get(rel) {
+            return Ok(Some(*v));
+        }
         self.db
-            .query_row(
-                "SELECT ino, size, mtime_ns, ctime_ns FROM versions WHERE path = ?1",
-                [sys::path_bytes(rel)],
-                |r| {
+            .lock()
+            .unwrap()
+            .prepare_cached("SELECT ino, size, mtime_ns, ctime_ns FROM versions WHERE path = ?1")
+            .and_then(|mut st| {
+                st.query_row([sys::path_bytes(rel)], |r| {
                     Ok(Version {
                         ino: r.get::<_, i64>(0)? as u64,
                         size: r.get(1)?,
                         mtime_ns: r.get(2)?,
                         ctime_ns: r.get(3)?,
                     })
-                },
-            )
-            .optional()
+                })
+                .optional()
+            })
             .map_err(sql)
+    }
+
+    /// Whether `rel` already has `kind` recorded (a shared lock suffices to check).
+    pub fn has_version(&self, rel: &Path, kind: VersionKind) -> bool {
+        self.versions.get(rel).is_some_and(|s| match kind {
+            VersionKind::Read => s.read,
+            VersionKind::Changed => s.changed,
+        })
     }
 
     /// Record the base version of `rel` the first time the scope reads or changes it.
@@ -429,22 +580,13 @@ impl ScopeStore {
         if old == Some(seen) {
             return Ok(());
         }
-        self.db
-            .execute(
-                "INSERT INTO versions VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-                 ON CONFLICT(path) DO UPDATE SET read = excluded.read, changed = excluded.changed",
-                params![
-                    sys::path_bytes(rel),
-                    seen.read,
-                    seen.changed,
-                    v.ino as i64,
-                    v.size,
-                    v.mtime_ns,
-                    v.ctime_ns
-                ],
-            )
-            .map_err(sql)?;
         self.versions.insert(rel.to_path_buf(), seen);
-        Ok(())
+        if old.is_none() && kind == VersionKind::Read {
+            self.unwritten_reads.insert(rel.to_path_buf(), v);
+            return self.maybe_flush(false);
+        }
+        // A change keeps the version of a first read not written yet.
+        let first = self.unwritten_reads.remove(rel).unwrap_or(v);
+        write_version(self.db.get_mut().unwrap(), rel, seen, first)
     }
 }

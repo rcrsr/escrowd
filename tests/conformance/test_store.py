@@ -73,6 +73,8 @@ def test_store_records_whiteouts_opaque_dirs_and_versions(daemon):
     (root / "gone.txt").unlink()
     subprocess.run(["rm", "-r", root / "tree"], check=True)
     (root / "tree").mkdir()
+    with client(daemon) as c:
+        c.close_scope(s.scope_id)  # first reads are written by close at the latest
     with meta_db(daemon, s.scope_id) as db:
         whiteouts = {r[0] for r in db.execute("SELECT path FROM whiteouts")}
         opaque = {r[0] for r in db.execute("SELECT path FROM opaque")}

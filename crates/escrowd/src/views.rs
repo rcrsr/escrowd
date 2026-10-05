@@ -19,7 +19,7 @@ use std::io;
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use fuser::{Errno, FileType};
 use rustix::fs::{OFlags, Stat};
@@ -85,12 +85,17 @@ pub struct ScopeHandle {
     pub upper: OwnedFd,
     /// Frozen between close and the decision: new IO gets EROFS, writes on open handles EBADF.
     closed: AtomicBool,
-    store: Mutex<ScopeStore>,
+    store: RwLock<ScopeStore>,
 }
 
 impl ScopeHandle {
-    pub(crate) fn store(&self) -> MutexGuard<'_, ScopeStore> {
-        self.store.lock().unwrap()
+    pub(crate) fn store(&self) -> RwLockWriteGuard<'_, ScopeStore> {
+        self.store.write().unwrap()
+    }
+
+    /// Lookups share the store.
+    pub(crate) fn store_read(&self) -> RwLockReadGuard<'_, ScopeStore> {
+        self.store.read().unwrap()
     }
 
     pub fn is_closed(&self) -> bool {
@@ -122,20 +127,29 @@ struct Tables {
     /// The process that opened each file handle.
     openers: HashMap<u64, u32>,
     next_fh: u64,
+    /// The base version whose pages the kernel may cache for each inode opened from the base.
+    cached: HashMap<u64, Version>,
+    /// Inodes copied up from a base version other than the cached one: the next open drops the pages.
+    stale: std::collections::HashSet<u64>,
 }
 
 impl Tables {
     /// Entries at or under `from` now live under `to`; returns (new path, ino) of each.
-    fn rekey(&mut self, scope: &str, from: &Path, to: &Path) -> Vec<(PathBuf, u64)> {
+    /// Only a directory has entries under it to look for.
+    fn rekey(&mut self, scope: &str, from: &Path, to: &Path, dir: bool) -> Vec<(PathBuf, u64)> {
         if let Some(ino) = self.inos.remove(&(scope.to_string(), to.to_path_buf())) {
             self.paths.remove(&ino);
         }
-        let old: Vec<(PathBuf, u64)> = self
-            .inos
-            .iter()
-            .filter(|((s, p), _)| s == scope && p.starts_with(from))
-            .map(|((_, p), &i)| (p.clone(), i))
-            .collect();
+        let old: Vec<(PathBuf, u64)> = if dir {
+            self.inos
+                .iter()
+                .filter(|((s, p), _)| s == scope && p.starts_with(from))
+                .map(|((_, p), &i)| (p.clone(), i))
+                .collect()
+        } else {
+            let key = (scope.to_string(), from.to_path_buf());
+            self.inos.get(&key).map(|&i| (key.1, i)).into_iter().collect()
+        };
         let mut out = Vec::with_capacity(old.len());
         for (p, ino) in old {
             let new = moved(&p, from, to).expect("filtered on prefix");
@@ -147,21 +161,44 @@ impl Tables {
         out
     }
 
-    /// `rel` no longer exists; its inode lives on under another hard link, if any.
-    fn forget_path(&mut self, scope: &str, rel: &Path) {
+    /// `rel` no longer exists; its inode lives on under another hard link, if any
+    /// (`linked`: it had more than one).
+    fn forget_path(&mut self, scope: &str, rel: &Path, linked: bool) {
         let key = (scope.to_string(), rel.to_path_buf());
         if let Some(ino) = self.inos.remove(&key)
             && self.paths.get(&ino) == Some(&key)
         {
-            match self.inos.iter().find(|(_, i)| **i == ino).map(|(k, _)| k.clone()) {
+            let other = || self.inos.iter().find(|(_, i)| **i == ino).map(|(k, _)| k.clone());
+            match linked.then(other).flatten() {
                 Some(other) => self.paths.insert(ino, other),
                 None => self.paths.remove(&ino),
             };
         }
     }
 
+    /// What the kernel may do with the pages it caches for `ino`, opened at `loc`
+    /// (`st`: the base entry when it comes from the base). Files in the upper change
+    /// only through the kernel; a base file keeps its pages while its version is
+    /// unchanged (an editor outside escrowd changes it).
+    fn pages(&mut self, ino: u64, loc: Loc, st: &Stat) -> Pages {
+        let fresh = !self.stale.remove(&ino);
+        match loc {
+            Loc::Upper if fresh => Pages::Keep,
+            Loc::Upper => Pages::Drop,
+            Loc::Lower => {
+                let v = Version::of(st);
+                match self.cached.insert(ino, v) {
+                    _ if !fresh => Pages::Drop,
+                    Some(before) if before == v => Pages::Keep,
+                    Some(_) => Pages::Drop,
+                    None => Pages::Empty(st.st_size as u64),
+                }
+            }
+        }
+    }
+
     /// Forget a scope's entries; returns the top-level names the kernel may have cached.
-    fn forget_scope(&mut self, scope: &str) -> Vec<OsString> {
+    fn forget_scope(&mut self, scope: &str, idx: u64) -> Vec<OsString> {
         let top = self
             .inos
             .keys()
@@ -170,8 +207,22 @@ impl Tables {
             .collect();
         self.inos.retain(|(s, _), _| s != scope);
         self.paths.retain(|_, (s, _)| s != scope);
+        self.cached.retain(|ino, _| ino >> SCOPE_SHIFT != idx);
+        self.stale.retain(|ino| ino >> SCOPE_SHIFT != idx);
         top
     }
+}
+
+/// What the kernel may do with its cached pages of a file being opened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pages {
+    /// Drop them: the base file changed since they were cached.
+    Drop,
+    /// Keep them.
+    Keep,
+    /// None are cached (a first read-only open of a base file of this size): the
+    /// daemon may store them ahead of the reads, then let the kernel keep them.
+    Empty(u64),
 }
 
 pub enum Node {
@@ -182,6 +233,9 @@ pub enum Node {
 pub struct Views {
     lower: OwnedFd,
     scopes_dir: PathBuf,
+    /// Dropped scopes' directories, deleted in the background (start empties it).
+    trash: PathBuf,
+    cleaners: Mutex<Vec<std::thread::JoinHandle<()>>>,
     mount: PathBuf,
     gate: Gate,
     ledger: Ledger,
@@ -193,6 +247,10 @@ pub struct Views {
     t: Mutex<Tables>,
     /// Signalled when a file handle is released.
     released: std::sync::Condvar,
+    /// The app has exited: deciding the unscoped scope opens no new one.
+    last_settle: AtomicBool,
+    /// Files whose writeback starts off the request threads (a slow disk must not stall them).
+    writeback: Mutex<std::sync::mpsc::Sender<Arc<File>>>,
 }
 
 impl Views {
@@ -200,6 +258,11 @@ impl Views {
     pub fn new(lower: OwnedFd, state_dir: &Path, mount: &Path, gate: Gate, unscoped: Unscoped) -> io::Result<Self> {
         let scopes_dir = state_dir.join("scopes");
         fs::create_dir_all(&scopes_dir)?;
+        let trash = state_dir.join("trash");
+        if trash.exists() {
+            fs::remove_dir_all(&trash)?;
+        }
+        fs::create_dir_all(&trash)?;
         let ledger = Ledger::open(&state_dir.join("ledger.log"))?;
         let commits = Commits::open(state_dir)?;
         // Roll back an interrupted commit before any scope sees the base.
@@ -214,6 +277,8 @@ impl Views {
         let views = Views {
             lower,
             scopes_dir,
+            trash,
+            cleaners: Mutex::new(Vec::new()),
             mount: mount.to_path_buf(),
             gate,
             ledger,
@@ -227,15 +292,23 @@ impl Views {
                 ..Default::default()
             }),
             released: std::sync::Condvar::new(),
+            last_settle: AtomicBool::new(false),
+            writeback: Mutex::new(writeback_thread()),
         };
         views.load_scopes()?;
         views.ensure_unscoped()?;
-        views.gc()?;
+        views.gc(None)?;
         Ok(views)
     }
 
     pub fn unscoped(&self) -> Unscoped {
         self.unscoped
+    }
+
+    /// The app has exited and the daemon stops after this settle: once decided, the
+    /// unscoped scope is not replaced.
+    pub fn settle_last(&self) {
+        self.last_settle.store(true, Ordering::Release);
     }
 
     /// Lets a reset of the unscoped root drop the kernel's cached entries under it.
@@ -245,7 +318,7 @@ impl Views {
 
     /// Open the default scope the unscoped mode needs, if it is missing or of the wrong kind.
     fn ensure_unscoped(&self) -> io::Result<()> {
-        if self.unscoped == Unscoped::Passthrough {
+        if self.unscoped == Unscoped::Passthrough || self.last_settle.load(Ordering::Acquire) {
             return Ok(());
         }
         let readonly = self.unscoped == Unscoped::Deny;
@@ -303,7 +376,7 @@ impl Views {
             readonly: store.readonly,
             upper,
             closed: AtomicBool::new(store.state == ScopeState::Closed),
-            store: Mutex::new(store),
+            store: RwLock::new(store),
         });
         self.scopes.write().unwrap().insert(h.id.clone(), h.clone());
         Ok(h)
@@ -368,6 +441,18 @@ impl Views {
     /// scope. On a conflict nothing is written and the scope is dropped (the default
     /// conflict policy); on a failure the commit is rolled back and the scope stays closed.
     pub fn commit_scope(&self, id: &str) -> io::Result<Outcome> {
+        let h = self.closed_handle(id)?;
+        let cs = changeset::build(&self.base(&h), &h)?;
+        self.commit_change_set(&h, &cs)
+    }
+
+    /// `commit_scope` with the change set `close_scope` returned (the scope is frozen since).
+    pub fn commit_closed(&self, id: &str, cs: &ChangeSet) -> io::Result<Outcome> {
+        let h = self.closed_handle(id)?;
+        self.commit_change_set(&h, cs)
+    }
+
+    fn closed_handle(&self, id: &str) -> io::Result<Arc<ScopeHandle>> {
         let h = self.handle(id)?;
         if !h.is_closed() {
             return Err(io::Error::new(
@@ -375,17 +460,20 @@ impl Views {
                 format!("scope {id} is not closed"),
             ));
         }
-        let cs = changeset::build(&self.base(&h), &h)?;
-        let outcome = self.commits.commit(self.lower.as_fd(), &h, &cs)?;
+        Ok(h)
+    }
+
+    fn commit_change_set(&self, h: &ScopeHandle, cs: &ChangeSet) -> io::Result<Outcome> {
+        let id = h.id.as_str();
+        let outcome = self.commits.commit(self.lower.as_fd(), h, cs)?;
         match &outcome {
             Outcome::Committed(generation, _) => {
                 crate::fault::hit("committed", 0)?;
                 self.ledger.append(id, "decide", Path::new(""), None, "commit");
                 self.remove_scope(id)?;
-                if let Some(g) = generation {
-                    self.commits.scope_dropped(*g)?;
-                }
-                self.ensure_unscoped()?;
+                // One journal write records the scope gone (before a new scope of the
+                // same id opens) and forgets what no scope reads any more.
+                self.gc(*generation)?;
             }
             Outcome::Conflict(paths) => {
                 for p in paths {
@@ -393,10 +481,10 @@ impl Views {
                 }
                 self.ledger.append(id, "decide", Path::new(""), None, "conflict");
                 self.remove_scope(id)?;
-                self.ensure_unscoped()?;
+                self.gc(None)?;
             }
         }
-        self.gc()?;
+        self.ensure_unscoped()?;
         Ok(outcome)
     }
 
@@ -405,14 +493,15 @@ impl Views {
         self.handle(id)?;
         self.ledger.append(id, "decide", Path::new(""), None, "discard");
         self.remove_scope(id)?;
-        self.ensure_unscoped()?;
-        self.gc()
+        self.gc(None)?;
+        self.ensure_unscoped()
     }
 
-    /// Drop generations no open scope reads through any more.
-    fn gc(&self) -> io::Result<()> {
+    /// Drop generations no open scope reads through any more; `dropped`: the
+    /// generation whose scope was just dropped.
+    fn gc(&self, dropped: Option<u64>) -> io::Result<()> {
         let oldest = self.scopes.read().unwrap().values().map(|h| h.since).min();
-        self.commits.gc(oldest)
+        self.commits.gc(oldest, dropped)
     }
 
     fn remove_scope(&self, id: &str) -> io::Result<()> {
@@ -422,16 +511,43 @@ impl Views {
             .unwrap()
             .remove(id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no scope {id}")))?;
-        let names = self.t().forget_scope(id);
+        let mut names = self.t().forget_scope(id, h.idx);
+        // After the last settle the mount goes away: invalidating is wasted kernel work.
         if id == UNSCOPED
+            && !self.last_settle.load(Ordering::Acquire)
             && let Some(n) = self.notifier.get()
         {
+            // The reset root must also drop the kernel's negative entries for the names the scope deleted.
+            names.extend(
+                h.store_read()
+                    .whiteouts()
+                    .filter(|p| p.components().count() == 1)
+                    .map(|p| p.as_os_str().to_os_string()),
+            );
             for name in names {
                 let _ = n.inval_entry(fuser::INodeNo(UNSCOPED_ROOT), &name);
             }
+            let _ = n.inval_inode(fuser::INodeNo(UNSCOPED_ROOT), 0, 0);
         }
         // FUSE calls in flight may still hold the handle; they fail once the directory is gone.
-        h.store().destroy()
+        let gone = h.store().discard_to(&self.trash)?;
+        let mut cleaners = self.cleaners.lock().unwrap();
+        cleaners.retain(|c| !c.is_finished());
+        cleaners.push(std::thread::spawn(move || {
+            let _ = fs::remove_dir_all(gone);
+        }));
+        Ok(())
+    }
+
+    /// At shutdown: write every scope's deferred metadata and finish deleting dropped scopes.
+    pub fn flush(&self) -> io::Result<()> {
+        for h in self.scopes.read().unwrap().values() {
+            h.store().flush()?;
+        }
+        for c in self.cleaners.lock().unwrap().drain(..) {
+            let _ = c.join();
+        }
+        Ok(())
     }
 
     pub fn scope_ids(&self) -> Vec<String> {
@@ -480,7 +596,7 @@ impl Views {
     }
 
     fn lower_stat(&self, h: &ScopeHandle, rel: &Path) -> Option<Stat> {
-        if h.store().hidden(rel) {
+        if h.store_read().hidden(rel) {
             return None;
         }
         self.base(h).lstat(rel).ok()
@@ -507,14 +623,14 @@ impl Views {
             return Ok(ino);
         }
         let prefix = h.idx << SCOPE_SHIFT;
-        let pinned = h.store().pin(rel);
+        let pinned = h.store_read().pin(rel);
         let ino = match pinned {
             Some(ino) => ino,
             None => match self.lower_stat(h, rel).map(|st| st.st_ino) {
                 Some(i) if i < UPPER_BIT => prefix | i,
                 _ => {
                     let mut store = h.store();
-                    let ino = prefix | UPPER_BIT | store.alloc_upper_ino().map_err(errno)?;
+                    let ino = prefix | UPPER_BIT | store.alloc_upper_ino();
                     store.set_pin(rel, ino).map_err(errno)?;
                     ino
                 }
@@ -546,6 +662,9 @@ impl Views {
     }
 
     fn record(&self, h: &ScopeHandle, rel: &Path, kind: VersionKind, st: &Stat) -> R<()> {
+        if h.store_read().has_version(rel, kind) {
+            return Ok(());
+        }
         h.store().record_version(rel, kind, Version::of(st)).map_err(errno)
     }
 
@@ -559,6 +678,14 @@ impl Views {
         if sys::is_dir(&st) {
             return self.ensure_upper_dir(h, rel);
         }
+        {
+            let mut t = self.t();
+            if let Some(&ino) = t.inos.get(&(h.id.clone(), rel.to_path_buf()))
+                && t.cached.get(&ino).is_some_and(|v| *v != Version::of(&st))
+            {
+                t.stale.insert(ino);
+            }
+        }
         let (src, src_rel) = self.base(h).src(rel).map_err(errno)?;
         sys::copy_entry(src, &src_rel, h.upper.as_fd(), rel, &st, false).map_err(errno)
     }
@@ -570,13 +697,13 @@ impl Views {
             found = true;
             out.extend(entries);
         }
-        let opaque = h.store().is_opaque(rel);
+        let opaque = h.store_read().is_opaque(rel);
         if !opaque
             && self.lower_stat(h, rel).is_some_and(|st| sys::is_dir(&st))
             && let Ok(entries) = self.base(h).read_dir(rel)
         {
             found = true;
-            let store = h.store();
+            let store = h.store_read();
             for (name, kind) in entries {
                 if !out.contains_key(&name) && !store.hidden(&rel.join(&name)) {
                     out.insert(name, kind);
@@ -686,9 +813,9 @@ impl Views {
                 store.add_whiteout(rel).map_err(errno)?;
             }
             // Only this name: other hard links keep their own pins.
-            store.unpin_below(rel).map_err(errno)?;
+            store.unpin_below(rel, dir).map_err(errno)?;
         }
-        self.t().forget_path(&h.id, rel);
+        self.t().forget_path(&h.id, rel, st.st_nlink > 1);
         self.log(h, if dir { "rmdir" } else { "unlink" }, rel, "allow");
         Ok(())
     }
@@ -731,27 +858,25 @@ impl Views {
         self.copy_up(h, from)?;
         self.ensure_upper_dir(h, parent(to))?;
         sys::rename(h.upper.as_fd(), from, to, flags).map_err(errno)?;
-        let moved_entries = self.t().rekey(&h.id, from, to);
-        {
-            let mut store = h.store();
-            if let Some(st) = &to_lower {
-                store
-                    .record_version(to, VersionKind::Changed, Version::of(st))
-                    .map_err(errno)?;
-            }
-            store.remove_whiteout(to).map_err(errno)?;
-            if from_dir && to_in_base.is_some() {
-                store.add_opaque(to).map_err(errno)?;
-            }
-            if from_lower {
-                store.add_whiteout(from).map_err(errno)?;
-            }
-            store.move_pins(from, to).map_err(errno)?;
-            // Entries looked up in this run keep their numbers, derived or pinned.
-            for (p, ino) in moved_entries {
-                store.set_pin(&p, ino).map_err(errno)?;
-            }
-        }
+        let moved_entries = self.t().rekey(&h.id, from, to, from_dir);
+        let to_dir = to_exists.as_ref().is_some_and(|(_, st)| sys::is_dir(st));
+        h.store()
+            .batch(|store| {
+                if let Some(st) = &to_lower {
+                    store.record_version(to, VersionKind::Changed, Version::of(st))?;
+                }
+                store.remove_whiteout(to)?;
+                if from_dir && to_in_base.is_some() {
+                    store.add_opaque(to)?;
+                }
+                if from_lower {
+                    store.add_whiteout(from)?;
+                }
+                store.move_pins(from, to, from_dir, to_dir)?;
+                // Entries looked up in this run keep their numbers, derived or pinned.
+                store.set_pins(&moved_entries)
+            })
+            .map_err(errno)?;
         self.ledger.append(&h.id, "rename", to, Some(from), "allow");
         Ok(())
     }
@@ -789,7 +914,8 @@ impl Views {
         base | OFlags::from_bits_retain(keep as u32)
     }
 
-    pub fn open(&self, h: &ScopeHandle, rel: &Path, flags: i32) -> R<File> {
+    /// Open `rel` (inode `ino`); also returns what the kernel may do with its cached pages.
+    pub fn open(&self, h: &ScopeHandle, ino: u64, rel: &Path, flags: i32) -> R<(File, Pages)> {
         let acc = flags & libc::O_ACCMODE;
         let writes = acc != libc::O_RDONLY || flags & libc::O_TRUNC != 0;
         h.check_open()?;
@@ -803,19 +929,32 @@ impl Views {
         }
         self.log(h, if writes { "open-write" } else { "read" }, rel, "allow");
         let oflags = Self::open_flags(flags);
-        if writes {
-            self.copy_up(h, rel)?;
-            return sys::open(h.upper.as_fd(), rel, oflags, 0).map_err(errno);
-        }
         let (loc, st) = self.locate(h, rel)?;
-        match loc {
-            Loc::Upper => sys::open(h.upper.as_fd(), rel, oflags, 0),
-            Loc::Lower => {
-                self.record(h, rel, VersionKind::Read, &st)?;
-                self.base(h).open(rel, oflags)
+        let f = if writes {
+            self.copy_up(h, rel)?;
+            sys::open(h.upper.as_fd(), rel, oflags, 0)
+        } else {
+            match loc {
+                Loc::Upper => sys::open(h.upper.as_fd(), rel, oflags, 0),
+                Loc::Lower => {
+                    self.record(h, rel, VersionKind::Read, &st)?;
+                    self.base(h).open(rel, oflags)
+                }
             }
         }
-        .map_err(errno)
+        .map_err(errno)?;
+        let pages = match self.t().pages(ino, loc, &st) {
+            Pages::Empty(_) if writes => Pages::Drop,
+            p => p,
+        };
+        Ok((f, pages))
+    }
+
+    /// Put `data` in the kernel's page cache of `ino` from offset 0; false if it refused.
+    pub fn store_pages(&self, ino: u64, data: &[u8]) -> bool {
+        self.notifier
+            .get()
+            .is_some_and(|n| n.store(fuser::INodeNo(ino), 0, data).is_ok())
     }
 
     pub fn create(&self, h: &ScopeHandle, rel: &Path, mode: u32, flags: i32) -> R<File> {
@@ -890,15 +1029,35 @@ impl Views {
     }
 
     pub fn release(&self, fh: u64) {
-        let mut t = self.t();
-        t.files.remove(&fh);
-        t.openers.remove(&fh);
+        let f = {
+            let mut t = self.t();
+            t.openers.remove(&fh);
+            t.files.remove(&fh)
+        };
         self.released.notify_all();
+        // A file opened for writing is in the upper: start writing its data to disk
+        // now, so the flush before a commit finds little left.
+        if let Some((_, f)) = f
+            && rustix::fs::fcntl_getfl(&*f).is_ok_and(|fl| fl.contains(OFlags::RDWR))
+        {
+            let _ = self.writeback.lock().unwrap().send(f);
+        }
     }
 
     pub fn statfs(&self) -> R<rustix::fs::StatVfs> {
         sys::statvfs(self.lower.as_fd()).map_err(errno)
     }
+}
+
+/// A thread that starts the writeback of each file it is sent.
+fn writeback_thread() -> std::sync::mpsc::Sender<Arc<File>> {
+    let (tx, rx) = std::sync::mpsc::channel::<Arc<File>>();
+    std::thread::spawn(move || {
+        for f in rx {
+            sys::start_writeback(&f);
+        }
+    });
+    tx
 }
 
 /// Process (or thread) `pid` is gone, exiting, or in one of the `stopped` process groups.

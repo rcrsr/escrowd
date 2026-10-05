@@ -195,6 +195,7 @@ Policy files hold software rules that run in the daemon, identical across langua
 | Reads of a live base see other scopes' commits mid-scope | Snapshot at open (reflink or btrfs), or record each file's version on first read and check it at commit |
 | An editor outside escrowd writes a file while a commit applies | Apply re-checks each file's inode, size and mtime just before replacing or removing it; a change rolls the commit back as a conflict and keeps the editor's version. A write in the microseconds between that re-check and the rename still loses to the commit |
 | A sandboxed process killed at close sends no FUSE flush, so its last writes arrive after it is gone | Close waits for the release of every handle held by a stopped sandbox or an exiting process before it freezes the scope (2.2) |
+| An editor outside escrowd changes a base file that a scope's kernel cache holds | The next open drops the file's cached pages when its base version changed (2.3). The kernel keeps names, attributes and listings of a scope for up to 60 s, and with the writeback cache it keeps its own size of a file it has an inode for, so a changed size shows only once the kernel drops the inode |
 
 ## Recommendations
 

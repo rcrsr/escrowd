@@ -11,7 +11,10 @@
 //! 3. **Pre-images**: each base entry about to be overwritten or deleted is
 //!    copied into the generation; then the journal says `prepared`.
 //! 4. **Apply**: deletes deepest first, then new entries parents first; a new
-//!    file is written beside its target, fsynced and renamed over it.
+//!    file is linked (or, across filesystems, copied) from the upper beside its
+//!    target and renamed over it; a base file the scope only renamed is renamed,
+//!    so it keeps its inode (it waits under a temporary name at the root while
+//!    the removes run).
 //! 5. **Done**: the journal says `done`; the caller drops the scope.
 //!
 //! A failure at any step rolls the applied part back from the pre-images; an
@@ -36,9 +39,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 
-use rustix::fs::Stat;
+use fuser::FileType;
+use rustix::fs::{OFlags, Stat};
 
-use crate::changeset::{ChangeSet, Kind};
+use crate::changeset::{self, ChangeSet, Kind};
 use crate::fault;
 use crate::journal::{DirTimes, GenState, Journal, JournalEntry};
 use crate::snapshot::{Base, Generations, Meta};
@@ -78,19 +82,27 @@ struct Plan {
     removes: Vec<PathBuf>,
     /// Parents first, with the upper entry's stat.
     puts: Vec<(PathBuf, Stat)>,
+    /// Destination → source of each rename of a base file or symlink the scope left
+    /// unchanged: apply renames the original, so it keeps its inode.
+    moves: HashMap<PathBuf, PathBuf>,
 }
 
 impl Plan {
     fn new(lower: BorrowedFd, upper: BorrowedFd, cs: &ChangeSet) -> io::Result<Self> {
         let mut removes = BTreeSet::new();
         let mut puts = BTreeSet::new();
+        let mut moves = HashMap::new();
         for c in &cs.changes {
             match c.kind {
                 Kind::Delete => {
                     removes.insert(c.path.clone());
                 }
                 Kind::Rename => {
-                    removes.extend(c.from.clone());
+                    let from = c.from.clone().unwrap_or_default();
+                    if unchanged_copy(lower, &from, upper, &c.path)? {
+                        moves.insert(c.path.clone(), from.clone());
+                    }
+                    removes.insert(from);
                     puts.insert(c.path.clone());
                 }
                 Kind::Create | Kind::Modify => {
@@ -112,7 +124,7 @@ impl Plan {
         }
         let mut removes: Vec<PathBuf> = removes.into_iter().collect();
         removes.sort_by_key(|p| std::cmp::Reverse(sys::depth(p)));
-        Ok(Plan { removes, puts })
+        Ok(Plan { removes, puts, moves })
     }
 
     fn touched(&self) -> BTreeSet<PathBuf> {
@@ -131,6 +143,26 @@ pub struct Commits {
     aliases: Mutex<HashMap<(PathBuf, Version), Version>>,
     serial: Mutex<()>,
     current: AtomicU64,
+}
+
+/// The upper's `to` is the base's `from` as it was: same type, mode, mtime and bytes.
+fn unchanged_copy(lower: BorrowedFd, from: &Path, upper: BorrowedFd, to: &Path) -> io::Result<bool> {
+    let (Ok(old), Ok(new)) = (sys::lstat(lower, from), sys::lstat(upper, to)) else {
+        return Ok(false);
+    };
+    if (old.st_mode, old.st_size, old.st_mtime, old.st_mtime_nsec)
+        != (new.st_mode, new.st_size, new.st_mtime, new.st_mtime_nsec)
+    {
+        return Ok(false);
+    }
+    match sys::kind(new.st_mode) {
+        FileType::RegularFile => changeset::same_bytes(
+            sys::open(lower, from, OFlags::RDONLY, 0)?,
+            sys::open(upper, to, OFlags::RDONLY, 0)?,
+        ),
+        FileType::Symlink => Ok(sys::readlink(lower, from)? == sys::readlink(upper, to)?),
+        _ => Ok(false),
+    }
 }
 
 /// Missing, or under a parent that is no longer a directory (an editor replaced it).
@@ -208,22 +240,28 @@ impl Commits {
         if touched.is_empty() {
             return Ok(Outcome::Committed(None, paths));
         }
-        let generation = self.journal().alloc()?;
+        let generation = self.journal().next()?;
         let files: HashSet<&PathBuf> = plan
             .puts
             .iter()
-            .filter(|(_, st)| !sys::is_dir(st))
+            .filter(|(p, st)| !sys::is_dir(st) && !plan.moves.contains_key(p))
             .map(|(p, _)| p)
             .collect();
+        let sources: HashSet<&PathBuf> = plan.moves.values().collect();
         let entries: Vec<JournalEntry> = touched
             .iter()
             .enumerate()
             .map(|(i, p)| JournalEntry {
                 path: p.clone(),
                 pre: sys::lstat(lower, p).ok().map(|st| Meta::of(&st)),
-                tmp: files
-                    .contains(p)
-                    .then(|| parent(p).join(format!(".escrow-{generation}-{i}.tmp"))),
+                // A rename source waits at the root while removes run and its new parent appears.
+                tmp: if sources.contains(p) {
+                    Some(PathBuf::from(format!(".escrow-{generation}-{i}.tmp")))
+                } else {
+                    files
+                        .contains(p)
+                        .then(|| parent(p).join(format!(".escrow-{generation}-{i}.tmp")))
+                },
             })
             .collect();
         let dirs: Vec<DirTimes> = touched
@@ -281,7 +319,7 @@ impl Commits {
             }
             _ => false,
         };
-        let store = h.store();
+        let store = h.store_read();
         let mut out = BTreeSet::new();
         for p in &touched {
             let want = match store.base_version(p)? {
@@ -327,9 +365,11 @@ impl Commits {
     ) -> io::Result<()> {
         fault::hit("journal", 0)?;
         let root = self.gens.root();
+        let mut copied = false;
         for (i, e) in entries.iter().enumerate() {
             fault::hit("preimage", i)?;
             let Some(m) = &e.pre else { continue };
+            copied = true;
             let dst = Generations::rel(generation, &e.path);
             sys::mkdirs(root, parent(&dst))?;
             if m.is_dir() {
@@ -338,7 +378,9 @@ impl Commits {
                 sys::copy_entry(lower, &e.path, root, &dst, &sys::lstat(lower, &e.path)?, false)?;
             }
         }
-        sys::syncfs(root)?;
+        if copied {
+            sys::syncfs(root)?;
+        }
         self.journal().set_state(generation, GenState::Prepared)?;
         self.gens
             .register(generation, entries.iter().map(|e| (e.path.clone(), e.pre)));
@@ -364,6 +406,7 @@ impl Commits {
         };
         let mut step = 0;
         let mut removed = HashSet::new();
+        let sources: HashSet<&PathBuf> = plan.moves.values().collect();
         for p in &plan.removes {
             fault::hit("apply", step)?;
             fault::race(step, lower, p);
@@ -371,7 +414,11 @@ impl Commits {
             unchanged(p, pre[p.as_path()])?;
             let st = sys::lstat(lower, p)?;
             applied.insert(p.clone());
-            sys::unlink(lower, p, sys::is_dir(&st))?;
+            if sources.contains(p) {
+                sys::rename(lower, p, tmp[p.as_path()], 0)?;
+            } else {
+                sys::unlink(lower, p, sys::is_dir(&st))?;
+            }
             removed.insert(p);
         }
         for (p, up) in &plan.puts {
@@ -386,9 +433,15 @@ impl Commits {
                     Ok(_) => sys::chmod(lower, p, up.st_mode)?,
                     Err(_) => sys::copy_entry(upper, p, lower, p, up, false)?,
                 }
+            } else if let Some(from) = plan.moves.get(p) {
+                sys::rename(lower, tmp[from.as_path()], p, 0)?;
             } else {
                 let t = tmp[p.as_path()];
-                sys::copy_entry(upper, p, lower, t, up, true)?;
+                // A new file keeps its inode: link it out of the upper, which a rollback
+                // still needs; copy across filesystems.
+                if !(sys::kind(up.st_mode) == FileType::RegularFile && sys::link_across(upper, p, lower, t).is_ok()) {
+                    sys::copy_entry(upper, p, lower, t, up, false)?;
+                }
                 sys::rename(lower, t, p, 0)?;
             }
         }
@@ -500,7 +553,8 @@ impl Commits {
 
     /// Drop finished generations no open scope reads through: those at or below
     /// the oldest open scope's generation (all of them when no scope is open).
-    pub fn gc(&self, oldest_open: Option<u64>) -> io::Result<()> {
+    /// `dropped`: the generation whose scope was just dropped (see `scope_dropped`).
+    pub fn gc(&self, oldest_open: Option<u64>, dropped: Option<u64>) -> io::Result<()> {
         let _serial = self.serial.lock().unwrap();
         let floor = oldest_open.unwrap_or(u64::MAX);
         let done: Vec<u64> = self
@@ -510,13 +564,13 @@ impl Commits {
             .filter(|(g, _, s)| *s == GenState::Done && *g <= floor)
             .map(|(g, _, _)| g)
             .collect();
+        // Forget first: a crash before the files are gone leaves only files, which start sweeps.
+        self.journal().forget_all(&done, oldest_open.is_none(), dropped)?;
         for g in done {
-            self.journal().forget(g)?;
             self.gens.unregister(g);
             self.gens.remove_files(g)?;
         }
         if oldest_open.is_none() {
-            self.journal().clear_restored()?;
             self.aliases.lock().unwrap().clear();
         }
         Ok(())

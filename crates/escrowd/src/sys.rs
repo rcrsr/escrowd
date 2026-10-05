@@ -90,6 +90,11 @@ pub fn link(dir: BorrowedFd, from: &Path, to: &Path) -> io::Result<()> {
     Ok(rfs::linkat(dir, from, dir, to, AtFlags::empty())?)
 }
 
+/// Hard link `src_dir/src` as `dst_dir/dst` (EXDEV across filesystems).
+pub fn link_across(src_dir: BorrowedFd, src: &Path, dst_dir: BorrowedFd, dst: &Path) -> io::Result<()> {
+    Ok(rfs::linkat(src_dir, src, dst_dir, dst, AtFlags::empty())?)
+}
+
 pub fn chmod(dir: BorrowedFd, rel: &Path, mode: u32) -> io::Result<()> {
     Ok(rfs::chmodat(
         dir,
@@ -214,6 +219,13 @@ pub fn syncfs(dir: BorrowedFd) -> io::Result<()> {
     Ok(rfs::syncfs(fd)?)
 }
 
+/// Start writing a file's dirty pages to disk without waiting for them.
+pub fn start_writeback(f: &File) {
+    use std::os::fd::AsRawFd;
+    // SAFETY: a valid open fd; the call only starts writeback.
+    unsafe { libc::sync_file_range(f.as_raw_fd(), 0, 0, libc::SYNC_FILE_RANGE_WRITE) };
+}
+
 /// `mkdir -p` below `dir`.
 pub fn mkdirs(dir: BorrowedFd, rel: &Path) -> io::Result<()> {
     if rel.as_os_str().is_empty() || lstat(dir, rel).is_ok_and(|st| is_dir(&st)) {
@@ -266,6 +278,27 @@ pub fn attr(ino: u64, st: &Stat) -> FileAttr {
         gid: st.st_gid,
         rdev: st.st_rdev as u32,
         blksize: st.st_blksize as u32,
+        flags: 0,
+    }
+}
+
+/// The attributes of a negative entry: inode 0 tells the kernel the name does not exist.
+pub fn absent() -> FileAttr {
+    FileAttr {
+        ino: INodeNo(0),
+        size: 0,
+        blocks: 0,
+        atime: UNIX_EPOCH,
+        mtime: UNIX_EPOCH,
+        ctime: UNIX_EPOCH,
+        crtime: UNIX_EPOCH,
+        kind: FileType::RegularFile,
+        perm: 0,
+        nlink: 0,
+        uid: 0,
+        gid: 0,
+        rdev: 0,
+        blksize: 0,
         flags: 0,
     }
 }
