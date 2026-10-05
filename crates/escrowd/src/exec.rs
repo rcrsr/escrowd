@@ -113,13 +113,28 @@ struct Registry {
     closing: HashSet<String>,
 }
 
-#[derive(Default)]
 pub struct Children {
     inner: Mutex<Registry>,
     gone: Condvar,
+    /// How long a closing scope's children get between SIGTERM and SIGKILL.
+    grace: Duration,
+}
+
+impl Default for Children {
+    fn default() -> Self {
+        Children::new(Duration::from_secs(2))
+    }
 }
 
 impl Children {
+    pub fn new(grace: Duration) -> Self {
+        Children {
+            inner: Mutex::default(),
+            gone: Condvar::new(),
+            grace,
+        }
+    }
+
     fn remove(&self, scope: &str, pgid: i32) {
         let mut g = self.inner.lock().unwrap();
         if let Some(v) = g.running.get_mut(scope) {
@@ -131,17 +146,43 @@ impl Children {
         self.gone.notify_all();
     }
 
-    /// Refuse new children of `scope`, kill its running ones and wait for them to exit.
-    pub fn stop(&self, scope: &str) {
+    /// Refuse new children of `scope` and stop its running ones: SIGTERM to each
+    /// command (not to bwrap, whose death would SIGKILL it), up to the grace
+    /// period for them to exit, then SIGKILL; wait for their sandboxes to be gone.
+    /// Returns the sandboxes' process groups: their last processes may still be
+    /// exiting, writing back dirty pages (`Views::close_scope_after`).
+    pub fn stop(&self, scope: &str) -> Vec<i32> {
         let mut g = self.inner.lock().unwrap();
         g.closing.insert(scope.to_string());
+        let pgids = g.running.get(scope).cloned().unwrap_or_default();
+        if pgids.is_empty() {
+            return pgids;
+        }
+        for pgid in &pgids {
+            signal_command(*pgid, libc::SIGTERM);
+        }
+        g = self.wait_gone(g, scope, self.grace);
         for pgid in g.running.get(scope).into_iter().flatten() {
             kill_group(*pgid, libc::SIGKILL);
         }
-        let deadline = Instant::now() + Duration::from_secs(10);
+        drop(self.wait_gone(g, scope, Duration::from_secs(10)));
+        pgids
+    }
+
+    fn wait_gone<'a>(
+        &self,
+        mut g: std::sync::MutexGuard<'a, Registry>,
+        scope: &str,
+        within: Duration,
+    ) -> std::sync::MutexGuard<'a, Registry> {
+        let deadline = Instant::now() + within;
         while g.running.contains_key(scope) && Instant::now() < deadline {
-            g = self.gone.wait_timeout(g, Duration::from_millis(100)).unwrap().0;
+            let left = deadline
+                .saturating_duration_since(Instant::now())
+                .min(Duration::from_millis(100));
+            g = self.gone.wait_timeout(g, left).unwrap().0;
         }
+        g
     }
 
     /// The scope accepts children again (return to agent), or is gone.

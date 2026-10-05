@@ -208,13 +208,13 @@ impl Filesystem for FuseView {
         }
     }
 
-    fn open(&self, _req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
+    fn open(&self, req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
         match self
             .0
             .key(ino.0)
             .and_then(|(h, rel)| Ok((self.0.open(&h, &rel, flags.0)?, h)))
         {
-            Ok((f, h)) => reply.opened(FileHandle(self.0.add_file(h, f)), FopenFlags::empty()),
+            Ok((f, h)) => reply.opened(FileHandle(self.0.add_file(h, f, req.pid())), FopenFlags::empty()),
             Err(e) => reply.error(e),
         }
     }
@@ -352,7 +352,7 @@ impl Filesystem for FuseView {
 
     fn create(
         &self,
-        _req: &Request,
+        req: &Request,
         parent: INodeNo,
         name: &OsStr,
         mode: u32,
@@ -373,7 +373,7 @@ impl Filesystem for FuseView {
                 &TTL,
                 &attr,
                 Generation(0),
-                FileHandle(v.add_file(h, f)),
+                FileHandle(v.add_file(h, f, req.pid())),
                 FopenFlags::empty(),
             ),
             Err(e) => reply.error(e),

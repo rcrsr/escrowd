@@ -153,7 +153,7 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
         state,
         mount,
         socket: config.socket,
-        children: Arc::new(Children::default()),
+        children: Arc::new(Children::new(std::time::Duration::from_millis(policy.close.grace_ms))),
         read,
         write,
         bwrap: sandbox::find_bwrap(config.bwrap.as_deref()),

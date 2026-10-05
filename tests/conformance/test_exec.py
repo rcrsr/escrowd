@@ -116,9 +116,73 @@ def test_close_stops_the_scopes_children_after_their_writes(daemon):
     start = time.monotonic()
     with client(daemon) as c:
         cs = c.close_scope(sid)
-    assert time.monotonic() - start < 5
-    assert p.wait(timeout=10) == 128 + signal.SIGKILL
+    assert time.monotonic() - start < 2  # sleep dies of SIGTERM: no grace period wait
+    assert p.wait(timeout=10) == 128 + signal.SIGTERM
     assert "kept.txt" in [ch.path for ch in cs.changes]
+
+
+def test_close_gives_children_a_grace_period_and_keeps_their_last_writes(daemon):
+    sid = open_scope(daemon)
+    script = "trap 'echo bye > bye.txt; exit 0' TERM; touch ready; while :; do sleep 0.05; done"
+    p = spawn(daemon, sid, script)
+    wait_for(daemon.mount / sid / "ready")
+    with client(daemon) as c:
+        cs = c.close_scope(sid)
+    assert p.wait(timeout=10) == 0
+    assert "bye.txt" in [ch.path for ch in cs.changes]
+    assert (daemon.upper(sid) / "bye.txt").read_text() == "bye\n"
+
+
+def test_close_kills_a_child_that_ignores_sigterm_after_the_grace_period(start_daemon):
+    d = start_daemon(grace_ms=500)
+    sid = open_scope(d)
+    p = spawn(d, sid, "trap '' TERM; touch ready; while :; do sleep 0.05; done")
+    wait_for(d.mount / sid / "ready")
+    start = time.monotonic()
+    with client(d) as c:
+        c.close_scope(sid)
+    assert 0.5 <= time.monotonic() - start < 3
+    assert p.wait(timeout=10) == 128 + signal.SIGKILL
+
+
+WRITER = """
+import os, sys
+fd = os.open("log", os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+i = 0
+while True:
+    os.write(fd, b"%d\\n" % i)
+    sys.stdout.write("%d\\n" % i)
+    sys.stdout.flush()
+    i += 1
+"""
+
+
+def test_close_under_load_loses_no_acknowledged_write(daemon):
+    """A writer appends without pause and reports each write after it returns; whenever
+    close returns, the change set holds every write the writer reported. A killed
+    process sends no FUSE flush, so its pages arrive only with the release, after its
+    sandbox is gone: close must wait for them (2.2; 1,000 runs in the soak)."""
+    import random
+    import threading
+
+    for _ in range(10):
+        sid = open_scope(daemon)
+        # A grandchild, as under a shell or a test runner: the sandbox's init exits with
+        # the shell and the kernel kills the writer mid-exit.
+        p = spawn(daemon, sid, f"python3 -c '{WRITER}'; true")
+        acked = []
+        drain = threading.Thread(target=lambda p=p, acked=acked: acked.extend(p.stdout))
+        drain.start()
+        wait_for(daemon.mount / sid / "log")
+        time.sleep(random.uniform(0, 0.2))
+        with client(daemon) as c:
+            c.close_scope(sid)
+        p.wait(timeout=10)
+        drain.join(timeout=10)
+        lines = (daemon.upper(sid) / "log").read_text().split("\n")
+        complete = lines[:-1]  # the last element is "" or a write cut short
+        assert complete == [str(i) for i in range(len(complete))]
+        assert 0 < len(acked) <= len(complete), (len(acked), len(complete))
 
 
 @pytest.fixture

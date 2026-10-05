@@ -1,0 +1,15 @@
+close soak: 1000 runs, /home/andre/projects/escrowd/target/debug/escrow, kernel 6.18.40.1-microsoft-standard-WSL2
+run 100: ok acked=85303 kept=85304
+run 200: ok acked=34151 kept=34151
+run 300: ok acked=38320 kept=38320
+run 400: ok acked=75010 kept=75010
+run 500: ok acked=36103 kept=36103
+run 600: ok acked=21733 kept=21734
+run 700: ok acked=40459 kept=40460
+run 800: ok acked=57290 kept=57291
+run 900: ok acked=32082 kept=32082
+run 1000: ok acked=10163 kept=10163
+close latency, 0 children: p50 1.5 ms, p99 2.1 ms
+close latency, 1 children: p50 7.0 ms, p99 7.7 ms
+close latency, 10 children: p50 27.8 ms, p99 30.8 ms
+result: 1000 closes under load, 0 lost acknowledged writes

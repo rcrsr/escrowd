@@ -40,7 +40,9 @@ def runtime_dir():
     shutil.rmtree(d, ignore_errors=True)
 
 
-def write_policy(work: Path, deny_read=(".env",), sandbox_read=(), sandbox_write=()) -> Path:
+def write_policy(
+    work: Path, deny_read=(".env",), sandbox_read=(), sandbox_write=(), grace_ms=None
+) -> Path:
     policy = work / "policy.yaml"
 
     def items(xs):
@@ -49,6 +51,7 @@ def write_policy(work: Path, deny_read=(".env",), sandbox_read=(), sandbox_write
     policy.write_text(
         f"version: 1\nread:\n  deny: [{items(deny_read)}]\n"
         f"sandbox:\n  read: [{items(sandbox_read)}]\n  write: [{items(sandbox_write)}]\n"
+        + (f"close:\n  grace_ms: {grace_ms}\n" if grace_ms is not None else "")
     )
     return policy
 
@@ -76,9 +79,11 @@ class Daemon:
         unscoped: str | None = None,
         sandbox_read=(),
         sandbox_write=(),
+        grace_ms=None,
     ):
         """`deny_read`, `sandbox_read` and `sandbox_write` become the policy file's read.deny,
-        sandbox.read and sandbox.write lists; `env` adds to the environment."""
+        sandbox.read and sandbox.write lists, `grace_ms` its close.grace_ms; `env` adds to
+        the environment."""
         self.work = work
         self.bin = bin
         self.socket = work / "escrow.sock"
@@ -86,7 +91,7 @@ class Daemon:
         self.state = work / "state"
         self.mount = work / "mnt"
         self.project.mkdir(parents=True, exist_ok=True)
-        self.policy = write_policy(work, deny_read, sandbox_read, sandbox_write)
+        self.policy = write_policy(work, deny_read, sandbox_read, sandbox_write, grace_ms)
         args = [bin, "daemon", "--socket", self.socket, "--project", self.project]
         args += ["--state", self.state, "--mount", self.mount, "--policy", self.policy]
         if unscoped:

@@ -22,6 +22,7 @@ jobs:
       rust: ${{ steps.filter.outputs.rust }}
       python: ${{ steps.filter.outputs.python }}
       conformance: ${{ steps.filter.outputs.conformance }}
+      soak: ${{ steps.filter.outputs.soak }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -46,6 +47,13 @@ jobs:
               - 'proto/**'
               - '.python-version'
               - '.github/workflows/ci.yml'
+            # The commit path: runs the crash soak (50 random kills) after the suite.
+            soak:
+              - 'crates/escrowd/src/commit.rs'
+              - 'crates/escrowd/src/journal.rs'
+              - 'crates/escrowd/src/snapshot.rs'
+              - 'crates/escrowd/src/fault.rs'
+              - 'tests/soak/**'
             conformance:
               - 'crates/**'
               - 'proto/**'
@@ -187,6 +195,10 @@ jobs:
             uv run --project sdk/python --frozen pytest -v tests/conformance
             echo "::endgroup::"
           done
+
+      - name: Crash soak, 50 random kills mid-commit
+        if: needs.changes.outputs.soak == 'true'
+        run: uv run --project sdk/python --frozen python tests/soak/crash.py 50
 
   lockfiles:
     name: Lockfiles

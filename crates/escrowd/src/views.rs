@@ -119,6 +119,8 @@ struct Tables {
     paths: HashMap<u64, Key>,
     inos: HashMap<Key, u64>,
     files: HashMap<u64, (Arc<ScopeHandle>, Arc<File>)>,
+    /// The process that opened each file handle.
+    openers: HashMap<u64, u32>,
     next_fh: u64,
 }
 
@@ -189,6 +191,8 @@ pub struct Views {
     scopes: RwLock<HashMap<String, Arc<ScopeHandle>>>,
     next_idx: Mutex<u64>,
     t: Mutex<Tables>,
+    /// Signalled when a file handle is released.
+    released: std::sync::Condvar,
 }
 
 impl Views {
@@ -222,6 +226,7 @@ impl Views {
                 next_fh: 1,
                 ..Default::default()
             }),
+            released: std::sync::Condvar::new(),
         };
         views.load_scopes()?;
         views.ensure_unscoped()?;
@@ -329,8 +334,14 @@ impl Views {
     /// (syncfs is not a barrier on plain FUSE); sandboxes are stopped here from phase 1.5.
     /// Closing a closed scope returns the same change set.
     pub fn close_scope(&self, id: &str) -> io::Result<ChangeSet> {
+        self.close_scope_after(id, &[])
+    }
+
+    /// Close after stopping the scope's sandboxes (process groups `stopped`).
+    pub fn close_scope_after(&self, id: &str, stopped: &[i32]) -> io::Result<ChangeSet> {
         let h = self.handle(id)?;
         if !h.is_closed() {
+            self.settle_dead_handles(id, stopped, std::time::Duration::from_secs(5));
             h.store().set_state(ScopeState::Closed)?;
             h.closed.store(true, Ordering::Release);
             self.ledger.append(id, "close", Path::new(""), None, "allow");
@@ -827,12 +838,41 @@ impl Views {
 
     // ---- open files ----
 
-    pub fn add_file(&self, h: Arc<ScopeHandle>, f: File) -> u64 {
+    /// `pid`: the process that opened it (FUSE reports the calling thread).
+    pub fn add_file(&self, h: Arc<ScopeHandle>, f: File, pid: u32) -> u64 {
         let mut t = self.t();
         let fh = t.next_fh;
         t.next_fh += 1;
         t.files.insert(fh, (h, Arc::new(f)));
+        t.openers.insert(fh, pid);
         fh
+    }
+
+    /// Wait (up to `within`) until scope `id` holds no handle opened by a process in
+    /// one of the `stopped` process groups (its sandboxes) or by a process that is
+    /// exiting or gone. A process killed by a signal sends no FUSE flush: its dirty
+    /// pages reach the daemon only with the release, which the kernel sends as the
+    /// process exits, possibly after its sandbox's bwrap is reaped. Close waits for
+    /// those writes before it freezes the scope. Handles of live processes outside
+    /// the sandboxes (the SDK's app) are the SDK's to flush.
+    fn settle_dead_handles(&self, id: &str, stopped: &[i32], within: std::time::Duration) {
+        let deadline = std::time::Instant::now() + within;
+        let mut t = self.t();
+        loop {
+            let pending = t
+                .files
+                .iter()
+                .any(|(fh, (h, _))| h.id == id && t.openers.get(fh).is_some_and(|p| finishing(*p, stopped)));
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if !pending || left.is_zero() {
+                return;
+            }
+            t = self
+                .released
+                .wait_timeout(t, left.min(std::time::Duration::from_millis(20)))
+                .unwrap()
+                .0;
+        }
     }
 
     pub fn file(&self, fh: u64) -> R<Arc<File>> {
@@ -850,10 +890,30 @@ impl Views {
     }
 
     pub fn release(&self, fh: u64) {
-        self.t().files.remove(&fh);
+        let mut t = self.t();
+        t.files.remove(&fh);
+        t.openers.remove(&fh);
+        self.released.notify_all();
     }
 
     pub fn statfs(&self) -> R<rustix::fs::StatVfs> {
         sys::statvfs(self.lower.as_fd()).map_err(errno)
     }
+}
+
+/// Process (or thread) `pid` is gone, exiting, or in one of the `stopped` process groups.
+fn finishing(pid: u32, stopped: &[i32]) -> bool {
+    const PF_EXITING: u64 = 0x4;
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return true;
+    };
+    // Fields after the command name: state ppid pgrp session tty_nr tpgid flags …
+    let Some(rest) = stat.rfind(')').and_then(|i| stat.get(i + 2..)) else {
+        return true;
+    };
+    let f: Vec<&str> = rest.split_whitespace().collect();
+    let state = f.first().and_then(|s| s.chars().next()).unwrap_or('X');
+    let pgrp = f.get(2).and_then(|s| s.parse::<i32>().ok());
+    let flags = f.get(6).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+    matches!(state, 'Z' | 'X' | 'x') || flags & PF_EXITING != 0 || pgrp.is_some_and(|g| stopped.contains(&g))
 }

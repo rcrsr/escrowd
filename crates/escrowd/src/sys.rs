@@ -289,6 +289,12 @@ impl Version {
             ctime_ns: ns(st.st_ctime, st.st_ctime_nsec as i64),
         }
     }
+
+    /// Same inode, size and mtime: what an editor's write or rename-over changes.
+    /// Ignores ctime, which escrowd's own unlink of a hard link changes too.
+    pub fn same_content(&self, other: &Version) -> bool {
+        (self.ino, self.size, self.mtime_ns) == (other.ino, other.size, other.mtime_ns)
+    }
 }
 
 pub fn statvfs(fd: impl AsFd) -> io::Result<rfs::StatVfs> {
