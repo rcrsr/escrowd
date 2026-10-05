@@ -4,19 +4,28 @@
 file API: inside a scope, `open`, `io.open`, the `os` path functions (and so pathlib,
 shutil and os.walk) rewrite `<project>/x` to the scope's view (and `$HOME/x` or `/tmp/x`
 to its views of those roots, when the policy serves them), and `subprocess.Popen`
-(and so `subprocess.run` and asyncio subprocesses) runs the child through `escrow exec`
-in the scope's sandbox. The current scope lives in a ContextVar, so concurrent asyncio
-tasks on one thread keep separate scopes.
+(and so `subprocess.run` and asyncio subprocesses), `os.system` and `os.posix_spawn*`
+run the child through `escrow exec` in the scope's sandbox. `os.chdir` into the project
+moves into the scope's view (`os.getcwd` and `os.path.realpath` map it back); the scope's
+close moves back to the project path. The current scope lives in a ContextVar, so
+concurrent asyncio tasks on one thread keep separate scopes.
 
-Not covered (falls to the unscoped mode): `os.system`, `os.posix_spawn`, `os.chdir` into
-the project (the working directory is per process, not per scope), native code doing
-its own IO, and file descriptors beyond stdin, stdout and stderr passed to children.
+Errors: a project write outside any scope in `deny` mode raises `EscrowUnscopedError`,
+and a write on a file opened in a scope that has closed raises `EscrowStaleHandleError`;
+both are `OSError`s, as before. At close, `s.outcome.unscoped` counts the changes that
+reached the unscoped mode while the scope was open (a warning: IO that escaped it).
+
+Not covered (falls to the unscoped mode): `os.spawn*`, `os.exec*` and `os.fork`, native
+code doing its own IO, the working directory of other tasks while one scope has moved
+it (it is per process, not per scope), and file descriptors beyond stdin, stdout and
+stderr passed to children.
 """
 
 from __future__ import annotations
 
 import builtins
 import contextvars
+import errno
 import functools
 import inspect
 import io
@@ -25,6 +34,7 @@ import pathlib
 import shutil
 import subprocess
 import sys
+import warnings
 import weakref
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -35,6 +45,19 @@ from escrow.v1 import escrow_pb2 as pb
 
 class EscrowError(Exception):
     pass
+
+
+class EscrowUnscopedError(EscrowError, PermissionError):
+    """A project write outside any scope in `deny` mode (EROFS): open a scope for it."""
+
+
+class EscrowStaleHandleError(EscrowError, OSError):
+    """A write on a file opened in a scope that has closed (EBADF): reopen the file in a
+    new scope."""
+
+
+class EscrowUnscopedWarning(UserWarning):
+    """Changes reached the unscoped mode while a scope was open: IO that escaped it."""
 
 
 # ---- decisions and outcomes ----
@@ -99,6 +122,8 @@ class ChangeSet:
     # Content diff against the scope's snapshot, git format; binary and large files
     # summarized (size, SHA-256); capped by the policy's `diff:` sizes.
     diff: str = ""
+    # Changes that reached the unscoped mode while the scope was open (0 in passthrough).
+    unscoped: int = 0
 
     @property
     def paths(self) -> list[str]:
@@ -112,6 +137,7 @@ class ChangeSet:
             reads=[Read(r.path, r.decision == pb.READ_DECISION_ALLOW) for r in cs.reads],
             labels=dict(cs.labels),
             diff=cs.diff,
+            unscoped=cs.unscoped_ops,
         )
 
 
@@ -133,6 +159,10 @@ class Outcome:
     @property
     def diff(self) -> str:
         return self.changes.diff
+
+    @property
+    def unscoped(self) -> int:
+        return self.changes.unscoped
 
 
 Decide = Callable[[ChangeSet], "Decision | None | Awaitable[Decision | None]"]
@@ -272,6 +302,7 @@ class Scope:
         # (host path, view, direct paths) of each served root outside the project.
         self.roots: list[tuple[str, str, tuple[str, ...]]] = resume.roots if resume else []
         self.outcome: Outcome | None = None
+        self.closed = False
         self._files: weakref.WeakSet = weakref.WeakSet()
         self._token: contextvars.Token | None = None
 
@@ -282,6 +313,7 @@ class Scope:
             self.id = s.scope_id
             self.root = _view(s.root)
             self.roots = [(r.path, _view(r.view), tuple(r.direct)) for r in s.roots]
+        self.closed = False
         self._token = _current.set(self)
         return self
 
@@ -291,11 +323,26 @@ class Scope:
             self._token = None
         self.flush()
         with connect(_cfg.socket) as c:
-            return ChangeSet.from_proto(c.close_scope(self.id))
+            cs = ChangeSet.from_proto(c.close_scope(self.id))
+        self.closed = True
+        if cs.unscoped:
+            warnings.warn(
+                f"escrow: {cs.unscoped} change(s) reached the unscoped mode "
+                f"({_cfg.unscoped}) while scope {self.id} was open",
+                EscrowUnscopedWarning,
+                stacklevel=3,
+            )
+        return cs
 
     def _finish(self, cs: ChangeSet, d: Decision | None) -> None:
+        # The working directory is per process: once decided, move it out of the scope's
+        # views (gone after a commit or a discard) to the same path in the project.
+        cwd = _cfg.orig["os.getcwd"]()
+        back = _unmap_from(self, cwd)
         with connect(_cfg.socket) as c:
             self.outcome = _apply(c, cs, d)
+        if back != cwd:
+            _chdir_nearest(back)
 
     def __enter__(self) -> Scope:
         return self._enter()
@@ -335,6 +382,15 @@ class Scope:
 
 
 scope = Scope
+
+
+def _chdir_nearest(path: str) -> None:
+    """chdir to `path`, or to its nearest existing ancestor (a discard drops new dirs)."""
+    for d in (path, *map(str, pathlib.Path(path).parents)):
+        try:
+            return _cfg.orig["os.chdir"](d)
+        except OSError:
+            continue
 
 
 def current() -> Scope | None:
@@ -381,7 +437,11 @@ def _rewrite(path, dir_fd=None):
 def _unmap(p):
     """A path in the current scope's views, back to the path the code asked for."""
     s = _current.get()
-    if s is None or isinstance(p, bytes):
+    return p if s is None else _unmap_from(s, p)
+
+
+def _unmap_from(s: Scope, p):
+    if isinstance(p, bytes):
         return p
     for view, host in ((s.root, _cfg.project), *((v, h) for h, v, _ in s.roots)):
         if _under(p, view):
@@ -409,14 +469,35 @@ _WRAP1 = (
     "access",
     "readlink",
     "mkfifo",
+    "chdir",
 )
 _WRAP2 = ("rename", "replace", "link")
+_SPAWN = ("system", "posix_spawn", "posix_spawnp")
+
+
+def _unscoped_error(e: OSError, *paths) -> OSError:
+    """EROFS on a project path outside any scope in `deny` mode: say why, keep the errno."""
+    if e.errno != errno.EROFS or _cfg.unscoped != "deny" or _current.get() is not None:
+        return e
+    for p in paths:
+        if isinstance(p, int):
+            continue
+        p = os.fsdecode(os.fspath(p))
+        if _under(os.path.abspath(p), _cfg.project):
+            msg = "project writes outside a scope are refused (unscoped=deny): open an escrow.scope"
+            return EscrowUnscopedError(errno.EROFS, msg, p)
+    return e
 
 
 def _wrap1(fn):
     @functools.wraps(fn)
     def wrapper(path, *args, **kwargs):
-        return fn(_rewrite(path, kwargs.get("dir_fd")), *args, **kwargs)
+        try:
+            return fn(_rewrite(path, kwargs.get("dir_fd")), *args, **kwargs)
+        except OSError as e:
+            if kwargs.get("dir_fd") is not None:
+                raise
+            raise _unscoped_error(e, path) from None
 
     return wrapper
 
@@ -424,22 +505,93 @@ def _wrap1(fn):
 def _wrap2(fn):
     @functools.wraps(fn)
     def wrapper(src, dst, *args, **kwargs):
-        src = _rewrite(src, kwargs.get("src_dir_fd"))
-        return fn(src, _rewrite(dst, kwargs.get("dst_dir_fd")), *args, **kwargs)
+        s2 = _rewrite(src, kwargs.get("src_dir_fd"))
+        try:
+            return fn(s2, _rewrite(dst, kwargs.get("dst_dir_fd")), *args, **kwargs)
+        except OSError as e:
+            if kwargs.get("src_dir_fd") is not None or kwargs.get("dst_dir_fd") is not None:
+                raise
+            raise _unscoped_error(e, src, dst) from None
 
     return wrapper
 
 
 def _symlink(target, link, *args, **kwargs):
     # The target is link content, not a path to rewrite: it must read the same after commit.
-    return _cfg.orig["os.symlink"](target, _rewrite(link, kwargs.get("dir_fd")), *args, **kwargs)
+    try:
+        return _cfg.orig["os.symlink"](
+            target, _rewrite(link, kwargs.get("dir_fd")), *args, **kwargs
+        )
+    except OSError as e:
+        if kwargs.get("dir_fd") is not None:
+            raise
+        raise _unscoped_error(e, link) from None
+
+
+_STALE = ("write", "writelines", "flush", "truncate", "close")
+# fd-level calls that reach the daemon after a buffered write (the writeback cache
+# takes `flush`; fsync or close report the EBADF).
+_STALE_FD = ("write", "fsync", "fdatasync", "ftruncate")
+# Files opened in a scope, for the fd-level calls to find theirs.
+_scoped_files: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def _stale_error(e: OSError, s: Scope, name) -> OSError:
+    if e.errno != errno.EBADF or not s.closed:
+        return e
+    msg = f"opened in scope {s.id}, which has closed: reopen it in a new scope"
+    return EscrowStaleHandleError(errno.EBADF, msg, name)
+
+
+def _guard_stale(f, s: Scope) -> None:
+    """EBADF from a file of `s` after `s` closed becomes EscrowStaleHandleError. The
+    wrappers reach the file through a weak reference and the class's methods: a bound
+    method would make a cycle, and the file would outlive its last reference (its
+    descriptor open on the view) until the garbage collector ran."""
+    name = getattr(f, "name", None)
+    ref = weakref.ref(f)
+    _scoped_files[f] = s
+
+    def guard(method):
+        @functools.wraps(method)
+        def wrapper(*args, **kwargs):
+            try:
+                return method(ref(), *args, **kwargs)
+            except OSError as e:
+                raise _stale_error(e, s, name) from None
+
+        return wrapper
+
+    for m in _STALE:
+        method = getattr(type(f), m, None)
+        if method is not None:
+            setattr(f, m, guard(method))
+
+
+def _guard_fd(fn):
+    @functools.wraps(fn)
+    def wrapper(fd, *args, **kwargs):
+        try:
+            return fn(fd, *args, **kwargs)
+        except OSError as e:
+            if e.errno == errno.EBADF:
+                for f, s in list(_scoped_files.items()):
+                    if not f.closed and f.fileno() == fd:
+                        raise _stale_error(e, s, getattr(f, "name", None)) from None
+            raise
+
+    return wrapper
 
 
 def _open(file, *args, **kwargs):
-    f = _cfg.orig["open"](_rewrite(file), *args, **kwargs)
+    try:
+        f = _cfg.orig["open"](_rewrite(file), *args, **kwargs)
+    except OSError as e:
+        raise _unscoped_error(e, file) from None
     s = _current.get()
     if s is not None:
         s._files.add(f)
+        _guard_stale(f, s)
     return f
 
 
@@ -467,9 +619,45 @@ class _Popen(subprocess.Popen):
                     argv = ["/bin/sh", "-c", *argv]
             cwd = kw.pop("cwd", None)
             kw["cwd"] = _rewrite_to(s, os.path.abspath(os.fspath(cwd) if cwd else os.getcwd()))
-            exec_ = [_cfg.exe, "exec", "--scope", s.id, "--socket", _cfg.socket, "--"]
-            args = [*exec_, *(os.fsdecode(x) for x in argv)]
+            args = _exec_argv(s, [os.fsdecode(x) for x in argv])
         super().__init__(args, *a, **kw)
+
+
+def _system(command):
+    """In a scope, the shell runs through `escrow exec`; returns a wait status, as os.system."""
+    if _current.get() is None:
+        return _cfg.orig["os.system"](command)
+    code = _Popen(os.fsdecode(command), shell=True).wait()
+    return -code if code < 0 else code << 8
+
+
+def _exec_argv(s: Scope, argv) -> list[str]:
+    return [_cfg.exe, "exec", "--scope", s.id, "--socket", _cfg.socket, "--", *argv]
+
+
+def _spawner(name: str):
+    """`os.posix_spawn` and `os.posix_spawnp`: in a scope, the child runs through `escrow
+    exec` (file actions apply to it: stdio redirects reach the child, opened paths are
+    rewritten). Returns the PID of `escrow exec`, whose exit status is the child's."""
+    orig = getattr(os, name)
+
+    @functools.wraps(orig)
+    def wrapper(path, argv, env, *args, **kwargs):
+        s = _current.get()
+        if s is None or os.fsdecode(path) == _cfg.exe:  # subprocess already routed it
+            return orig(path, argv, env, *args, **kwargs)
+        actions = kwargs.get("file_actions")
+        if actions:
+            kwargs["file_actions"] = [
+                (a[0], a[1], _rewrite_to(s, os.fsdecode(a[2])), *a[3:])
+                if a[0] == os.POSIX_SPAWN_OPEN
+                else a
+                for a in actions
+            ]
+        argv = [os.fsdecode(path), *(os.fsdecode(x) for x in list(argv)[1:])]
+        return _cfg.orig["os.posix_spawn"](_cfg.exe, _exec_argv(s, argv), env, *args, **kwargs)
+
+    return wrapper
 
 
 def _set(obj, name: str, value) -> None:
@@ -497,6 +685,14 @@ def _install(project: str, socket: str, views: str | None, unscoped: str) -> Non
     _set(os.path, "realpath", _realpath)
     _set(os, "getcwd", _getcwd)
     _set(subprocess, "Popen", _Popen)
+    for name in _STALE_FD:
+        o[f"os.{name}"] = getattr(os, name)
+        setattr(os, name, _guard_fd(getattr(os, name)))
+    for name in _SPAWN:
+        o[f"os.{name}"] = getattr(os, name)
+    _set(os, "system", _system)
+    _set(os, "posix_spawn", _spawner("posix_spawn"))
+    _set(os, "posix_spawnp", _spawner("posix_spawnp"))
 
 
 def _uninstall() -> None:
@@ -506,7 +702,7 @@ def _uninstall() -> None:
         return
     _set(builtins, "open", o["open"])
     _set(io, "open", o["open"])
-    for name in (*_WRAP1, *_WRAP2, "symlink", "getcwd"):
+    for name in (*_WRAP1, *_WRAP2, *_SPAWN, *_STALE_FD, "symlink", "getcwd"):
         setattr(os, name, o[f"os.{name}"])
     _set(os.path, "realpath", o["os.path.realpath"])
     _set(subprocess, "Popen", o["subprocess.Popen"])

@@ -1,5 +1,7 @@
 """gRPC client for the escrowd Unix socket."""
 
+from __future__ import annotations
+
 import os
 
 import grpc

@@ -95,9 +95,11 @@ IO outside any scope is the developer's choice, set once at `escrow.init(unscope
 
 | Mode | IO outside a scope | Fits |
 | --- | --- | --- |
-| `passthrough` | Real IO, not captured; optionally logged as unscoped | Hosts that only care about the work they wrap |
+| `passthrough` | Real IO, not captured, not logged (one ledger line at start) | Trusted, legacy apps that only care about the work they wrap |
 | `implicit` | Captured in a default scope, decided at exit or by `escrow.settle_unscoped()` | Setups where nothing may escape |
-| `deny` | Writes fail with EROFS; reads pass | Strict hosts that want a missing boundary to fail loudly |
+| `deny` | Writes fail with EROFS (`EscrowUnscopedError` from the SDK); reads pass | **Agent hosts (recommended)**: a missing boundary fails loudly |
+
+`deny` is the documented mode for agent hosts: an agent's write outside its scope fails at once and names the fix, where `passthrough` would let it reach the project unlogged. In `implicit` and `deny` modes, each scope's outcome counts the changes that reached the unscoped mode while it was open (`s.outcome.unscoped`), a warning that IO escaped it (native code, `os.spawn*`).
 
 Nested scopes, and the transitive release they would need, are deferred.
 

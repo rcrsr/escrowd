@@ -110,6 +110,11 @@ message ChangeSet {
   // SHA-256; the diff stops before passing diff.max_bytes, and a last line
   // starting `# escrow:` counts the files left out.
   string diff = 5;
+  // Changes to captured paths the unscoped mode was asked for (allowed in implicit
+  // mode, refused in deny mode) while this scope was open: IO that escaped the scope,
+  // or ran beside it. Counted since the daemon started; 0 in passthrough mode, which
+  // serves no unscoped scope.
+  uint64 unscoped_ops = 6;
 }
 
 message GetChangeSetRequest {
