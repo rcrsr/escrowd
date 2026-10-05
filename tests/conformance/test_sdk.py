@@ -30,8 +30,9 @@ out = {}
 
 
 class Sdk:
-    def __init__(self, escrow_bin, runtime_dir, roots=""):
-        """`roots`: more policy keys under roots:; with them, $HOME is `<work>/home`."""
+    def __init__(self, escrow_bin, runtime_dir, roots="", policy=""):
+        """`roots`: more policy keys under roots:; with them, $HOME is `<work>/home`;
+        `policy`: more top-level policy keys."""
         self.bin, self.work = escrow_bin, runtime_dir
         self.project = runtime_dir / "proj"
         self.project.mkdir()
@@ -40,7 +41,9 @@ class Sdk:
         self.home = runtime_dir / "home" if roots else None
         if self.home:
             self.home.mkdir()
-        self.policy = write_policy(runtime_dir / "app", deny_read=(".env",), roots=roots)
+        self.policy = write_policy(
+            runtime_dir / "app", deny_read=(".env",), roots=roots, extra=policy
+        )
 
     def run(self, body: str, mode: str = "deny", check: bool = True) -> dict:
         script = self.work / "app" / "app.py"
@@ -355,3 +358,36 @@ def test_native_escape_counts_as_unscoped(sdk):
     assert out["unscoped"] >= 1
     assert out["warned"] == ["EscrowUnscopedWarning"]
     assert out["paths"] == []
+
+
+def test_conflict_return_reopens_the_scope_for_a_fix(escrow_bin, runtime_dir):
+    sdk = Sdk(escrow_bin, runtime_dir, policy="conflict:\n  verdict: return\n")
+    (sdk.project / "f.txt").write_text("base\n")
+    out = sdk.run(
+        """
+        def first_commits_a(cs):
+            with escrow.scope("a"):
+                (P / "f.txt").write_text("from a\\n")
+
+        with escrow.scope("b", decide=first_commits_a) as b:
+            (P / "f.txt").write_text("from b\\n")
+            (P / "g.txt").write_text("g\\n")
+            env = subprocess.run(
+                ["sh", "-c", 'echo "${ESCROW_SCOPE_TOKEN:-none}"'],
+                env={"PATH": os.environ["PATH"]}, capture_output=True, text=True,
+            )
+        out["child"] = env.stdout.strip()
+        o = b.outcome
+        out["first"] = [o.status, o.reopened, o.paths]
+        with escrow.scope(resume=b) as again:
+            out["kept"] = (P / "f.txt").read_text()
+            (P / "f.txt").write_text("from a\\n")  # take the other side: same content
+        out["second"] = [again.outcome.status, again.outcome.reopened]
+        """
+    )
+    assert out["child"] == "none"  # the scope's token never reaches a child
+    assert out["first"] == ["conflict", True, ["f.txt"]]
+    assert out["kept"] == "from b\n"
+    assert out["second"] == ["conflict", True]  # f.txt is still a write over a changed file
+    assert (sdk.project / "f.txt").read_text() == "from a\n"
+    assert not (sdk.project / "g.txt").exists()

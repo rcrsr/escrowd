@@ -10,8 +10,13 @@ from escrow.v1 import escrow_pb2, escrow_pb2_grpc
 
 
 class Client:
+    """One connection. Closing, deciding and spawning in a scope take the scope's token
+    (`OpenScopeResponse.token`); a client remembers the tokens of the scopes it opened
+    and sends them when no `token` is passed. The unscoped scope needs none."""
+
     def __init__(self, socket: str):
         self.socket = socket
+        self.tokens: dict[str, str] = {}
         # grpcio sends the socket path as :authority, which tonic's HTTP/2 stack rejects
         # (RST_STREAM PROTOCOL_ERROR); any valid host name works. A change set's diff
         # can pass grpcio's 4 MiB receive limit (policy diff.max_bytes): no limit.
@@ -31,27 +36,42 @@ class Client:
         self, name: str = "", labels: dict[str, str] | None = None, timeout: float = 5.0
     ) -> escrow_pb2.OpenScopeResponse:
         req = escrow_pb2.OpenScopeRequest(name=name, labels=labels or {})
-        return self._stub.OpenScope(req, timeout=timeout)
+        resp = self._stub.OpenScope(req, timeout=timeout)
+        self.tokens[resp.scope_id] = resp.token
+        return resp
 
-    def close_scope(self, scope_id: str, timeout: float = 30.0) -> escrow_pb2.ChangeSet:
+    def _token(self, scope_id: str, token: str | None) -> str:
+        return self.tokens.get(scope_id, "") if token is None else token
+
+    def close_scope(
+        self, scope_id: str, token: str | None = None, timeout: float = 30.0
+    ) -> escrow_pb2.ChangeSet:
         """Freeze the scope and return its change set. Fsync the scope's open files first."""
-        return self._stub.CloseScope(
-            escrow_pb2.CloseScopeRequest(scope_id=scope_id), timeout=timeout
-        )
+        req = escrow_pb2.CloseScopeRequest(scope_id=scope_id, token=self._token(scope_id, token))
+        return self._stub.CloseScope(req, timeout=timeout)
 
     def decide(
         self,
         scope_id: str,
         verdict: escrow_pb2.Verdict,
         reasons: list[str] | None = None,
+        token: str | None = None,
         timeout: float = 30.0,
     ) -> escrow_pb2.Outcome:
-        req = escrow_pb2.DecideRequest(scope_id=scope_id, verdict=verdict, reasons=reasons or [])
+        req = escrow_pb2.DecideRequest(
+            scope_id=scope_id,
+            verdict=verdict,
+            reasons=reasons or [],
+            token=self._token(scope_id, token),
+        )
         return self._stub.Decide(req, timeout=timeout)
 
-    def commit(self, scope_id: str, timeout: float = 60.0) -> escrow_pb2.Outcome:
-        """Apply a closed scope's change set, all or nothing; a conflict drops the scope."""
-        return self.decide(scope_id, escrow_pb2.VERDICT_COMMIT, timeout=timeout)
+    def commit(
+        self, scope_id: str, token: str | None = None, timeout: float = 60.0
+    ) -> escrow_pb2.Outcome:
+        """Apply a closed scope's change set, all or nothing. A conflict drops the scope,
+        or reopens it under the policy's `conflict.verdict: return`."""
+        return self.decide(scope_id, escrow_pb2.VERDICT_COMMIT, token=token, timeout=timeout)
 
     def settle_unscoped(self, timeout: float = 30.0) -> escrow_pb2.ChangeSet:
         """Close the implicit default scope and return its change set (scope id "unscoped")."""
@@ -63,8 +83,10 @@ class Client:
             escrow_pb2.GetChangeSetRequest(scope_id=scope_id), timeout=timeout
         )
 
-    def discard(self, scope_id: str, timeout: float = 30.0) -> escrow_pb2.Outcome:
-        return self.decide(scope_id, escrow_pb2.VERDICT_DISCARD, timeout=timeout)
+    def discard(
+        self, scope_id: str, token: str | None = None, timeout: float = 30.0
+    ) -> escrow_pb2.Outcome:
+        return self.decide(scope_id, escrow_pb2.VERDICT_DISCARD, token=token, timeout=timeout)
 
     def close(self) -> None:
         self._channel.close()

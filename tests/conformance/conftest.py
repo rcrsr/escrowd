@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from escrow import _client
+
 ROOT = Path(__file__).resolve().parents[2]
 
 # The suite must not depend on the host's git config (a global signing program outside
@@ -26,6 +28,30 @@ os.environ |= {
     "GIT_CONFIG_KEY_1": "gc.auto",
     "GIT_CONFIG_VALUE_1": "0",
 }
+
+
+# Every scope token a test client receives, by (socket, scope id), so any test client
+# and `Daemon.exec` can act on a scope another client opened. Test-only: the SDK keeps
+# a token on its Scope object.
+TOKENS: dict[tuple[str, str], str] = {}
+_open_scope = _client.Client.open_scope
+
+
+def _recording_open_scope(self, *args, **kwargs):
+    resp = _open_scope(self, *args, **kwargs)
+    TOKENS[(str(self.socket), resp.scope_id)] = resp.token
+    return resp
+
+
+def _known_token(self, scope_id: str, token: str | None) -> str:
+    if token is not None:
+        return token
+    return self.tokens.get(scope_id) or TOKENS.get((str(self.socket), scope_id), "")
+
+
+_client.Client.open_scope = _recording_open_scope
+# Tests open a scope with one client and close or decide it with another.
+_client.Client._token = _known_token
 
 
 @pytest.fixture(scope="session")
@@ -153,7 +179,7 @@ class Daemon:
     def exec(self, scope_id: str, *argv, env=None, **kw) -> subprocess.CompletedProcess:
         """`escrow exec --scope scope_id -- argv` from the host, output captured as text;
         `env` adds to the environment (a None value removes the variable)."""
-        merged = {**os.environ, "ESCROW_SOCKET": str(self.socket), **(env or {})}
+        merged = {**self.exec_env(scope_id), **(env or {})}
         return subprocess.run(
             self.exec_args(scope_id, *argv),
             env={k: v for k, v in merged.items() if v is not None},
@@ -165,6 +191,18 @@ class Daemon:
 
     def exec_args(self, scope_id: str, *argv) -> list:
         return [self.bin, "exec", "--scope", scope_id, "--", *argv]
+
+    def token(self, scope_id: str) -> str:
+        """The token a test client got for `scope_id` ("" if none did)."""
+        return TOKENS.get((str(self.socket), scope_id), "")
+
+    def exec_env(self, scope_id: str) -> dict[str, str]:
+        """The environment `escrow exec` needs for `scope_id`: socket and token."""
+        return {
+            **os.environ,
+            "ESCROW_SOCKET": str(self.socket),
+            "ESCROW_SCOPE_TOKEN": self.token(scope_id),
+        }
 
     def generations(self) -> list[str]:
         """Generation directories holding pre-images, in every root."""

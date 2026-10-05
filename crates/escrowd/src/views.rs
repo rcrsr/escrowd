@@ -16,6 +16,9 @@
 //! `<id>.home/` over `$HOME`, `<id>.tmp/` over `/tmp`. Each view is a handle of
 //! its own (own upper, store and inode prefix); the scope's lifecycle calls act
 //! on all of them together.
+//!
+//! Opening a scope issues a random token; close, decide and spawn need it
+//! (`check_token`). The project view's store keeps the token's SHA-256.
 
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{OsStr, OsString};
@@ -34,6 +37,7 @@ use crate::commit::{Commits, Lowers, Outcome};
 use crate::diff;
 use crate::gate::Gate;
 use crate::ledger::Ledger;
+use crate::policy::{ConflictRules, ConflictVerdict};
 use crate::roots::{self, Access, PROJECT, Rules};
 use crate::snapshot::Base;
 use crate::store::{ScopeState, ScopeStore, VersionKind, moved};
@@ -49,6 +53,21 @@ const SCOPE_SHIFT: u32 = 48;
 pub const UPPER_BIT: u64 = 1 << 47;
 
 pub type R<T> = Result<T, Errno>;
+
+/// A scope just opened.
+pub struct Opened {
+    pub id: String,
+    /// Its project view in the mount.
+    pub root: PathBuf,
+    /// Its capability: close, decide and spawn need it. Kept by the caller only.
+    pub token: String,
+}
+
+/// The hex SHA-256 the store keeps of a token.
+fn token_sha256(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    diff::hex(&Sha256::digest(token.as_bytes()))
+}
 
 pub fn errno(e: io::Error) -> Errno {
     Errno::from_i32(e.raw_os_error().unwrap_or(libc::EIO))
@@ -286,6 +305,7 @@ pub struct Views {
     ledger: Ledger,
     commits: Commits,
     unscoped: Unscoped,
+    conflict: ConflictRules,
     notifier: std::sync::OnceLock<fuser::Notifier>,
     scopes: RwLock<HashMap<String, Arc<ScopeHandle>>>,
     next_idx: Mutex<u64>,
@@ -308,6 +328,7 @@ impl Views {
         mount: &Path,
         gate: Gate,
         unscoped: Unscoped,
+        conflict: ConflictRules,
     ) -> io::Result<Self> {
         let scopes_dir = state_dir.join("scopes");
         fs::create_dir_all(&scopes_dir)?;
@@ -344,6 +365,7 @@ impl Views {
             ledger,
             commits,
             unscoped,
+            conflict,
             notifier: std::sync::OnceLock::new(),
             scopes: RwLock::new(HashMap::new()),
             next_idx: Mutex::new(0),
@@ -359,11 +381,23 @@ impl Views {
         views.load_scopes()?;
         views.ensure_unscoped()?;
         views.gc(None)?;
+        // IO outside a scope goes straight to the project, unseen: the ledger says so
+        // once (logging each operation would route it through FUSE).
+        if unscoped == Unscoped::Passthrough {
+            views
+                .ledger
+                .append(UNSCOPED, "passthrough", Path::new(""), None, "allow");
+        }
         Ok(views)
     }
 
     pub fn unscoped(&self) -> Unscoped {
         self.unscoped
+    }
+
+    /// The policy's conflict rules.
+    pub fn conflict(&self) -> ConflictRules {
+        self.conflict
     }
 
     /// The app has exited and the daemon stops after this settle: once decided, the
@@ -429,6 +463,7 @@ impl Views {
                 since,
                 readonly,
                 &HashMap::new(),
+                None,
             )?;
             self.attach(store)?;
         }
@@ -491,9 +526,14 @@ impl Views {
 
     // ---- scope lifecycle (RPC) ----
 
-    /// Create a scope with a view per served root; returns its id and its project view in the mount.
-    pub fn open_scope(&self, name: &str, labels: &HashMap<String, String>) -> io::Result<(String, PathBuf)> {
+    /// Create a scope with a view per served root; returns its id, its project view in
+    /// the mount and its token.
+    pub fn open_scope(&self, name: &str, labels: &HashMap<String, String>) -> io::Result<Opened> {
         let since = self.commits.current();
+        let mut bytes = [0u8; 32];
+        sys::random(&mut bytes)?;
+        let token = diff::hex(&bytes);
+        let hash = token_sha256(&token);
         let mut id = String::new();
         for root in self.served().collect::<Vec<_>>() {
             let idx = self.alloc_idx()?;
@@ -501,12 +541,34 @@ impl Views {
                 id = format!("s{idx}");
             }
             let view = roots::view_name(&id, root);
-            let labels = if root == PROJECT { labels } else { &HashMap::new() };
-            let store = ScopeStore::create(&self.scopes_dir, &view, name, idx, since, false, labels)?;
+            let (labels, token) = if root == PROJECT {
+                (labels, Some(hash.as_str()))
+            } else {
+                (&HashMap::new(), None)
+            };
+            let store = ScopeStore::create(&self.scopes_dir, &view, name, idx, since, false, labels, token)?;
             self.attach(store)?;
         }
         self.ledger.append(&id, "open", Path::new(""), None, "allow");
-        Ok((id.clone(), self.mount.join(&id)))
+        Ok(Opened {
+            root: self.mount.join(&id),
+            id,
+            token,
+        })
+    }
+
+    /// `token` is scope `id`'s (PermissionDenied if not; NotFound if no such scope).
+    /// The unscoped scope has none and takes any.
+    pub fn check_token(&self, id: &str, token: &str) -> io::Result<()> {
+        let hs = self.handles(id)?;
+        if hs[0].store_read().token_matches(&token_sha256(token)) {
+            return Ok(());
+        }
+        self.ledger.append(id, "token", Path::new(""), None, "deny");
+        Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("scope {id}: missing or wrong token"),
+        ))
     }
 
     /// The served roots other than the project, with scope `id`'s view of each in the
@@ -639,8 +701,9 @@ impl Views {
     }
 
     /// Commit a closed scope's change set to the project, all or nothing, and drop the
-    /// scope. On a conflict nothing is written and the scope is dropped (the default
-    /// conflict policy); on a failure the commit is rolled back and the scope stays closed.
+    /// scope. On a conflict nothing is written and the policy's `conflict.verdict`
+    /// drops the scope (discard) or reopens it (return); on a failure the commit is
+    /// rolled back and the scope stays closed.
     pub fn commit_scope(&self, id: &str) -> io::Result<Outcome> {
         let hs = self.closed_handles(id)?;
         let cs = self.change_set(&hs)?;
@@ -667,7 +730,9 @@ impl Views {
     fn commit_change_set(&self, id: &str, hs: &[Arc<ScopeHandle>], cs: &ChangeSet) -> io::Result<Outcome> {
         let hs: Vec<&ScopeHandle> = hs.iter().map(|h| h.as_ref()).collect();
         let show = |root: usize, p: &Path| self.shown(root, p);
-        let outcome = self.commits.commit(&self.lowers(), &hs, cs, &show)?;
+        let outcome = self
+            .commits
+            .commit(&self.lowers(), &hs, cs, self.conflict.reads, &show)?;
         match &outcome {
             Outcome::Committed(generation, _) => {
                 crate::fault::hit("committed", 0)?;
@@ -682,6 +747,11 @@ impl Views {
                     self.ledger.append(id, "conflict", p, None, "deny");
                 }
                 self.ledger.append(id, "decide", Path::new(""), None, "conflict");
+                if self.conflict.verdict == ConflictVerdict::Return {
+                    // Back to the agent with its changes; reopen logs `decide=return`.
+                    self.reopen_scope(id)?;
+                    return Ok(outcome);
+                }
                 self.remove_scope(id)?;
                 self.gc(None)?;
             }

@@ -88,7 +88,7 @@ Everything between open and close is captured; the single decision at close pick
 - **Snapshot at open.** A scope sees the project as it was when it opened, plus its own writes, and nothing from scopes that haven't committed.
 - **One decision on close.** The decision function gets the change set (diff, reads, labels) and returns commit, discard, hold (LLM or human escalation) or return to agent (with reasons, so the agent can fix it and the scope continues).
 - **Atomic commit.** Commit applies the whole change set to disk through a journal (record, apply, recover after a crash), so the project gets all of it or none.
-- **Conflicts at commit.** Concurrent scopes are independent transactions. If anything a scope wrote has changed on disk since its snapshot, the conflict policy applies; the default is discard.
+- **Conflicts at commit.** Concurrent scopes are independent transactions. If anything a scope wrote has changed on disk since its snapshot, the conflict policy applies: `conflict.verdict` is `discard` (the default) or `return` (the scope reopens with its changes and the conflicting paths go back as reasons). `conflict.reads: true` also counts files the scope only read (2.7).
 - **Reads are escrowed inbound.** Their data is held until the gate releases it; the caller is blocked, so each read is decided when it happens rather than at close, and logged for the decision.
 
 IO outside any scope is the developer's choice, set once at `escrow.init(unscoped=…)`:
@@ -131,6 +131,21 @@ FUSE captures project IO; bwrap contains everything else, so nothing reaches the
 - **Lifetime.** `--unshare-pid --die-with-parent`; a scope's processes stop when it closes.
 - **Tamper resistance.** The daemon, journal and ledger live outside the sandbox. The app gets only the RPC socket, no `/dev/fuse`, and nested user namespaces are disabled so it can't remount.
 - **Platform.** Linux first; macOS would need macFUSE or FSKit for capture and Seatbelt for containment.
+
+## Threat model
+
+Added in 2.7 ([#15](https://github.com/rcrsr/escrowd/issues/15)). escrowd defends the project and the captured roots against the code a host runs, not against the host itself. Who is trusted for what:
+
+| Actor | Reaches | Trusted? | What escrowd guarantees |
+| --- | --- | --- | --- |
+| The host (agent harness) | The daemon socket; opens scopes and holds their tokens | Yes: it makes the close-time decision | Its decision applies all or nothing; the ledger records every operation and decision |
+| In-process code (libraries, harness extensions) | The host's memory, the socket, the SDK's `Scope` objects | Yes, for integrity: it shares the host's process | Its IO in a scope is captured by path. To close, decide or start children in a scope it needs that scope's token; the scope id, visible in every view path, is not enough. Code that reads the SDK's memory can take a token: the token stops misuse by id, not a hostile extension |
+| Subprocesses (bash, scripts, tests, tools) | Their scope's views only, in bwrap | No | No write reaches the project or a captured root before the decision; reads of `read.deny` and `deny` paths fail and are logged; no socket, no token (stripped from the environment), no other scope's view, no real project directory, no `/dev/fuse`, no nested user namespaces. A child cannot decide its own scope or start children in another |
+| IO outside any scope | The unscoped mode | Per mode | `deny` refuses project writes; `implicit` stages them in a default scope; `passthrough` lets them through unseen, with one ledger line at start saying so |
+
+Outside the model: processes of the same user outside escrowd (they can write the project directly), passthrough binds and the network until phase 8 (outside escrow by design), native code and `mmap` in the host process (they fall to the unscoped mode; `deny` is the mode for agent hosts), and the change set itself: `GetChangeSet` needs no token, since it only shows a closed scope's diff with `read.deny` content withheld.
+
+The rule that follows for adapters: **untrusted tool code runs as a subprocess**, where the sandbox holds it; in-process extensions are trusted. Phase 4's pi adapter runs bash and every tool that executes model-written code through `escrow exec`.
 
 ## Host developer experience
 
@@ -192,6 +207,7 @@ Policy files hold software rules that run in the daemon, identical across langua
 | Long-lived processes outliving a scope (dev server, watcher) | Stopped when the scope closes; give them their own scope if they must run longer |
 | Shared state outside the project (`~/.cache`, `.git/index.lock`, ports) | `roots:` rules (2.4): capture or ephemeral views of `$HOME` and `/tmp`, passthrough binds for content-addressed caches; a network namespace per scope |
 | Secrets in `$HOME` (`~/.ssh`, `~/.aws`) reachable once `$HOME` is served | `deny` rules (and `deny` as the default for unlisted paths): reads, listings and changes get EACCES and a ledger line. Lookups pass, so a denied file's name, size and times stay visible |
+| Code that learns a scope id (from a view path) closes or decides that scope | A per-scope token from `OpenScope`, required by close, decide and spawn (2.7); see [Threat model](#threat-model) |
 | A served root contains escrowd's own state, views or sockets (the daemon must never touch its own view) | The root's rules hide them: absent from listings, ENOENT on lookup, no creates |
 | FUSE overhead on every operation | Unprivileged cache flags (writeback cache, async read, parallel dirops) by default; kernel FUSE passthrough (Linux 6.9+) needs `CAP_SYS_ADMIN`, so only through a root helper if needed; measure in phase 0 |
 | Network effects outside capture | `--unshare-net` per scope, or a proxy that tags connections with the scope ID |
@@ -233,7 +249,7 @@ Phase 1, a CLI test app proving the scope model on Linux, is the first deliverab
 | 1. CLI POC | All seven exit tests pass in CI on Linux in 10 consecutive runs, with zero misattributed operations in the ledger | escrowd, a minimal Python SDK and a CLI test app doing regular IO; the exit tests become the shared conformance suite |
 | 2. Hardening | Zero partial commits across 1,000 runs killed at random points mid-commit; a real repo's test suite, and its whole agent pipeline including commit, runs under escrowd within 1.5× of native wall time; read-heavy agent work (`rg`, `git status`, `git log -p`) within 1.5× warm | Crash recovery; stale-handle and unscoped-mode errors; writeback flush; performance work; path rules for `$HOME` and `/tmp`; change set diff; scope token and threat model ([plan](phase-2-hardening.md)) |
 | 3. TypeScript SDK | The conformance suite, ported to TypeScript, passes against the same daemon with no daemon changes | Protocol schema frozen; TypeScript SDK with scopes in `AsyncLocalStorage` and wrapped `fs` / `child_process`; `escrow log`, `diff`, `replay` |
-| 4. pi adapter | pi completes 10 scripted coding tasks end to end with zero unscoped writes in the ledger, and in each task with a seeded violation the agent receives the denial and fixes it within the same prompt | A [pi](https://pi.dev) extension opens a scope per tool call, turn or prompt (configurable) from pi's lifecycle events; built-in bash, read, write and edit run inside it, captured by the TypeScript SDK without reimplementation; decisions return as tool results; parallel tool execution supported |
+| 4. pi adapter | pi completes 10 scripted coding tasks end to end with zero unscoped writes in the ledger, and in each task with a seeded violation the agent receives the denial and fixes it within the same prompt | A [pi](https://pi.dev) extension opens a scope per tool call, turn or prompt (configurable) from pi's lifecycle events; built-in bash, read, write and edit run inside it, captured by the TypeScript SDK without reimplementation; decisions return as tool results; parallel tool execution supported; untrusted tool code runs as subprocesses, per the [threat model](#threat-model) |
 | 5. More SDKs | Go and Rust SDKs pass the conformance suite unchanged | Go explicit API (`scope.FS()`, `scope.Command()`); Rust; others by demand |
 | 6. Decision tiers | On a labelled set of 100 change sets, software rules catch every violation a rule covers, the LLM tier's precision and recall are reported, and a held change set never blocks the agent | Hold and escalate; change sets wait in escrow during review; the LLM auditor isolated from the acting agent |
 | 7. Other hosts and macOS | The conformance suite passes on macOS, and a second harness completes the phase 4 tasks with the same results as pi | Further harness adapters (LangGraph and others); macOS through NFS and Seatbelt |
@@ -267,7 +283,7 @@ Because effects wait in escrow, a slow human review delays commit without blocki
 
 - [ ] Product or open framework? Undecided.
 - [ ] Journal: where it lives, and how recovery replays a half-applied commit.
-- [ ] Should conflict detection at commit cover the scope's reads as well as its writes?
+- [x] Should conflict detection at commit cover the scope's reads as well as its writes? A policy option, off by default (`conflict.reads`), decided Oct 4, 2026; built in 2.7.
 - [ ] Network: how to buffer sends that expect a live response; which calls are safe to defer?
 - [ ] Non-deferrable effects (wall-clock time, external APIs with their own side effects): how to flag or gate them?
 - [ ] FUSE cost per operation, with and without passthrough, on the POC workload.

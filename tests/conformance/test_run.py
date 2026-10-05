@@ -158,12 +158,18 @@ def test_app_sees_scopes_and_socket_but_not_escrowd_state(app, runtime_dir):
 
 
 def test_app_runs_scope_children_through_escrow_exec(app, escrow_bin):
-    script = f'read sid; {escrow_bin} exec --scope "$sid" -- sh -c "echo x > f.txt; ls /escrow"'
+    exe = f'{escrow_bin} exec --scope "$sid" --'
+    script = (
+        f"read sid tok; {exe} true 2>&1 || echo refused; "
+        f'ESCROW_SCOPE_TOKEN="$tok" {exe} sh -c "echo x > f.txt; ls /escrow"'
+    )
     a = app("deny", script)
     a.wait_ready()
     with escrow.connect(str(a.socket)) as c:
-        sid = c.open_scope().scope_id
-    code, out, err = a.finish(sid + "\n")
+        s = c.open_scope()
+    sid = s.scope_id
+    code, out, err = a.finish(f"{sid} {s.token}\n")
+    assert "missing or wrong token" in out and "refused" in out, out  # the id alone is not enough
     assert code != 0 and "/escrow" in err  # the scope child sees no other views
     assert not (a.project / "f.txt").exists()
     assert any(f" scope={sid} op=create path=f.txt " in line for line in a.ledger)

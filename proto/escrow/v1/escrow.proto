@@ -21,7 +21,9 @@ service Escrow {
   rpc OpenScope(OpenScopeRequest) returns (OpenScopeResponse);
 
   // Close a scope: the caller has fsynced its open files; the daemon stops the
-  // scope's sandboxes, freezes the scope and returns its change set.
+  // scope's sandboxes, freezes the scope and returns its change set. Close, Decide
+  // and the exec socket need the scope's token (from OpenScope); a missing or wrong
+  // token fails with PERMISSION_DENIED. The unscoped scope has no token.
   rpc CloseScope(CloseScopeRequest) returns (ChangeSet);
 
   // Apply the close-time decision: commit, discard or return to agent.
@@ -55,6 +57,9 @@ message OpenScopeResponse {
   string root = 2;
   // The scope's views of the served roots outside the project (policy `roots:`).
   repeated ScopeRoot roots = 3;
+  // The scope's capability: CloseScope, Decide and SpawnRequest must carry it. Only
+  // the opener gets it; knowing the scope id (from a path) is not enough.
+  string token = 4;
 }
 
 // A root outside the project ($HOME, /tmp) served through the scope's views.
@@ -69,6 +74,7 @@ message ScopeRoot {
 
 message CloseScopeRequest {
   string scope_id = 1;
+  string token = 2;
 }
 
 enum ChangeKind {
@@ -133,6 +139,7 @@ message DecideRequest {
   string scope_id = 1;
   Verdict verdict = 2;
   repeated string reasons = 3;
+  string token = 4;
 }
 
 enum OutcomeStatus {
@@ -140,7 +147,9 @@ enum OutcomeStatus {
   OUTCOME_STATUS_COMMITTED = 1;
   OUTCOME_STATUS_DISCARDED = 2;
   OUTCOME_STATUS_RETURNED = 3;
-  // Commit refused: a written path changed on disk since the scope's snapshot.
+  // Commit refused: a path the scope wrote (or, with the policy's conflict.reads,
+  // read) changed on disk since the scope's snapshot. The policy's conflict.verdict
+  // drops the scope (discard, the default) or reopens it (return; see `reopened`).
   OUTCOME_STATUS_CONFLICT = 4;
 }
 
@@ -149,6 +158,9 @@ message Outcome {
   OutcomeStatus status = 2;
   repeated string paths = 3;
   repeated string reasons = 4;
+  // The scope is open again with its changes: verdict return, or a conflict under
+  // conflict.verdict return.
+  bool reopened = 5;
 }
 
 // Exec socket: start argv in the scope's sandbox, with the scope's view over the project.
@@ -160,6 +172,9 @@ message SpawnRequest {
   // to the same place in the sandbox, anything else to the project root.
   string cwd = 3;
   map<string, string> env = 4;
+  // The scope's token (OpenScopeResponse.token); `escrow exec` reads it from
+  // ESCROW_SCOPE_TOKEN, which the child does not get.
+  string token = 5;
 }
 
 message SpawnEvent {
@@ -168,7 +183,7 @@ message SpawnEvent {
     int32 pid = 1;
     // The child exited: its status, or 128 + the signal that killed it.
     int32 exit_code = 2;
-    // The child could not start (unknown or closed scope, bad request).
+    // The child could not start (unknown or closed scope, wrong token, bad request).
     string error = 3;
   }
 }

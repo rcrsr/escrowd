@@ -15,6 +15,11 @@ and a write on a file opened in a scope that has closed raises `EscrowStaleHandl
 both are `OSError`s, as before. At close, `s.outcome.unscoped` counts the changes that
 reached the unscoped mode while the scope was open (a warning: IO that escaped it).
 
+Each scope holds its token (from the daemon, kept on the `Scope` object only): closing,
+deciding and `escrow exec` in the scope send it, so code that learns a scope id from a
+path cannot decide that scope. `escrow exec` gets it in `ESCROW_SCOPE_TOKEN`, which the
+child does not see.
+
 Not covered (falls to the unscoped mode): `os.spawn*`, `os.exec*` and `os.fork`, native
 code doing its own IO, the working directory of other tasks while one scope has moved
 it (it is per process, not per scope), and file descriptors beyond stdin, stdout and
@@ -147,6 +152,9 @@ class Outcome:
     paths: list[str]  # changed paths, or the conflicting ones
     reasons: list[str]
     changes: ChangeSet
+    # The scope is open again with its changes (`resume=` it): status returned, or a
+    # conflict under the policy's `conflict.verdict: return`.
+    reopened: bool = False
 
     @property
     def reads(self) -> list[Read]:
@@ -267,14 +275,14 @@ def settle_unscoped(decide: Decide | None = None) -> Outcome:
         d = decide(cs) if decide else None
         if inspect.isawaitable(d):
             raise EscrowError("settle_unscoped: decide must be synchronous")
-        return _apply(c, cs, d)
+        return _apply(c, cs, d, "")
 
 
-def _apply(c, cs: ChangeSet, d: Decision | None) -> Outcome:
+def _apply(c, cs: ChangeSet, d: Decision | None, token: str) -> Outcome:
     d = d or commit()
-    out = c.decide(cs.scope_id, d.verdict, reasons=list(d.reasons))
+    out = c.decide(cs.scope_id, d.verdict, reasons=list(d.reasons), token=token)
     reasons = list(out.reasons) or list(d.reasons)
-    return Outcome(_STATUS[out.status], list(out.paths), reasons, cs)
+    return Outcome(_STATUS[out.status], list(out.paths), reasons, cs, out.reopened)
 
 
 # ---- scopes ----
@@ -298,32 +306,35 @@ class Scope:
             raise EscrowError("call escrow.init() first")
         self.name, self.labels, self.decide = name, labels or {}, decide
         self.id = resume.id if resume else ""
+        # The scope's capability; never put in a path, a label or a child's environment.
+        self._scope_token = resume._scope_token if resume else ""
         self.root = resume.root if resume else ""
         # (host path, view, direct paths) of each served root outside the project.
         self.roots: list[tuple[str, str, tuple[str, ...]]] = resume.roots if resume else []
         self.outcome: Outcome | None = None
         self.closed = False
         self._files: weakref.WeakSet = weakref.WeakSet()
-        self._token: contextvars.Token | None = None
+        self._ctx: contextvars.Token | None = None
 
     def _enter(self) -> Scope:
         if not self.id:
             with connect(_cfg.socket) as c:
                 s = c.open_scope(self.name, self.labels)
             self.id = s.scope_id
+            self._scope_token = s.token
             self.root = _view(s.root)
             self.roots = [(r.path, _view(r.view), tuple(r.direct)) for r in s.roots]
         self.closed = False
-        self._token = _current.set(self)
+        self._ctx = _current.set(self)
         return self
 
     def _close(self) -> ChangeSet:
-        if self._token is not None:
-            _current.reset(self._token)
-            self._token = None
+        if self._ctx is not None:
+            _current.reset(self._ctx)
+            self._ctx = None
         self.flush()
         with connect(_cfg.socket) as c:
-            cs = ChangeSet.from_proto(c.close_scope(self.id))
+            cs = ChangeSet.from_proto(c.close_scope(self.id, self._scope_token))
         self.closed = True
         if cs.unscoped:
             warnings.warn(
@@ -340,7 +351,7 @@ class Scope:
         cwd = _cfg.orig["os.getcwd"]()
         back = _unmap_from(self, cwd)
         with connect(_cfg.socket) as c:
-            self.outcome = _apply(c, cs, d)
+            self.outcome = _apply(c, cs, d, self._scope_token)
         if back != cwd:
             _chdir_nearest(back)
 
@@ -620,6 +631,7 @@ class _Popen(subprocess.Popen):
             cwd = kw.pop("cwd", None)
             kw["cwd"] = _rewrite_to(s, os.path.abspath(os.fspath(cwd) if cwd else os.getcwd()))
             args = _exec_argv(s, [os.fsdecode(x) for x in argv])
+            kw["env"] = _exec_env(s, kw.get("env"))
         super().__init__(args, *a, **kw)
 
 
@@ -633,6 +645,15 @@ def _system(command):
 
 def _exec_argv(s: Scope, argv) -> list[str]:
     return [_cfg.exe, "exec", "--scope", s.id, "--socket", _cfg.socket, "--", *argv]
+
+
+def _exec_env(s: Scope, env) -> dict:
+    """The child's environment (default: this process's) plus the scope's token for
+    `escrow exec`, which strips it before the child starts. subprocess and posix_spawn
+    take str and bytes keys alike."""
+    out: dict = dict(os.environ if env is None else env)
+    out["ESCROW_SCOPE_TOKEN"] = s._scope_token
+    return out
 
 
 def _spawner(name: str):
@@ -655,6 +676,7 @@ def _spawner(name: str):
                 for a in actions
             ]
         argv = [os.fsdecode(path), *(os.fsdecode(x) for x in list(argv)[1:])]
+        env = _exec_env(s, env)
         return _cfg.orig["os.posix_spawn"](_cfg.exe, _exec_argv(s, argv), env, *args, **kwargs)
 
     return wrapper

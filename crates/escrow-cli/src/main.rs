@@ -8,7 +8,7 @@ use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
 use escrowd::commit::Outcome;
 use escrowd::daemon::{Config, default_runtime_dir};
-use escrowd::exec::{ExecConn, exec_socket};
+use escrowd::exec::{ExecConn, TOKEN_ENV, exec_socket};
 use escrowd::proto::escrow_client::EscrowClient;
 use escrowd::proto::{GetChangeSetRequest, SpawnRequest};
 use escrowd::sandbox::Mount;
@@ -74,6 +74,10 @@ enum Command {
         /// Daemon socket.
         #[arg(long, env = "ESCROW_SOCKET")]
         socket: PathBuf,
+        /// The scope's token (from OpenScope); the command does not get it. The
+        /// unscoped scope needs none.
+        #[arg(long, env = TOKEN_ENV, hide = true, hide_env_values = true, default_value = "")]
+        token: String,
         /// The command and its arguments.
         #[arg(trailing_var_arg = true, required = true)]
         cmd: Vec<OsString>,
@@ -189,12 +193,16 @@ fn lossy(s: impl AsRef<std::ffi::OsStr>) -> String {
     s.as_ref().to_string_lossy().into_owned()
 }
 
-async fn exec(scope: String, socket: PathBuf, cmd: Vec<OsString>) -> anyhow::Result<i32> {
+async fn exec(scope: String, socket: PathBuf, token: String, cmd: Vec<OsString>) -> anyhow::Result<i32> {
     let req = SpawnRequest {
         scope_id: scope,
         argv: cmd.iter().map(lossy).collect(),
         cwd: std::env::current_dir().map(lossy).unwrap_or_default(),
-        env: std::env::vars_os().map(|(k, v)| (lossy(k), lossy(v))).collect(),
+        env: std::env::vars_os()
+            .filter(|(k, _)| k != TOKEN_ENV)
+            .map(|(k, v)| (lossy(k), lossy(v)))
+            .collect(),
+        token,
     };
     let conn = ExecConn::start(&socket, &req).with_context(|| format!("connecting to {}", socket.display()))?;
     let signaller = Arc::new(conn.signaller()?);
@@ -382,7 +390,12 @@ async fn main() -> anyhow::Result<()> {
             .await?;
             std::process::exit(code)
         }
-        Command::Exec { scope, socket, cmd } => match exec(scope, socket, cmd).await {
+        Command::Exec {
+            scope,
+            socket,
+            token,
+            cmd,
+        } => match exec(scope, socket, token, cmd).await {
             Ok(code) => std::process::exit(code),
             Err(e) => {
                 eprintln!("escrow exec: {e:#}");

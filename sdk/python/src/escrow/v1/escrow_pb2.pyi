@@ -81,14 +81,16 @@ class OpenScopeRequest(_message.Message):
     def __init__(self, name: _Optional[str] = ..., labels: _Optional[_Mapping[str, str]] = ...) -> None: ...
 
 class OpenScopeResponse(_message.Message):
-    __slots__ = ("scope_id", "root", "roots")
+    __slots__ = ("scope_id", "root", "roots", "token")
     SCOPE_ID_FIELD_NUMBER: _ClassVar[int]
     ROOT_FIELD_NUMBER: _ClassVar[int]
     ROOTS_FIELD_NUMBER: _ClassVar[int]
+    TOKEN_FIELD_NUMBER: _ClassVar[int]
     scope_id: str
     root: str
     roots: _containers.RepeatedCompositeFieldContainer[ScopeRoot]
-    def __init__(self, scope_id: _Optional[str] = ..., root: _Optional[str] = ..., roots: _Optional[_Iterable[_Union[ScopeRoot, _Mapping]]] = ...) -> None: ...
+    token: str
+    def __init__(self, scope_id: _Optional[str] = ..., root: _Optional[str] = ..., roots: _Optional[_Iterable[_Union[ScopeRoot, _Mapping]]] = ..., token: _Optional[str] = ...) -> None: ...
 
 class ScopeRoot(_message.Message):
     __slots__ = ("path", "view", "direct")
@@ -101,10 +103,12 @@ class ScopeRoot(_message.Message):
     def __init__(self, path: _Optional[str] = ..., view: _Optional[str] = ..., direct: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class CloseScopeRequest(_message.Message):
-    __slots__ = ("scope_id",)
+    __slots__ = ("scope_id", "token")
     SCOPE_ID_FIELD_NUMBER: _ClassVar[int]
+    TOKEN_FIELD_NUMBER: _ClassVar[int]
     scope_id: str
-    def __init__(self, scope_id: _Optional[str] = ...) -> None: ...
+    token: str
+    def __init__(self, scope_id: _Optional[str] = ..., token: _Optional[str] = ...) -> None: ...
 
 class Change(_message.Message):
     __slots__ = ("kind", "path", "from_path")
@@ -154,29 +158,33 @@ class GetChangeSetRequest(_message.Message):
     def __init__(self, scope_id: _Optional[str] = ...) -> None: ...
 
 class DecideRequest(_message.Message):
-    __slots__ = ("scope_id", "verdict", "reasons")
+    __slots__ = ("scope_id", "verdict", "reasons", "token")
     SCOPE_ID_FIELD_NUMBER: _ClassVar[int]
     VERDICT_FIELD_NUMBER: _ClassVar[int]
     REASONS_FIELD_NUMBER: _ClassVar[int]
+    TOKEN_FIELD_NUMBER: _ClassVar[int]
     scope_id: str
     verdict: Verdict
     reasons: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(self, scope_id: _Optional[str] = ..., verdict: _Optional[_Union[Verdict, str]] = ..., reasons: _Optional[_Iterable[str]] = ...) -> None: ...
+    token: str
+    def __init__(self, scope_id: _Optional[str] = ..., verdict: _Optional[_Union[Verdict, str]] = ..., reasons: _Optional[_Iterable[str]] = ..., token: _Optional[str] = ...) -> None: ...
 
 class Outcome(_message.Message):
-    __slots__ = ("scope_id", "status", "paths", "reasons")
+    __slots__ = ("scope_id", "status", "paths", "reasons", "reopened")
     SCOPE_ID_FIELD_NUMBER: _ClassVar[int]
     STATUS_FIELD_NUMBER: _ClassVar[int]
     PATHS_FIELD_NUMBER: _ClassVar[int]
     REASONS_FIELD_NUMBER: _ClassVar[int]
+    REOPENED_FIELD_NUMBER: _ClassVar[int]
     scope_id: str
     status: OutcomeStatus
     paths: _containers.RepeatedScalarFieldContainer[str]
     reasons: _containers.RepeatedScalarFieldContainer[str]
-    def __init__(self, scope_id: _Optional[str] = ..., status: _Optional[_Union[OutcomeStatus, str]] = ..., paths: _Optional[_Iterable[str]] = ..., reasons: _Optional[_Iterable[str]] = ...) -> None: ...
+    reopened: bool
+    def __init__(self, scope_id: _Optional[str] = ..., status: _Optional[_Union[OutcomeStatus, str]] = ..., paths: _Optional[_Iterable[str]] = ..., reasons: _Optional[_Iterable[str]] = ..., reopened: _Optional[bool] = ...) -> None: ...
 
 class SpawnRequest(_message.Message):
-    __slots__ = ("scope_id", "argv", "cwd", "env")
+    __slots__ = ("scope_id", "argv", "cwd", "env", "token")
     class EnvEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -188,11 +196,13 @@ class SpawnRequest(_message.Message):
     ARGV_FIELD_NUMBER: _ClassVar[int]
     CWD_FIELD_NUMBER: _ClassVar[int]
     ENV_FIELD_NUMBER: _ClassVar[int]
+    TOKEN_FIELD_NUMBER: _ClassVar[int]
     scope_id: str
     argv: _containers.RepeatedScalarFieldContainer[str]
     cwd: str
     env: _containers.ScalarMap[str, str]
-    def __init__(self, scope_id: _Optional[str] = ..., argv: _Optional[_Iterable[str]] = ..., cwd: _Optional[str] = ..., env: _Optional[_Mapping[str, str]] = ...) -> None: ...
+    token: str
+    def __init__(self, scope_id: _Optional[str] = ..., argv: _Optional[_Iterable[str]] = ..., cwd: _Optional[str] = ..., env: _Optional[_Mapping[str, str]] = ..., token: _Optional[str] = ...) -> None: ...
 
 class SpawnEvent(_message.Message):
     __slots__ = ("pid", "exit_code", "error")

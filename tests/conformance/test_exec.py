@@ -7,7 +7,6 @@ children stop when it closes. The sandbox shows the child nothing of escrowd: no
 directory, no other scope's view, no socket, nothing outside the bind list.
 """
 
-import os
 import signal
 import subprocess
 import time
@@ -73,9 +72,11 @@ def test_unknown_or_closed_scope_is_refused(daemon):
 
 
 def spawn(d, sid, script):
-    env = {**os.environ, "ESCROW_SOCKET": str(d.socket)}
     return subprocess.Popen(
-        d.exec_args(sid, "sh", "-c", script), env=env, stdout=subprocess.PIPE, text=True
+        d.exec_args(sid, "sh", "-c", script),
+        env=d.exec_env(sid),
+        stdout=subprocess.PIPE,
+        text=True,
     )
 
 
