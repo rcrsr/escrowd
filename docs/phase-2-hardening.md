@@ -2,7 +2,7 @@
 
 Oct 4, 2026 · Andre Bremer · Draft
 
-**Status, Oct 4, 2026: 2.1 done**: baseline for workloads A, B and C on the dev host and the benchmark VM at `564c36f`; suite 126 / 126 in CI on both runners ([PR #17](https://github.com/rcrsr/escrowd/pull/17)). **2.2 in review**: 1,000 crash runs with 0 partial commits and 1,000 closes under load with 0 lost writes on the dev host; suite 132. Plan revised Oct 4, 2026 for issues [#11](https://github.com/rcrsr/escrowd/issues/11)–[#16](https://github.com/rcrsr/escrowd/issues/16).
+**Status, Oct 4, 2026: 2.1 done**: baseline for workloads A, B and C on the dev host and the benchmark VM at `564c36f`; suite 126 / 126 in CI on both runners ([PR #17](https://github.com/rcrsr/escrowd/pull/17)). **2.2 done**, Oct 4, 2026: 1,000 crash runs with 0 partial commits and 1,000 closes under load with 0 lost writes on the dev host; suite 132 / 132 and 50 crash runs with 0 partial in CI on both runners ([PR #18](https://github.com/rcrsr/escrowd/pull/18)). Next: 2.3. Plan revised Oct 4, 2026 for issues [#11](https://github.com/rcrsr/escrowd/issues/11)–[#16](https://github.com/rcrsr/escrowd/issues/16).
 
 Phase 2 takes the phase 1 POC to something an agent harness can lean on: commits that survive a crash at any point, real repositories at near-native speed, paths outside the project under the same rules as the project, and errors that tell the caller what went wrong. Phase 3 freezes the protocol on top of it, so every protocol change (path roots, diff, scope token, policy options) lands here or waits for a protocol version bump.
 
