@@ -1,0 +1,30 @@
+name: CI repeat
+
+# On demand, outside the CI Gate: the conformance suite 10 times in a row on each
+# runner, then the crash soak (50 random kills). Add the `ci:repeat` label to a pull
+# request (remove and re-add it to run again on a newer push), or
+# `gh workflow run ci-repeat.yml --ref <branch> [-f runs=N]`. Other labels skip the job.
+
+on:
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Consecutive suite runs per runner
+        type: number
+        default: 10
+
+# One group per label, so adding another label never cancels a running repeat.
+concurrency:
+  group: ci-repeat-${{ github.ref }}-${{ github.event.label.name || 'dispatch' }}
+  cancel-in-progress: true
+
+jobs:
+  conformance:
+    name: Conformance x${{ inputs.runs || 10 }}
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'ci:repeat'
+    uses: ./.github/workflows/conformance.yml
+    with:
+      runs: ${{ inputs.runs || 10 }}
+      soak: true

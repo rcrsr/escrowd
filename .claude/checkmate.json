@@ -6,8 +6,7 @@
         "sdk/python/src"
       ],
       "exclude": [
-        "sdk/python/src/escrow/v1/**",
-        "**/__pycache__/**"
+        "sdk/python/src/escrow/v1/**"
       ],
       "checks": {
         ".py": [
@@ -71,10 +70,7 @@
       "exclude": [
         "spikes/**",
         "target/**",
-        "sdk/python/src/escrow/v1/**",
-        "**/.venv/**",
-        "**/__pycache__/**",
-        "**/.pytest_cache/**"
+        "**/.venv/**"
       ],
       "checks": {
         ".rs": [

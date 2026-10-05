@@ -1,7 +1,8 @@
 name: CI
 
 # Pull requests only. `changes` gates each job on the paths it covers (every
-# job runs when this file changes); `CI Gate` is the one check to require.
+# job runs when this file changes); `CI Gate` is the one check to require. The
+# suite runs once here; `ci-repeat.yml` repeats it 10 times on demand (`ci:repeat`).
 
 on:
   pull_request:
@@ -66,6 +67,7 @@ jobs:
               - 'rust-toolchain.toml'
               - '.python-version'
               - '.github/workflows/ci.yml'
+              - '.github/workflows/conformance.yml'
 
   check-rust:
     name: Rust
@@ -147,58 +149,15 @@ jobs:
       - name: Python stubs match proto/
         run: sdk/python/gen.sh && git diff --exit-code sdk/python/src
 
-  # The suite needs the daemon binary, the Python SDK and the AppArmor profile, on every
-  # Ubuntu LTS runner (24.04: restriction without a bwrap profile; 26.04: also confines fusermount3).
+  # One suite run on each Ubuntu LTS runner (see conformance.yml), then the crash
+  # soak when the commit path changed.
   conformance:
-    name: Conformance (${{ matrix.os }})
+    name: Conformance
     needs: changes
     if: needs.changes.outputs.conformance == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, ubuntu-26.04]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7
-
-      - name: System packages
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap fuse3
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-
-      - name: Cache .venv
-        uses: actions/cache@v6
-        with:
-          path: |
-            sdk/python/.venv
-            ${{ env.UV_PYTHON_INSTALL_DIR }}
-          key: venv-${{ matrix.os }}-py${{ hashFiles('.python-version') }}-${{ hashFiles('sdk/python/uv.lock') }}
-
-      - name: escrowd bwrap and AppArmor profile
-        run: packaging/ubuntu/install.sh
-
-      - name: Build
-        run: cargo build --locked
-
-      # Exit criterion: 10 consecutive passing runs; the job fails on the first failed run.
-      - name: Conformance suite, 10 consecutive runs
-        run: |
-          for i in $(seq 1 10); do
-            echo "::group::run $i of 10"
-            uv run --project sdk/python --frozen pytest -v tests/conformance
-            echo "::endgroup::"
-          done
-
-      - name: Crash soak, 50 random kills mid-commit
-        if: needs.changes.outputs.soak == 'true'
-        run: uv run --project sdk/python --frozen python tests/soak/crash.py 50
+    uses: ./.github/workflows/conformance.yml
+    with:
+      soak: ${{ needs.changes.outputs.soak == 'true' }}
 
   lockfiles:
     name: Lockfiles
