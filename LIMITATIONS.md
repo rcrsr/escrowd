@@ -2,7 +2,7 @@
 
 Every known limit of escrowd as built, in one place. Each entry says where it is tracked. Update this file when a limit is found or lifted; the plans keep the detail.
 
-Status as of Oct 5, 2026: phase 2, after sub-phase 2.4.
+Status as of Oct 5, 2026: phase 2, after sub-phase 2.5.
 
 ## Capture
 
@@ -58,7 +58,10 @@ Status as of Oct 5, 2026: phase 2, after sub-phase 2.4.
 | --- | --- |
 | Anyone who can reach the socket can close, decide or exec in any scope. | Planned: scope token in 2.7 (#15). |
 | Errors reach the SDK as plain `OSError`. | Planned: `EscrowUnscopedError`, `EscrowStaleHandleError` in 2.6. |
-| The change set lists paths, not a diff. | Planned: 2.5 (#12). |
+| The diff shows no content for binary files and files over `diff.file_bytes` (size and SHA-256 only) or under `read.deny` (mode only); `git apply` cannot apply those sections. | By design (2.5). |
+| A permission change git's modes cannot show (0644 to 0600) is a `# escrow: mode of …` line at the end of the diff, not an `old mode`/`new mode` header. | By design (2.5). |
+| `escrow diff` and `GetChangeSet` need a closed, undecided scope; an open scope has no diff yet, and a decided scope's diff lives only in the caller's change set and outcome. | By design (2.5). |
+| `escrow run --on-exit` settles the default scope without building a diff. | By design (2.5): nothing reads it. |
 | Conflict policy is discard only; read conflicts are not checked. | Planned: 2.7 options. |
 | One daemon per `escrow run`; nested scopes are not supported. | Carried. |
 | A `deny` rule lets lookups pass: a denied file's name, size and times are visible to `stat`, its contents and listings are not. | By design, decided Oct 5, 2026 (listed paths inside a denied directory must stay reachable). |

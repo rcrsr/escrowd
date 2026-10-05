@@ -96,6 +96,9 @@ class ChangeSet:
     changes: list[Change]
     reads: list[Read]
     labels: dict[str, str]
+    # Content diff against the scope's snapshot, git format; binary and large files
+    # summarized (size, SHA-256); capped by the policy's `diff:` sizes.
+    diff: str = ""
 
     @property
     def paths(self) -> list[str]:
@@ -108,6 +111,7 @@ class ChangeSet:
             changes=[Change(_KINDS[c.kind], c.path, c.from_path or None) for c in cs.changes],
             reads=[Read(r.path, r.decision == pb.READ_DECISION_ALLOW) for r in cs.reads],
             labels=dict(cs.labels),
+            diff=cs.diff,
         )
 
 
@@ -125,6 +129,10 @@ class Outcome:
     @property
     def labels(self) -> dict[str, str]:
         return self.changes.labels
+
+    @property
+    def diff(self) -> str:
+        return self.changes.diff
 
 
 Decide = Callable[[ChangeSet], "Decision | None | Awaitable[Decision | None]"]

@@ -31,6 +31,7 @@ use rustix::fs::{OFlags, Stat};
 
 use crate::changeset::{self, ChangeSet};
 use crate::commit::{Commits, Lowers, Outcome};
+use crate::diff;
 use crate::gate::Gate;
 use crate::ledger::Ledger;
 use crate::roots::{self, Access, PROJECT, Rules};
@@ -548,6 +549,33 @@ impl Views {
             );
         }
         Ok(out)
+    }
+
+    /// The change set of a closed scope; an open scope is an error (InvalidInput).
+    pub fn closed_change_set(&self, id: &str) -> io::Result<ChangeSet> {
+        let hs = self.closed_handles(id)?;
+        self.change_set(&hs)
+    }
+
+    /// The content diff of a closed scope's change set `cs`, against its snapshot.
+    pub fn diff(&self, id: &str, cs: &ChangeSet, caps: diff::Caps) -> io::Result<String> {
+        let hs = self.closed_handles(id)?;
+        let mut out = diff::Diff::new(caps);
+        for h in &hs {
+            let changes: Vec<_> = cs.changes.iter().filter(|c| c.root == h.root).cloned().collect();
+            if changes.is_empty() {
+                continue;
+            }
+            let base = self.base(h);
+            let root = diff::Root {
+                base: &base,
+                upper: h.upper.as_fd(),
+                shown: &|p| self.shown(h.root, p).to_string_lossy().into_owned(),
+                withheld: &|p| h.root == PROJECT && !self.gate.read_allowed(p),
+            };
+            out.add(&root, &changes)?;
+        }
+        Ok(out.finish())
     }
 
     fn handle(&self, id: &str) -> io::Result<Arc<ScopeHandle>> {

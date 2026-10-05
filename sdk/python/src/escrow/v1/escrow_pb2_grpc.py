@@ -59,6 +59,11 @@ class EscrowStub:
                 request_serializer=escrow_dot_v1_dot_escrow__pb2.SettleUnscopedRequest.SerializeToString,
                 response_deserializer=escrow_dot_v1_dot_escrow__pb2.ChangeSet.FromString,
                 _registered_method=True)
+        self.GetChangeSet = channel.unary_unary(
+                '/escrow.v1.Escrow/GetChangeSet',
+                request_serializer=escrow_dot_v1_dot_escrow__pb2.GetChangeSetRequest.SerializeToString,
+                response_deserializer=escrow_dot_v1_dot_escrow__pb2.ChangeSet.FromString,
+                _registered_method=True)
 
 
 class EscrowServicer:
@@ -102,6 +107,14 @@ class EscrowServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def GetChangeSet(self, request, context):
+        """The change set of a closed, undecided scope, diff included, without closing
+        anything: an open scope fails with FAILED_PRECONDITION. For `escrow diff`.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_EscrowServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -128,6 +141,11 @@ def add_EscrowServicer_to_server(servicer, server):
             'SettleUnscoped': grpc.unary_unary_rpc_method_handler(
                     servicer.SettleUnscoped,
                     request_deserializer=escrow_dot_v1_dot_escrow__pb2.SettleUnscopedRequest.FromString,
+                    response_serializer=escrow_dot_v1_dot_escrow__pb2.ChangeSet.SerializeToString,
+            ),
+            'GetChangeSet': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetChangeSet,
+                    request_deserializer=escrow_dot_v1_dot_escrow__pb2.GetChangeSetRequest.FromString,
                     response_serializer=escrow_dot_v1_dot_escrow__pb2.ChangeSet.SerializeToString,
             ),
     }
@@ -265,6 +283,33 @@ class Escrow:
             target,
             '/escrow.v1.Escrow/SettleUnscoped',
             escrow_dot_v1_dot_escrow__pb2.SettleUnscopedRequest.SerializeToString,
+            escrow_dot_v1_dot_escrow__pb2.ChangeSet.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetChangeSet(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/escrow.v1.Escrow/GetChangeSet',
+            escrow_dot_v1_dot_escrow__pb2.GetChangeSetRequest.SerializeToString,
             escrow_dot_v1_dot_escrow__pb2.ChangeSet.FromString,
             options,
             channel_credentials,

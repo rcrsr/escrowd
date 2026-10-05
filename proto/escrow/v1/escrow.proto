@@ -31,6 +31,10 @@ service Escrow {
   // set; decide it like any scope (scope id "unscoped"). After a commit or a
   // discard the daemon opens a fresh default scope at the same path.
   rpc SettleUnscoped(SettleUnscopedRequest) returns (ChangeSet);
+
+  // The change set of a closed, undecided scope, diff included, without closing
+  // anything: an open scope fails with FAILED_PRECONDITION. For `escrow diff`.
+  rpc GetChangeSet(GetChangeSetRequest) returns (ChangeSet);
 }
 
 message PingRequest {}
@@ -100,6 +104,16 @@ message ChangeSet {
   repeated Change changes = 2;
   repeated Read reads = 3;
   map<string, string> labels = 4;
+  // The content diff against the scope's snapshot, in git's extended unified
+  // format (`diff --git a/<path> b/<path>`, paths as in `changes`). Binary files
+  // and files over the policy's diff.file_bytes are summarized by size and
+  // SHA-256; the diff stops before passing diff.max_bytes, and a last line
+  // starting `# escrow:` counts the files left out.
+  string diff = 5;
+}
+
+message GetChangeSetRequest {
+  string scope_id = 1;
 }
 
 enum Verdict {

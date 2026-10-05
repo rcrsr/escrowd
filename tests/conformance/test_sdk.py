@@ -124,6 +124,20 @@ def test_send_back_then_resume_and_commit(sdk):
     assert out["second"] == ["committed", ["code.txt", "tests.txt"]]
 
 
+def test_decide_and_outcome_see_the_diff(sdk):
+    out = sdk.run("""
+        def gate(cs):
+            out["seen"] = cs.diff
+            return escrow.commit() if "+hello" in cs.diff else escrow.discard("no hello")
+
+        with escrow.scope("diff", decide=gate) as s:
+            (P / "hello.txt").write_text("hello\\n")
+        out["outcome"] = [s.outcome.status, s.outcome.diff == out["seen"]]
+    """)
+    assert out["seen"].startswith("diff --git a/hello.txt b/hello.txt\nnew file mode 100644\n")
+    assert out["outcome"] == ["committed", True]
+
+
 def test_async_decide_and_exception_discards(sdk):
     out = sdk.run("""
         async def gate(cs):

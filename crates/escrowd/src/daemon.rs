@@ -85,6 +85,7 @@ pub struct Daemon {
     pub mount: PathBuf,
     pub socket: PathBuf,
     pub children: Arc<Children>,
+    diff: crate::diff::Caps,
     read: Vec<PathBuf>,
     write: Vec<PathBuf>,
     /// `$HOME` (served or not).
@@ -285,6 +286,7 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
         mount,
         socket: config.socket,
         children: Arc::new(Children::new(std::time::Duration::from_millis(policy.close.grace_ms))),
+        diff: policy.diff.caps(),
         read,
         write,
         home: home.or_else(std::env::home_dir),
@@ -340,7 +342,7 @@ impl Daemon {
                 });
             }
         });
-        let service = rpc::Service::new(self.views.clone(), self.children.clone());
+        let service = rpc::Service::new(self.views.clone(), self.children.clone(), self.diff);
         let served = rpc::serve(&self.socket, service, shutdown).await;
         accept.abort();
         let _ = std::fs::remove_file(&exec_path);
