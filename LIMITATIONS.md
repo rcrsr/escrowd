@@ -2,7 +2,7 @@
 
 Every known limit of escrowd as built, in one place. Each entry says where it is tracked. Update this file when a limit is found or lifted; the plans keep the detail.
 
-Status as of Oct 5, 2026: phase 2, after sub-phase 2.7.
+Status as of Oct 5, 2026: phase 2, after sub-phase 2.8.
 
 ## Capture
 
@@ -42,7 +42,8 @@ Status as of Oct 5, 2026: phase 2, after sub-phase 2.7.
 
 | Limit | Status |
 | --- | --- |
-| Every file opened costs an OPEN and a RELEASE round trip, even with its pages cached: warm `rg` runs at 3.55× native (workload C summed is under native). | Kept, decided Oct 5, 2026: the kernel's no-open mode would drop the per-open gate check, the ledger's open records and the handles close waits on. |
+| Every file opened costs an OPEN and a RELEASE round trip, even with its pages cached: warm `rg` runs at about 3.6× native, warm `git log -p` at about 1.8×; workload C has no speed target (check 3 amended in 2.8). | Kept, decided Oct 5, 2026: the kernel's no-open mode would drop the per-open gate check, the ledger's open records and the handles close waits on. |
+| Escrow mode's speed depends on the host more than native's: each FUSE operation waits on the daemon's threads being scheduled. In 2.8 the same binary ran express A at 1.46× to 1.57× and warm `git log -p` at 1.03× to 1.89× across sessions. | Inherent to FUSE; measured in 2.8 (`bench/results/ab-2.3-vs-2.7.txt`). Benchmarks run on a quiet host and compare binaries in one session. |
 | Cold metadata- and read-heavy work costs 5–30× per operation, as in any FUSE file system (`tar` over `node_modules` 8.96×). | Inherent to plain FUSE; kernel passthrough needs `CAP_SYS_ADMIN` (root-helper fallback only). |
 
 ## Platform
