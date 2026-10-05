@@ -16,7 +16,7 @@ use fuser::{
 };
 
 use crate::sys::{self, NOW, OMIT};
-use crate::views::{Node, Pages, R, ROOT, ScopeHandle, Views, errno};
+use crate::views::{Node, Pages, R, ROOT, ScopeHandle, UNSCOPED, Views, errno};
 
 /// The mount root lists scopes, which RPC calls add and remove.
 const TTL: Duration = Duration::from_secs(1);
@@ -52,8 +52,10 @@ fn reply_entry(v: &Views, h: &ScopeHandle, rel: &Path, reply: ReplyEntry) {
         .and_then(|(_, st)| Ok(sys::attr(v.ino_for(h, rel)?, &st)))
     {
         Ok(a) => reply.entry(ttl, &a, Generation(0)),
-        // A negative entry: the kernel caches the absence (a create replaces it).
-        Err(Errno::ENOENT) if !h.readonly => reply.entry(ttl, &sys::absent(), Generation(0)),
+        // A negative entry: the kernel caches the absence (a create replaces it). Not under
+        // the unscoped root, which resets in place: kernel 7.0 keeps a negative entry
+        // through its invalidation.
+        Err(Errno::ENOENT) if !h.readonly && h.id != UNSCOPED => reply.entry(ttl, &sys::absent(), Generation(0)),
         Err(e) => reply.error(e),
     }
 }

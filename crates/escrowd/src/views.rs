@@ -511,19 +511,12 @@ impl Views {
             .unwrap()
             .remove(id)
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no scope {id}")))?;
-        let mut names = self.t().forget_scope(id, h.idx);
+        let names = self.t().forget_scope(id, h.idx);
         // After the last settle the mount goes away: invalidating is wasted kernel work.
         if id == UNSCOPED
             && !self.last_settle.load(Ordering::Acquire)
             && let Some(n) = self.notifier.get()
         {
-            // The reset root must also drop the kernel's negative entries for the names the scope deleted.
-            names.extend(
-                h.store_read()
-                    .whiteouts()
-                    .filter(|p| p.components().count() == 1)
-                    .map(|p| p.as_os_str().to_os_string()),
-            );
             for name in names {
                 let _ = n.inval_entry(fuser::INodeNo(UNSCOPED_ROOT), &name);
             }

@@ -48,11 +48,13 @@ def test_a_reset_root_shows_what_the_discarded_scope_deleted(start_daemon):
     (d.project / "g.txt").write_text("g\n")
     root = d.mount / "unscoped"
     os.unlink(root / "g.txt")
-    assert not (root / "g.txt").exists()  # cached as absent
+    assert not (root / "g.txt").exists()
+    assert os.listdir(root) == []
     with escrow.connect(str(d.socket)) as c:
         c.settle_unscoped()
         c.discard("unscoped")
     assert (root / "g.txt").read_text() == "g\n"
+    assert os.listdir(root) == ["g.txt"]
 
 
 def test_a_large_listing_is_whole_with_attributes(daemon):
