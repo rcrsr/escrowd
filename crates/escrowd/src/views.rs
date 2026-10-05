@@ -591,6 +591,14 @@ impl Views {
         self.ledger.append(&h.id, op, rel, None, decision);
     }
 
+    /// A sandbox for `scope` starts with `writable` host paths outside escrow: one
+    /// `op=sandbox-write` line per path (absolute), so the ledger shows unescrowed IO.
+    pub fn log_sandbox(&self, scope: &str, writable: &[PathBuf]) {
+        for w in writable {
+            self.ledger.append(scope, "sandbox-write", w, None, "allow");
+        }
+    }
+
     pub fn setattr(
         &self,
         h: &ScopeHandle,

@@ -268,6 +268,7 @@ impl ExecServer {
             .stderr(Stdio::from(stderr))
             .process_group(0);
         let child = cmd.spawn()?;
+        self.views.log_sandbox(id, &self.sandbox.write);
         g.running.entry(id.clone()).or_default().push(child.id() as i32);
         Ok(child)
     }

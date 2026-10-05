@@ -83,6 +83,7 @@ pub struct Daemon {
     pub socket: PathBuf,
     pub children: Arc<Children>,
     read: Vec<PathBuf>,
+    write: Vec<PathBuf>,
     bwrap: PathBuf,
     session: BackgroundSession,
 }
@@ -122,6 +123,18 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
     };
     let gate = Gate::new(&policy.read.deny).context("policy read.deny pattern")?;
     let read = policy.sandbox.read_paths()?;
+    let mut write = Vec::new();
+    for w in policy.sandbox.write_paths()? {
+        std::fs::create_dir_all(&w).with_context(|| format!("sandbox.write {}", w.display()))?;
+        let w = w.canonicalize()?;
+        // A writable bind must never reach the project or escrowd's own state and views.
+        for (name, p) in [("project", &project), ("state", &state), ("mount", &mount)] {
+            if inside(&w, p) || inside(p, &w) {
+                bail!("sandbox.write {} overlaps the {name} {}", w.display(), p.display());
+            }
+        }
+        write.push(w);
+    }
     // Open the base before anything is mounted, so reads of it never loop through a view.
     let lower = sys::open_dir(&project).with_context(|| format!("opening {}", project.display()))?;
     let views = Arc::new(Views::new(lower, &state, &mount, gate, config.unscoped).context("loading scopes")?);
@@ -142,6 +155,7 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
         socket: config.socket,
         children: Arc::new(Children::default()),
         read,
+        write,
         bwrap: sandbox::find_bwrap(config.bwrap.as_deref()),
         session,
     })
@@ -158,6 +172,7 @@ impl Daemon {
         Sandbox {
             bwrap: self.bwrap.clone(),
             read: self.read.clone(),
+            write: self.write.clone(),
             hide_dirs: vec![self.state.clone(), self.mount.clone()],
             hide_files: vec![self.socket.clone(), exec::exec_socket(&self.socket)],
             home: std::env::home_dir(),

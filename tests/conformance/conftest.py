@@ -13,6 +13,10 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 
+# The suite must not depend on the host's git config (a global signing program outside
+# the sandbox's bind list fails every commit; issue #11). Children inherit these.
+os.environ |= {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+
 
 @pytest.fixture(scope="session")
 def escrow_bin() -> Path:
@@ -36,11 +40,16 @@ def runtime_dir():
     shutil.rmtree(d, ignore_errors=True)
 
 
-def write_policy(work: Path, deny_read=(".env",), sandbox_read=()) -> Path:
+def write_policy(work: Path, deny_read=(".env",), sandbox_read=(), sandbox_write=()) -> Path:
     policy = work / "policy.yaml"
-    deny = ", ".join(f"'{g}'" for g in deny_read)
-    read = ", ".join(f"'{p}'" for p in sandbox_read)
-    policy.write_text(f"version: 1\nread:\n  deny: [{deny}]\nsandbox:\n  read: [{read}]\n")
+
+    def items(xs):
+        return ", ".join(f"'{x}'" for x in xs)
+
+    policy.write_text(
+        f"version: 1\nread:\n  deny: [{items(deny_read)}]\n"
+        f"sandbox:\n  read: [{items(sandbox_read)}]\n  write: [{items(sandbox_write)}]\n"
+    )
     return policy
 
 
@@ -66,9 +75,10 @@ class Daemon:
         env: dict[str, str] | None = None,
         unscoped: str | None = None,
         sandbox_read=(),
+        sandbox_write=(),
     ):
-        """`deny_read` and `sandbox_read` become the policy file's read.deny and sandbox.read
-        lists; `env` adds to the environment."""
+        """`deny_read`, `sandbox_read` and `sandbox_write` become the policy file's read.deny,
+        sandbox.read and sandbox.write lists; `env` adds to the environment."""
         self.work = work
         self.bin = bin
         self.socket = work / "escrow.sock"
@@ -76,7 +86,7 @@ class Daemon:
         self.state = work / "state"
         self.mount = work / "mnt"
         self.project.mkdir(parents=True, exist_ok=True)
-        self.policy = write_policy(work, deny_read, sandbox_read)
+        self.policy = write_policy(work, deny_read, sandbox_read, sandbox_write)
         args = [bin, "daemon", "--socket", self.socket, "--project", self.project]
         args += ["--state", self.state, "--mount", self.mount, "--policy", self.policy]
         if unscoped:
