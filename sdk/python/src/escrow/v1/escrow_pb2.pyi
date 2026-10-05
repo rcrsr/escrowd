@@ -81,12 +81,24 @@ class OpenScopeRequest(_message.Message):
     def __init__(self, name: _Optional[str] = ..., labels: _Optional[_Mapping[str, str]] = ...) -> None: ...
 
 class OpenScopeResponse(_message.Message):
-    __slots__ = ("scope_id", "root")
+    __slots__ = ("scope_id", "root", "roots")
     SCOPE_ID_FIELD_NUMBER: _ClassVar[int]
     ROOT_FIELD_NUMBER: _ClassVar[int]
+    ROOTS_FIELD_NUMBER: _ClassVar[int]
     scope_id: str
     root: str
-    def __init__(self, scope_id: _Optional[str] = ..., root: _Optional[str] = ...) -> None: ...
+    roots: _containers.RepeatedCompositeFieldContainer[ScopeRoot]
+    def __init__(self, scope_id: _Optional[str] = ..., root: _Optional[str] = ..., roots: _Optional[_Iterable[_Union[ScopeRoot, _Mapping]]] = ...) -> None: ...
+
+class ScopeRoot(_message.Message):
+    __slots__ = ("path", "view", "direct")
+    PATH_FIELD_NUMBER: _ClassVar[int]
+    VIEW_FIELD_NUMBER: _ClassVar[int]
+    DIRECT_FIELD_NUMBER: _ClassVar[int]
+    path: str
+    view: str
+    direct: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, path: _Optional[str] = ..., view: _Optional[str] = ..., direct: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class CloseScopeRequest(_message.Message):
     __slots__ = ("scope_id",)

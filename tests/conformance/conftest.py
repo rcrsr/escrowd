@@ -41,7 +41,7 @@ def runtime_dir():
 
 
 def write_policy(
-    work: Path, deny_read=(".env",), sandbox_read=(), sandbox_write=(), grace_ms=None
+    work: Path, deny_read=(".env",), sandbox_read=(), sandbox_write=(), grace_ms=None, roots=""
 ) -> Path:
     policy = work / "policy.yaml"
 
@@ -50,7 +50,8 @@ def write_policy(
 
     policy.write_text(
         f"version: 1\nread:\n  deny: [{items(deny_read)}]\n"
-        f"sandbox:\n  read: [{items(sandbox_read)}]\n  write: [{items(sandbox_write)}]\n"
+        f"roots:\n  other:\n    read: [{items(sandbox_read)}]\n"
+        f"    passthrough: [{items(sandbox_write)}]\n{roots}"
         + (f"close:\n  grace_ms: {grace_ms}\n" if grace_ms is not None else "")
     )
     return policy
@@ -80,10 +81,12 @@ class Daemon:
         sandbox_read=(),
         sandbox_write=(),
         grace_ms=None,
+        roots="",
     ):
-        """`deny_read`, `sandbox_read` and `sandbox_write` become the policy file's read.deny,
-        sandbox.read and sandbox.write lists, `grace_ms` its close.grace_ms; `env` adds to
-        the environment."""
+        """`deny_read`, `sandbox_read` and `sandbox_write` become the policy file's
+        read.deny, roots.other.read and roots.other.passthrough lists, `grace_ms` its
+        close.grace_ms; `roots` is YAML for more keys under roots: (`home`, `tmp`), indented
+        by two spaces; `env` adds to the environment."""
         self.work = work
         self.bin = bin
         self.socket = work / "escrow.sock"
@@ -91,7 +94,7 @@ class Daemon:
         self.state = work / "state"
         self.mount = work / "mnt"
         self.project.mkdir(parents=True, exist_ok=True)
-        self.policy = write_policy(work, deny_read, sandbox_read, sandbox_write, grace_ms)
+        self.policy = write_policy(work, deny_read, sandbox_read, sandbox_write, grace_ms, roots)
         args = [bin, "daemon", "--socket", self.socket, "--project", self.project]
         args += ["--state", self.state, "--mount", self.mount, "--policy", self.policy]
         if unscoped:
@@ -126,11 +129,13 @@ class Daemon:
     def upper(self, scope_id: str) -> Path:
         return self.state / "scopes" / scope_id / "upper"
 
-    def exec(self, scope_id: str, *argv, **kw) -> subprocess.CompletedProcess:
-        """`escrow exec --scope scope_id -- argv` from the host, output captured as text."""
+    def exec(self, scope_id: str, *argv, env=None, **kw) -> subprocess.CompletedProcess:
+        """`escrow exec --scope scope_id -- argv` from the host, output captured as text;
+        `env` adds to the environment (a None value removes the variable)."""
+        merged = {**os.environ, "ESCROW_SOCKET": str(self.socket), **(env or {})}
         return subprocess.run(
             self.exec_args(scope_id, *argv),
-            env={**os.environ, "ESCROW_SOCKET": str(self.socket)},
+            env={k: v for k, v in merged.items() if v is not None},
             capture_output=True,
             text=True,
             timeout=30,
@@ -141,9 +146,10 @@ class Daemon:
         return [self.bin, "exec", "--scope", scope_id, "--", *argv]
 
     def generations(self) -> list[str]:
-        """Generation directories holding pre-images."""
-        d = self.state / "generations"
-        return sorted(os.listdir(d)) if d.exists() else []
+        """Generation directories holding pre-images, in every root."""
+        return sorted(
+            f"{d.name}/{g}" for d in self.state.glob("generations*") for g in os.listdir(d)
+        )
 
 
 @pytest.fixture

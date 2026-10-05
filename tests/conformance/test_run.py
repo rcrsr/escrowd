@@ -20,12 +20,23 @@ from escrow.v1 import escrow_pb2 as pb
 class App:
     """`escrow run` with its state, views and socket under one work directory."""
 
-    def __init__(self, bin, work, mode, script, on_exit=None, deny_read=(".env",), sandbox_read=()):
+    def __init__(
+        self,
+        bin,
+        work,
+        mode,
+        script,
+        on_exit=None,
+        deny_read=(".env",),
+        sandbox_read=(),
+        env=None,
+        roots="",
+    ):
         self.work = work
         self.project = work / "proj"
         self.project.mkdir(exist_ok=True)
         self.state, self.mount, self.socket = work / "state", work / "mnt", work / "s.sock"
-        policy = write_policy(work, deny_read, sandbox_read)
+        policy = write_policy(work, deny_read, sandbox_read, roots=roots)
         args = [bin, "run", "--project", self.project, "--unscoped", mode, "--policy", policy]
         args += ["--state", self.state, "--mount", self.mount, "--socket", self.socket]
         if on_exit:
@@ -36,6 +47,7 @@ class App:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            env={**os.environ, **(env or {})},
         )
 
     def wait_ready(self):
@@ -155,3 +167,38 @@ def test_app_runs_scope_children_through_escrow_exec(app, escrow_bin):
     assert code != 0 and "/escrow" in err  # the scope child sees no other views
     assert not (a.project / "f.txt").exists()
     assert any(f" scope={sid} op=create path=f.txt " in line for line in a.ledger)
+
+
+@pytest.mark.parametrize("on_exit", ["commit", "discard"])
+def test_implicit_mode_settles_home_with_the_project(app, runtime_dir, on_exit):
+    home = runtime_dir / "home"
+    home.mkdir()
+    (home / ".profile").write_text("base\n")
+    roots = "  home: {default: capture}\n  tmp: {default: ephemeral}\n"
+    script = 'echo app > ~/.profile; echo t > /tmp/scratch; echo x > f.txt; echo "$HOME"'
+    a, code, out, err = run(
+        app, "implicit", script, on_exit=on_exit, env={"HOME": str(home)}, roots=roots
+    )
+    assert code == 0, err
+    assert out == f"{home}\n"
+    verb = {"commit": "committed", "discard": "discarded"}[on_exit]
+    assert f"2 unscoped change(s) {verb}" in err, err  # ~/.profile and f.txt; /tmp is ephemeral
+    committed = on_exit == "commit"
+    assert (home / ".profile").read_text() == ("app\n" if committed else "base\n")
+    assert (a.project / "f.txt").exists() == committed
+
+
+def test_unscoped_modes_with_roots(app, runtime_dir):
+    home = runtime_dir / "home"
+    home.mkdir()
+    (home / ".profile").write_text("base\n")
+    roots = "  home: {default: capture}\n  tmp: {default: ephemeral}\n"
+    # deny: $HOME reads the base, captured paths are read-only, ephemeral /tmp is writable.
+    script = "cat ~/.profile; echo t > /tmp/x && cat /tmp/x; echo y > ~/.profile"
+    _, code, out, err = run(app, "deny", script, env={"HOME": str(home)}, roots=roots)
+    assert out == "base\nt\n", err
+    assert "Read-only file system" in err
+    # passthrough: no unscoped scope serves the roots: $HOME and /tmp are empty tmpfs.
+    script = "ls -A ~ /tmp | grep -c . ; echo t > /tmp/x && cat /tmp/x"
+    _, code, out, err = run(app, "passthrough", script, env={"HOME": str(home)}, roots=roots)
+    assert (code, out) == (0, "2\nt\n"), err

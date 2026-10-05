@@ -1,12 +1,14 @@
 //! bwrap command lines for escrowd's sandboxes: the app's (from `escrow run`) and
 //! each scope's children (from the exec socket).
 //!
-//! Binds are deny-by-default: the system directories read-only, the policy's
-//! `sandbox.read` paths read-only, the `sandbox.write` paths read-write (outside
-//! escrow: package stores, caches), a private `/tmp` and an empty `$HOME`, then
-//! the caller's mounts (the project view, the socket). escrowd's own state, its
-//! views and its sockets are hidden even when a read path contains them. User
-//! namespaces are disabled inside, so nothing in the sandbox can remount.
+//! Binds are deny-by-default: the system directories read-only, a private `/tmp`
+//! and an empty `$HOME` (unless a root's view is mounted there), the read paths
+//! read-only, the passthrough paths read-write (outside escrow: package stores,
+//! caches), then the caller's mounts (the views, the socket). Binds apply
+//! shallowest first, so a path inside a view (the project in `$HOME`, a package
+//! cache) is bound over it. escrowd's own state, its views and its sockets are
+//! hidden even when a read path contains them. User namespaces are disabled
+//! inside, so nothing in the sandbox can remount.
 
 use std::ffi::OsString;
 use std::fs;
@@ -24,17 +26,25 @@ pub enum Mount {
     RoBind(PathBuf, PathBuf),
 }
 
+impl Mount {
+    pub fn dst(&self) -> &Path {
+        match self {
+            Mount::Bind(_, d) | Mount::RoBind(_, d) => d,
+        }
+    }
+}
+
 pub struct Sandbox {
     pub bwrap: PathBuf,
-    /// Host paths bound read-only besides the system directories (policy `sandbox.read`).
+    /// Host paths bound read-only besides the system directories (policy `roots.other.read`).
     pub read: Vec<PathBuf>,
-    /// Host paths bound read-write, outside escrow (policy `sandbox.write`); they exist.
+    /// Host paths bound read-write, outside escrow (policy passthrough rules); they exist.
     pub write: Vec<PathBuf>,
     /// Directories that must stay hidden (state, views) even under a read path.
     pub hide_dirs: Vec<PathBuf>,
     /// Files that must stay hidden (the sockets) even under a read path.
     pub hide_files: Vec<PathBuf>,
-    /// Replaced by an empty tmpfs.
+    /// An empty tmpfs unless a mount puts a view there.
     pub home: Option<PathBuf>,
 }
 
@@ -79,27 +89,38 @@ impl Sandbox {
                 _ => {}
             }
         }
-        push(&[&"--dev", &"/dev", &"--proc", &"/proc", &"--tmpfs", &"/tmp"]);
-        if let Some(home) = &self.home {
+        let mounted = |p: &Path| mounts.iter().any(|m| m.dst() == p);
+        push(&[&"--dev", &"/dev", &"--proc", &"/proc"]);
+        if !mounted(Path::new("/tmp")) {
+            push(&[&"--tmpfs", &"/tmp"]);
+        }
+        if let Some(home) = self.home.as_ref().filter(|h| !mounted(h)) {
             push(&[&"--tmpfs", home]);
         }
+        // Shallowest destination first; a stable sort keeps hides after what exposes them.
+        let mut binds: Vec<(&Path, [&dyn AsRef<std::ffi::OsStr>; 3])> = Vec::new();
+        for m in mounts {
+            binds.push(match m {
+                Mount::Bind(src, dst) => (dst.as_path(), [&"--bind", src, dst]),
+                Mount::RoBind(src, dst) => (dst.as_path(), [&"--ro-bind", src, dst]),
+            });
+        }
         for r in &self.read {
-            push(&[&"--ro-bind-try", r, r]);
+            binds.push((r, [&"--ro-bind-try", r, r]));
         }
         for w in &self.write {
-            push(&[&"--bind", w, w]);
+            binds.push((w, [&"--bind", w, w]));
         }
         for d in self.hide_dirs.iter().filter(|d| self.exposed(d)) {
-            push(&[&"--tmpfs", d]);
+            binds.push((d, [&"--tmpfs", d, &""]));
         }
         for f in self.hide_files.iter().filter(|f| self.exposed(f)) {
-            push(&[&"--ro-bind", &"/dev/null", f]);
+            binds.push((f, [&"--ro-bind", &"/dev/null", f]));
         }
-        for m in mounts {
-            match m {
-                Mount::Bind(src, dst) => push(&[&"--bind", src, dst]),
-                Mount::RoBind(src, dst) => push(&[&"--ro-bind", src, dst]),
-            }
+        binds.sort_by_key(|(dst, _)| dst.components().count());
+        for (_, args) in &binds {
+            let n = if args[2].as_ref().is_empty() { 2 } else { 3 };
+            push(&args[..n]);
         }
         push(&[&"--chdir", &chdir, &"--"]);
         a.extend(argv.iter().cloned());

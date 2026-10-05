@@ -40,7 +40,7 @@ enum Command {
         /// What happens to the implicit default scope when the command exits.
         #[arg(long, value_enum, default_value = "discard")]
         on_exit: OnExit,
-        /// Policy file (YAML): read rules, sandbox read paths.
+        /// Policy file (YAML): read rules, path roots.
         #[arg(long)]
         policy: Option<PathBuf>,
         /// Scope stores and ledger [default: $XDG_STATE_HOME/escrowd/<project-id>].
@@ -58,7 +58,7 @@ enum Command {
         /// FUSE request threads.
         #[arg(long, default_value_t = 4)]
         threads: usize,
-        /// A host path the sandboxes may read, besides the policy's sandbox.read (repeatable).
+        /// A host path the sandboxes may read, besides the policy's roots.other.read (repeatable).
         #[arg(long = "read", value_name = "PATH")]
         reads: Vec<PathBuf>,
         /// The command and its arguments.
@@ -91,7 +91,7 @@ enum Command {
         /// Mount point of the scope views [default: $XDG_RUNTIME_DIR/escrowd/<project-id>/view].
         #[arg(long)]
         mount: Option<PathBuf>,
-        /// Policy file (YAML): read rules enforced by the gate, sandbox read paths.
+        /// Policy file (YAML): read rules enforced by the gate, path roots.
         #[arg(long)]
         policy: Option<PathBuf>,
         /// IO outside any scope, served at `<mount>/unscoped` for implicit and deny.
@@ -208,6 +208,9 @@ async fn run(
         }
     };
     let _ = std::fs::remove_file(&socket); // wait_for must not mistake a stale socket for this daemon's
+    for r in &reads {
+        anyhow::ensure!(r.is_absolute(), "--read {} is not absolute", r.display());
+    }
     let daemon = escrowd::daemon::start(Config {
         socket: socket.clone(),
         project: project.clone(),
@@ -217,14 +220,16 @@ async fn run(
         threads,
         unscoped,
         bwrap,
+        read: reads,
     })?;
-    let mut daemon = daemon;
     let (views, children) = (daemon.views.clone(), daemon.children.clone());
-    for r in reads {
-        anyhow::ensure!(r.is_absolute(), "--read {} is not absolute", r.display());
-        daemon.add_read(r);
-    }
     let sandbox = daemon.sandbox();
+    // The unscoped scope's views of $HOME and /tmp. Passthrough mode has none (a scope
+    // left by an earlier run in another mode may still exist).
+    let root_mounts = match unscoped {
+        Unscoped::Passthrough => Vec::new(),
+        _ => daemon.root_mounts(UNSCOPED),
+    };
     let view = daemon.mount.clone();
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let served = tokio::spawn(daemon.serve(async {
@@ -241,13 +246,14 @@ async fn run(
         Unscoped::Passthrough => project.clone(),
         _ => view.join(UNSCOPED),
     };
-    let mounts = [
+    let mut mounts = vec![
         Mount::Bind(project_src, project.clone()),
         Mount::Bind(view.clone(), "/escrow".into()),
         Mount::Bind(socket.clone(), inner_socket.clone()),
         Mount::Bind(exec_socket(&socket), exec_socket(&inner_socket)),
         Mount::RoBind(exe.clone(), exe),
     ];
+    mounts.extend(root_mounts);
     let cwd = std::env::current_dir()
         .ok()
         .filter(|d| d.starts_with(&project))
@@ -369,6 +375,7 @@ async fn main() -> anyhow::Result<()> {
                 threads,
                 unscoped,
                 bwrap,
+                read: Vec::new(),
             };
             escrowd::daemon::run(config, shutdown).await
         }

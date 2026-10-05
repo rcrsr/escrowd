@@ -2,7 +2,8 @@
 
 `init()` puts the program under `escrow run` (re-executing it if needed) and wraps the
 file API: inside a scope, `open`, `io.open`, the `os` path functions (and so pathlib,
-shutil and os.walk) rewrite `<project>/x` to the scope's view, and `subprocess.Popen`
+shutil and os.walk) rewrite `<project>/x` to the scope's view (and `$HOME/x` or `/tmp/x`
+to its views of those roots, when the policy serves them), and `subprocess.Popen`
 (and so `subprocess.run` and asyncio subprocesses) runs the child through `escrow exec`
 in the scope's sandbox. The current scope lives in a ContextVar, so concurrent asyncio
 tasks on one thread keep separate scopes.
@@ -260,6 +261,8 @@ class Scope:
         self.name, self.labels, self.decide = name, labels or {}, decide
         self.id = resume.id if resume else ""
         self.root = resume.root if resume else ""
+        # (host path, view, direct paths) of each served root outside the project.
+        self.roots: list[tuple[str, str, tuple[str, ...]]] = resume.roots if resume else []
         self.outcome: Outcome | None = None
         self._files: weakref.WeakSet = weakref.WeakSet()
         self._token: contextvars.Token | None = None
@@ -269,7 +272,8 @@ class Scope:
             with connect(_cfg.socket) as c:
                 s = c.open_scope(self.name, self.labels)
             self.id = s.scope_id
-            self.root = os.path.join(_cfg.views, s.scope_id) if _cfg.views else s.root
+            self.root = _view(s.root)
+            self.roots = [(r.path, _view(r.view), tuple(r.direct)) for r in s.roots]
         self._token = _current.set(self)
         return self
 
@@ -318,8 +322,8 @@ class Scope:
                 os.fsync(f.fileno())
 
     def path(self, p: str | os.PathLike) -> str:
-        """Where a project path lives in this scope's view."""
-        return _rewrite_to(self.root, os.fspath(p))
+        """Where a project path (or a path in a served root) lives in this scope's views."""
+        return _rewrite_to(self, os.fspath(p))
 
 
 scope = Scope
@@ -332,12 +336,30 @@ def current() -> Scope | None:
 # ---- the wrappers ----
 
 
-def _rewrite_to(root: str, p):
+def _view(path: str) -> str:
+    """A view's path as this process sees it (under /escrow in `escrow run`'s sandbox)."""
+    return os.path.join(_cfg.views, os.path.basename(path)) if _cfg.views else path
+
+
+def _under(p: str, root: str) -> bool:
+    return p == root or p.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def _move(p: str, src: str, dst: str) -> str:
+    rel = os.path.relpath(p, src)
+    return dst if rel == "." else os.path.join(dst, rel)
+
+
+def _rewrite_to(s: Scope, p):
     if isinstance(p, bytes):
-        return os.fsencode(_rewrite_to(root, os.fsdecode(p)))
+        return os.fsencode(_rewrite_to(s, os.fsdecode(p)))
     a = os.path.abspath(p)
-    if a == _cfg.project or a.startswith(_cfg.project + os.sep):
-        return os.path.join(root, os.path.relpath(a, _cfg.project))
+    # The project first: it may lie inside $HOME.
+    if _under(a, _cfg.project):
+        return _move(a, _cfg.project, s.root)
+    for host, view, direct in s.roots:
+        if _under(a, host) and not any(_under(a, d) for d in direct):
+            return _move(a, host, view)
     return p
 
 
@@ -345,16 +367,17 @@ def _rewrite(path, dir_fd=None):
     s = _current.get()
     if s is None or dir_fd is not None or isinstance(path, int):
         return path
-    return _rewrite_to(s.root, os.fspath(path))
+    return _rewrite_to(s, os.fspath(path))
 
 
 def _unmap(p):
-    """A path in the current scope's view, back to the project path the code asked for."""
+    """A path in the current scope's views, back to the path the code asked for."""
     s = _current.get()
     if s is None or isinstance(p, bytes):
         return p
-    if p == s.root or p.startswith(s.root + os.sep):
-        return os.path.normpath(os.path.join(_cfg.project, os.path.relpath(p, s.root)))
+    for view, host in ((s.root, _cfg.project), *((v, h) for h, v, _ in s.roots)):
+        if _under(p, view):
+            return os.path.normpath(_move(p, view, host))
     return p
 
 
@@ -435,7 +458,7 @@ class _Popen(subprocess.Popen):
                 if shell:
                     argv = ["/bin/sh", "-c", *argv]
             cwd = kw.pop("cwd", None)
-            kw["cwd"] = _rewrite_to(s.root, os.path.abspath(os.fspath(cwd) if cwd else os.getcwd()))
+            kw["cwd"] = _rewrite_to(s, os.path.abspath(os.fspath(cwd) if cwd else os.getcwd()))
             exec_ = [_cfg.exe, "exec", "--scope", s.id, "--socket", _cfg.socket, "--"]
             args = [*exec_, *(os.fsdecode(x) for x in argv)]
         super().__init__(args, *a, **kw)

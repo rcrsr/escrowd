@@ -13,8 +13,8 @@
 # warm (again, same scope).
 # JOBS lists repo:workload pairs; the default runs A and B on express and attrs, C on CPython.
 # Setup (network allowed) fills $CACHE once: git mirrors, the pnpm store and metadata
-# cache, the uv cache. Timed runs are offline. Mirrors are sandbox.read; the stores and
-# caches are sandbox.write (outside escrow, as package stores are).
+# cache, the uv cache. Timed runs are offline. Mirrors are roots.other.read; the stores and
+# caches are roots.other.passthrough (outside escrow, as package stores are).
 # Tools (node, pnpm, uv, Python) come from mise by resolved path, so the run works over
 # Lima's read-only home mount, where sshfs fails readlink.
 set -u
@@ -137,9 +137,10 @@ run() { # run <mode> <repo> <A|B>
   esac
   cat >"$D/policy.yaml" <<EOF2
 version: 1
-sandbox:
-  read: ['$here', '$CACHE/express.git', '$CACHE/attrs.git', '$CACHE/cpython.git', '$NODE', '$PNPM', '$RG', '$(dirname "$UV")', '$PYHOME', '$PYALIAS']
-  write: ['$CACHE/store', '$CACHE/pnpm-cache', '$CACHE/uv-cache']
+roots:
+  other:
+    read: ['$here', '$CACHE/express.git', '$CACHE/attrs.git', '$CACHE/cpython.git', '$NODE', '$PNPM', '$RG', '$(dirname "$UV")', '$PYHOME', '$PYALIAS']
+    passthrough: ['$CACHE/store', '$CACHE/pnpm-cache', '$CACHE/uv-cache']
 EOF2
   rt=$(mktemp -d "$RT/escrow-bench.XXXXXX")
   t0=$(mono)

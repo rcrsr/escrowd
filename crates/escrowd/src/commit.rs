@@ -1,6 +1,7 @@
-//! Commit: apply a closed scope's change set to the project, all or nothing.
+//! Commit: apply a closed scope's change set to the project (and to the other
+//! roots it captured: `$HOME`, `/tmp`), all or nothing.
 //!
-//! Commits are serialized per project. For one scope:
+//! Commits are serialized per project. For one scope, over every root at once:
 //!
 //! 1. **Conflict check**: every path the commit touches must still be as the
 //!    scope first saw it (the version it recorded, else its snapshot's), and
@@ -42,28 +43,42 @@ use std::sync::{Mutex, MutexGuard};
 use fuser::FileType;
 use rustix::fs::{OFlags, Stat};
 
-use crate::changeset::{self, ChangeSet, Kind};
+use crate::changeset::{self, Change, ChangeSet, Kind};
 use crate::fault;
 use crate::journal::{DirTimes, GenState, Journal, JournalEntry};
+use crate::roots;
 use crate::snapshot::{Base, Generations, Meta};
 use crate::sys::{self, Version, parent};
 use crate::views::ScopeHandle;
+
+/// A path in one root.
+type Rooted = (usize, PathBuf);
+
+/// The base directory of each root, by root index (None: the host has none).
+pub type Lowers<'a> = [Option<BorrowedFd<'a>>; roots::COUNT];
+
+/// Shows a root's path to the caller (`~/x` for `$HOME`).
+pub type Show<'a> = &'a dyn Fn(usize, &Path) -> PathBuf;
+
+fn lower_of<'a>(lowers: &Lowers<'a>, root: usize) -> io::Result<BorrowedFd<'a>> {
+    lowers[root].ok_or_else(|| io::Error::other(format!("root {root} has no base directory")))
+}
 
 /// What an in-process rollback after a race undoes: the paths apply reached, except
 /// the raced path and its descendants, which keep the editor's version.
 #[derive(Clone, Copy)]
 struct Reached<'a> {
-    applied: &'a HashSet<PathBuf>,
-    raced: &'a Path,
+    applied: &'a HashSet<Rooted>,
+    raced: (usize, &'a Path),
 }
 
-/// An editor changed `.0` after the conflict check: the commit rolled back.
+/// An editor changed `.1` (in root `.0`) after the conflict check: the commit rolled back.
 #[derive(Debug)]
-struct Raced(PathBuf);
+struct Raced(usize, PathBuf);
 
 impl std::fmt::Display for Raced {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} changed in the project during the commit", self.0.display())
+        write!(f, "{} changed in the project during the commit", self.1.display())
     }
 }
 
@@ -88,11 +103,11 @@ struct Plan {
 }
 
 impl Plan {
-    fn new(lower: BorrowedFd, upper: BorrowedFd, cs: &ChangeSet) -> io::Result<Self> {
+    fn new<'c>(lower: BorrowedFd, upper: BorrowedFd, changes: impl Iterator<Item = &'c Change>) -> io::Result<Self> {
         let mut removes = BTreeSet::new();
         let mut puts = BTreeSet::new();
         let mut moves = HashMap::new();
-        for c in &cs.changes {
+        for c in changes {
             match c.kind {
                 Kind::Delete => {
                     removes.insert(c.path.clone());
@@ -136,11 +151,20 @@ impl Plan {
     }
 }
 
+/// One root of a commit: its base, the scope's view of it and what to do there.
+struct Part<'a> {
+    root: usize,
+    lower: BorrowedFd<'a>,
+    h: &'a ScopeHandle,
+    plan: Plan,
+}
+
 pub struct Commits {
-    pub gens: Generations,
+    /// Pre-images, by root index.
+    pub gens: Vec<Generations>,
     journal: Mutex<Journal>,
-    /// (path, original version) → the version a rollback left in its place.
-    aliases: Mutex<HashMap<(PathBuf, Version), Version>>,
+    /// (root, path, original version) → the version a rollback left in its place.
+    aliases: Mutex<HashMap<(usize, PathBuf, Version), Version>>,
     serial: Mutex<()>,
     current: AtomicU64,
 }
@@ -179,10 +203,15 @@ impl Commits {
         let aliases = journal
             .restored()?
             .into_iter()
-            .map(|(p, old, new)| ((p, old), new))
+            .map(|(r, p, old, new)| ((r, p, old), new))
             .collect();
+        // The project's pre-images keep the directory they had before roots.
+        let dirs = ["generations", "generations-home", "generations-tmp"];
         Ok(Commits {
-            gens: Generations::open(&state_dir.join("generations"))?,
+            gens: dirs
+                .iter()
+                .map(|d| Generations::open(&state_dir.join(d)))
+                .collect::<io::Result<_>>()?,
             current: AtomicU64::new(journal.current()?),
             journal: Mutex::new(journal),
             aliases: Mutex::new(aliases),
@@ -201,25 +230,48 @@ impl Commits {
 
     /// On start: roll back unfinished commits and load the finished generations.
     /// Returns the scopes whose commit finished but which were not dropped yet.
-    pub fn recover(&self, lower: BorrowedFd) -> io::Result<Vec<(u64, String)>> {
+    pub fn recover(&self, lowers: &Lowers) -> io::Result<Vec<(u64, String)>> {
         let _serial = self.serial.lock().unwrap();
         let mut finished = Vec::new();
         let gens = self.journal().gens()?;
         for (g, scope, state) in gens {
             if state != GenState::Done {
                 eprintln!("escrowd: rolling back unfinished commit (generation {g}, scope {scope})");
-                self.rollback(lower, g, None)?;
+                self.rollback(lowers, g, None)?;
                 continue;
             }
             let entries = self.journal().entries(g)?;
-            self.gens.register(g, entries.into_iter().map(|e| (e.path, e.pre)));
+            self.register(g, &entries);
             if !scope.is_empty() {
                 finished.push((g, scope));
             }
         }
         let known = self.journal().gens()?.into_iter().map(|(g, _, _)| g).collect();
-        self.gens.sweep(&known)?;
+        for gens in &self.gens {
+            gens.sweep(&known)?;
+        }
         Ok(finished)
+    }
+
+    /// Make a generation's pre-images visible, each in its root.
+    fn register(&self, generation: u64, entries: &[JournalEntry]) {
+        for (root, gens) in self.gens.iter().enumerate() {
+            gens.register(
+                generation,
+                entries
+                    .iter()
+                    .filter(|e| e.root == root)
+                    .map(|e| (e.path.clone(), e.pre)),
+            );
+        }
+    }
+
+    fn unregister(&self, generation: u64) -> io::Result<()> {
+        for gens in &self.gens {
+            gens.unregister(generation);
+            gens.remove_files(generation)?;
+        }
+        Ok(())
     }
 
     /// The scope of a finished generation is gone; recovery must not drop a later scope of the same id.
@@ -227,70 +279,96 @@ impl Commits {
         self.journal().clear_scope(generation)
     }
 
-    pub fn commit(&self, lower: BorrowedFd, h: &ScopeHandle, cs: &ChangeSet) -> io::Result<Outcome> {
+    /// Commit `cs` (built from the views `hs` of one scope, one per root); `show`
+    /// names paths in the outcome.
+    pub fn commit(&self, lowers: &Lowers, hs: &[&ScopeHandle], cs: &ChangeSet, show: Show) -> io::Result<Outcome> {
         let _serial = self.serial.lock().unwrap();
-        let plan = Plan::new(lower, h.upper.as_fd(), cs)?;
-        let base = Base::new(lower, &self.gens, h.since);
-        let conflicts = self.conflicts(lower, &base, h, &plan)?;
+        let mut parts = Vec::new();
+        for h in hs {
+            let lower = lower_of(lowers, h.root)?;
+            let changes = cs.changes.iter().filter(|c| c.root == h.root);
+            let plan = Plan::new(lower, h.upper.as_fd(), changes)?;
+            parts.push(Part {
+                root: h.root,
+                lower,
+                h,
+                plan,
+            });
+        }
+        let mut conflicts = Vec::new();
+        for part in &parts {
+            let base = Base::new(part.lower, &self.gens[part.root], part.h.since);
+            conflicts.extend(self.conflicts(&base, part)?.iter().map(|p| show(part.root, p)));
+        }
         if !conflicts.is_empty() {
             return Ok(Outcome::Conflict(conflicts));
         }
-        let paths = cs.changes.iter().map(|c| c.path.clone()).collect();
-        let touched = plan.touched();
-        if touched.is_empty() {
+        let paths = cs.changes.iter().map(|c| show(c.root, &c.path)).collect();
+        if parts.iter().all(|p| p.plan.touched().is_empty()) {
             return Ok(Outcome::Committed(None, paths));
         }
         let generation = self.journal().next()?;
-        let files: HashSet<&PathBuf> = plan
-            .puts
-            .iter()
-            .filter(|(p, st)| !sys::is_dir(st) && !plan.moves.contains_key(p))
-            .map(|(p, _)| p)
-            .collect();
-        let sources: HashSet<&PathBuf> = plan.moves.values().collect();
-        let entries: Vec<JournalEntry> = touched
-            .iter()
-            .enumerate()
-            .map(|(i, p)| JournalEntry {
-                path: p.clone(),
-                pre: sys::lstat(lower, p).ok().map(|st| Meta::of(&st)),
-                // A rename source waits at the root while removes run and its new parent appears.
-                tmp: if sources.contains(p) {
-                    Some(PathBuf::from(format!(".escrow-{generation}-{i}.tmp")))
-                } else {
-                    files
-                        .contains(p)
-                        .then(|| parent(p).join(format!(".escrow-{generation}-{i}.tmp")))
-                },
-            })
-            .collect();
-        let dirs: Vec<DirTimes> = touched
-            .iter()
-            .map(|p| parent(p).to_path_buf())
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .filter_map(|d| {
-                let st = sys::lstat(lower, &d).ok().filter(sys::is_dir)?;
-                let m = Meta::of(&st);
-                Some(DirTimes {
-                    path: d,
-                    atime_ns: m.atime_ns,
-                    mtime_ns: m.mtime_ns,
-                })
-            })
-            .collect();
-        self.journal().begin(generation, &h.id, &entries, &dirs)?;
+        let mut entries: Vec<JournalEntry> = Vec::new();
+        let mut dirs: Vec<DirTimes> = Vec::new();
+        for part in &parts {
+            let (lower, plan) = (part.lower, &part.plan);
+            let files: HashSet<&PathBuf> = plan
+                .puts
+                .iter()
+                .filter(|(p, st)| !sys::is_dir(st) && !plan.moves.contains_key(p))
+                .map(|(p, _)| p)
+                .collect();
+            let sources: HashSet<&PathBuf> = plan.moves.values().collect();
+            let touched = plan.touched();
+            for p in &touched {
+                let i = entries.len();
+                entries.push(JournalEntry {
+                    root: part.root,
+                    path: p.clone(),
+                    pre: sys::lstat(lower, p).ok().map(|st| Meta::of(&st)),
+                    // A rename source waits at the root while removes run and its new parent appears.
+                    tmp: if sources.contains(p) {
+                        Some(PathBuf::from(format!(".escrow-{generation}-{i}.tmp")))
+                    } else {
+                        files
+                            .contains(p)
+                            .then(|| parent(p).join(format!(".escrow-{generation}-{i}.tmp")))
+                    },
+                });
+            }
+            dirs.extend(
+                touched
+                    .iter()
+                    .map(|p| parent(p).to_path_buf())
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .filter_map(|d| {
+                        let st = sys::lstat(lower, &d).ok().filter(sys::is_dir)?;
+                        let m = Meta::of(&st);
+                        Some(DirTimes {
+                            root: part.root,
+                            path: d,
+                            atime_ns: m.atime_ns,
+                            mtime_ns: m.mtime_ns,
+                        })
+                    }),
+            );
+        }
+        self.journal().begin(generation, &hs[0].group, &entries, &dirs)?;
         let mut applied = HashSet::new();
-        if let Err(e) = self.apply(lower, h.upper.as_fd(), generation, &plan, &entries, &mut applied) {
-            let raced = e.get_ref().and_then(|r| r.downcast_ref::<Raced>()).map(|r| r.0.clone());
+        if let Err(e) = self.apply(lowers, &parts, generation, &entries, &mut applied) {
+            let raced = e
+                .get_ref()
+                .and_then(|r| r.downcast_ref::<Raced>())
+                .map(|r| (r.0, r.1.clone()));
             // An editor's file must survive the rollback: undo only what apply reached,
             // and leave the raced path (and anything under it) as the editor left it.
-            let only = raced.as_ref().map(|p| Reached {
+            let only = raced.as_ref().map(|(root, p)| Reached {
                 applied: &applied,
-                raced: p,
+                raced: (*root, p),
             });
-            return match (self.rollback(lower, generation, only), raced) {
-                (Ok(()), Some(p)) => Ok(Outcome::Conflict(vec![p])),
+            return match (self.rollback(lowers, generation, only), raced) {
+                (Ok(()), Some((root, p))) => Ok(Outcome::Conflict(vec![show(root, &p)])),
                 (Ok(()), None) => Err(e),
                 (Err(r), _) => Err(io::Error::other(format!("{e}; rollback failed: {r}"))),
             };
@@ -298,7 +376,8 @@ impl Commits {
         Ok(Outcome::Committed(Some(generation), paths))
     }
 
-    fn conflicts(&self, lower: BorrowedFd, base: &Base, h: &ScopeHandle, plan: &Plan) -> io::Result<Vec<PathBuf>> {
+    fn conflicts(&self, base: &Base, part: &Part) -> io::Result<Vec<PathBuf>> {
+        let (lower, h, plan, root) = (part.lower, part.h, &part.plan, part.root);
         let touched = plan.touched();
         let removes: HashSet<&PathBuf> = plan.removes.iter().collect();
         let aliases = self.aliases.lock().unwrap();
@@ -310,7 +389,7 @@ impl Commits {
                     if w == have {
                         return true;
                     }
-                    match aliases.get(&(p.to_path_buf(), w)) {
+                    match aliases.get(&(root, p.to_path_buf(), w)) {
                         Some(next) => w = *next,
                         None => return false,
                     }
@@ -356,20 +435,19 @@ impl Commits {
 
     fn apply(
         &self,
-        lower: BorrowedFd,
-        upper: BorrowedFd,
+        lowers: &Lowers,
+        parts: &[Part],
         generation: u64,
-        plan: &Plan,
         entries: &[JournalEntry],
-        applied: &mut HashSet<PathBuf>,
+        applied: &mut HashSet<Rooted>,
     ) -> io::Result<()> {
         fault::hit("journal", 0)?;
-        let root = self.gens.root();
-        let mut copied = false;
+        let mut copied = [false; roots::COUNT];
         for (i, e) in entries.iter().enumerate() {
             fault::hit("preimage", i)?;
             let Some(m) = &e.pre else { continue };
-            copied = true;
+            copied[e.root] = true;
+            let (lower, root) = (lower_of(lowers, e.root)?, self.gens[e.root].root());
             let dst = Generations::rel(generation, &e.path);
             sys::mkdirs(root, parent(&dst))?;
             if m.is_dir() {
@@ -378,115 +456,134 @@ impl Commits {
                 sys::copy_entry(lower, &e.path, root, &dst, &sys::lstat(lower, &e.path)?, false)?;
             }
         }
-        if copied {
-            sys::syncfs(root)?;
+        // The generations share the state's filesystem: one sync covers them all.
+        if let Some(r) = copied.iter().position(|c| *c) {
+            sys::syncfs(self.gens[r].root())?;
         }
         self.journal().set_state(generation, GenState::Prepared)?;
-        self.gens
-            .register(generation, entries.iter().map(|e| (e.path.clone(), e.pre)));
-        let tmp: HashMap<&Path, &Path> = entries
+        self.register(generation, entries);
+        let tmp: HashMap<(usize, &Path), &Path> = entries
             .iter()
-            .filter_map(|e| Some((e.path.as_path(), e.tmp.as_deref()?)))
+            .filter_map(|e| Some(((e.root, e.path.as_path()), e.tmp.as_deref()?)))
             .collect();
-        let pre: HashMap<&Path, Option<Version>> = entries
+        let pre: HashMap<(usize, &Path), Option<Version>> = entries
             .iter()
-            .map(|e| (e.path.as_path(), e.pre.map(|m| m.version())))
+            .map(|e| ((e.root, e.path.as_path()), e.pre.map(|m| m.version())))
             .collect();
-        // Directories change as apply removes and adds their entries; files and links don't.
-        let unchanged = |p: &Path, want: Option<Version>| -> io::Result<()> {
-            let live = sys::lstat(lower, p).ok();
-            if live.as_ref().is_some_and(sys::is_dir) {
-                return Ok(());
-            }
-            match (want, live.map(|st| Version::of(&st))) {
-                (None, None) => Ok(()),
-                (Some(w), Some(l)) if w.same_content(&l) => Ok(()),
-                _ => Err(io::Error::other(Raced(p.to_path_buf()))),
-            }
-        };
         let mut step = 0;
-        let mut removed = HashSet::new();
-        let sources: HashSet<&PathBuf> = plan.moves.values().collect();
-        for p in &plan.removes {
-            fault::hit("apply", step)?;
-            fault::race(step, lower, p);
-            step += 1;
-            unchanged(p, pre[p.as_path()])?;
-            let st = sys::lstat(lower, p)?;
-            applied.insert(p.clone());
-            if sources.contains(p) {
-                sys::rename(lower, p, tmp[p.as_path()], 0)?;
-            } else {
-                sys::unlink(lower, p, sys::is_dir(&st))?;
-            }
-            removed.insert(p);
-        }
-        for (p, up) in &plan.puts {
-            fault::hit("apply", step)?;
-            fault::race(step, lower, p);
-            step += 1;
-            let want = if removed.contains(p) { None } else { pre[p.as_path()] };
-            unchanged(p, want)?;
-            applied.insert(p.clone());
-            if sys::is_dir(up) {
-                match sys::lstat(lower, p) {
-                    Ok(_) => sys::chmod(lower, p, up.st_mode)?,
-                    Err(_) => sys::copy_entry(upper, p, lower, p, up, false)?,
+        for part in parts {
+            let (lower, upper, plan, root) = (part.lower, part.h.upper.as_fd(), &part.plan, part.root);
+            // Directories change as apply removes and adds their entries; files and links don't.
+            let unchanged = |p: &Path, want: Option<Version>| -> io::Result<()> {
+                let live = sys::lstat(lower, p).ok();
+                if live.as_ref().is_some_and(sys::is_dir) {
+                    return Ok(());
                 }
-            } else if let Some(from) = plan.moves.get(p) {
-                sys::rename(lower, tmp[from.as_path()], p, 0)?;
-            } else {
-                let t = tmp[p.as_path()];
-                // A new file keeps its inode: link it out of the upper, which a rollback
-                // still needs; copy across filesystems.
-                if !(sys::kind(up.st_mode) == FileType::RegularFile && sys::link_across(upper, p, lower, t).is_ok()) {
-                    sys::copy_entry(upper, p, lower, t, up, false)?;
+                match (want, live.map(|st| Version::of(&st))) {
+                    (None, None) => Ok(()),
+                    (Some(w), Some(l)) if w.same_content(&l) => Ok(()),
+                    _ => Err(io::Error::other(Raced(root, p.to_path_buf()))),
                 }
-                sys::rename(lower, t, p, 0)?;
+            };
+            let mut removed = HashSet::new();
+            let sources: HashSet<&PathBuf> = plan.moves.values().collect();
+            for p in &plan.removes {
+                fault::hit("apply", step)?;
+                fault::race(step, lower, p);
+                step += 1;
+                unchanged(p, pre[&(root, p.as_path())])?;
+                let st = sys::lstat(lower, p)?;
+                applied.insert((root, p.clone()));
+                if sources.contains(p) {
+                    sys::rename(lower, p, tmp[&(root, p.as_path())], 0)?;
+                } else {
+                    sys::unlink(lower, p, sys::is_dir(&st))?;
+                }
+                removed.insert(p);
+            }
+            for (p, up) in &plan.puts {
+                fault::hit("apply", step)?;
+                fault::race(step, lower, p);
+                step += 1;
+                let want = if removed.contains(p) {
+                    None
+                } else {
+                    pre[&(root, p.as_path())]
+                };
+                unchanged(p, want)?;
+                applied.insert((root, p.clone()));
+                if sys::is_dir(up) {
+                    match sys::lstat(lower, p) {
+                        Ok(_) => sys::chmod(lower, p, up.st_mode)?,
+                        Err(_) => sys::copy_entry(upper, p, lower, p, up, false)?,
+                    }
+                } else if let Some(from) = plan.moves.get(p) {
+                    sys::rename(lower, tmp[&(root, from.as_path())], p, 0)?;
+                } else {
+                    let t = tmp[&(root, p.as_path())];
+                    // A new file keeps its inode: link it out of the upper, which a rollback
+                    // still needs; copy across filesystems.
+                    if !(sys::kind(up.st_mode) == FileType::RegularFile && sys::link_across(upper, p, lower, t).is_ok())
+                    {
+                        sys::copy_entry(upper, p, lower, t, up, false)?;
+                    }
+                    sys::rename(lower, t, p, 0)?;
+                }
             }
         }
-        sys::syncfs(lower)?;
+        for part in parts.iter().filter(|p| !p.plan.touched().is_empty()) {
+            sys::syncfs(part.lower)?;
+        }
         fault::hit("done", 0)?;
         self.journal().set_state(generation, GenState::Done)?;
         self.current.store(generation, Ordering::Release);
         Ok(())
     }
 
-    /// Undo an unfinished generation: restore the base from its pre-images (once
-    /// prepared), remove temporary files, then forget the generation.
+    /// Undo an unfinished generation: restore each root's base from its pre-images
+    /// (once prepared), remove temporary files, then forget the generation.
     /// `only`: what apply reached (an in-process rollback after a race); None after
     /// a crash, when only versions tell what apply reached.
-    fn rollback(&self, lower: BorrowedFd, generation: u64, only: Option<Reached>) -> io::Result<()> {
+    fn rollback(&self, lowers: &Lowers, generation: u64, only: Option<Reached>) -> io::Result<()> {
         let (state, entries, dirs) = {
             let j = self.journal();
             (j.state(generation)?, j.entries(generation)?, j.dirs(generation)?)
         };
-        if state == Some(GenState::Prepared) {
-            self.restore(lower, generation, &entries, &dirs, only)?;
-        } else {
-            for t in entries.iter().filter_map(|e| e.tmp.as_ref()) {
-                ignore_missing(sys::unlink(lower, t, false))?;
+        let used: BTreeSet<usize> = entries.iter().map(|e| e.root).collect();
+        for &root in &used {
+            let lower = lower_of(lowers, root)?;
+            let entries: Vec<&JournalEntry> = entries.iter().filter(|e| e.root == root).collect();
+            if state == Some(GenState::Prepared) {
+                let dirs: Vec<&DirTimes> = dirs.iter().filter(|d| d.root == root).collect();
+                self.restore(lower, root, generation, &entries, &dirs, only)?;
+            } else {
+                for t in entries.iter().filter_map(|e| e.tmp.as_ref()) {
+                    ignore_missing(sys::unlink(lower, t, false))?;
+                }
             }
+            sys::syncfs(lower)?;
         }
-        sys::syncfs(lower)?;
         // Forget first: a crash before the files are gone leaves only files, which start sweeps.
         self.journal().forget(generation)?;
-        self.gens.unregister(generation);
-        self.gens.remove_files(generation)
+        self.unregister(generation)
     }
 
     fn restore(
         &self,
         lower: BorrowedFd,
+        root: usize,
         generation: u64,
-        entries: &[JournalEntry],
-        dirs: &[DirTimes],
+        entries: &[&JournalEntry],
+        dirs: &[&DirTimes],
         only: Option<Reached>,
     ) -> io::Result<()> {
         let fmt = |mode: u32| mode & libc::S_IFMT;
-        let reached =
-            |e: &JournalEntry| only.is_none_or(|r| r.applied.contains(&e.path) && !e.path.starts_with(r.raced));
-        let mut order: Vec<&JournalEntry> = entries.iter().filter(|e| reached(e)).collect();
+        let reached = |e: &JournalEntry| {
+            only.is_none_or(|r| {
+                r.applied.contains(&(root, e.path.clone())) && !(r.raced.0 == root && e.path.starts_with(r.raced.1))
+            })
+        };
+        let mut order: Vec<&JournalEntry> = entries.iter().copied().filter(|e| reached(e)).collect();
         order.sort_by_key(|e| std::cmp::Reverse(sys::depth(&e.path)));
         for t in entries.iter().filter_map(|e| e.tmp.as_ref()) {
             ignore_missing(sys::unlink(lower, t, false))?;
@@ -507,7 +604,7 @@ impl Commits {
             }
         }
         // Parents first: put the originals back.
-        let root = self.gens.root();
+        let pre_root = self.gens[root].root();
         for (i, e) in order.iter().rev().enumerate() {
             let Some(m) = &e.pre else { continue };
             fault::hit("restore", i)?;
@@ -516,9 +613,9 @@ impl Commits {
                 Ok(_) => {}
                 Err(_) => {
                     let src = Generations::rel(generation, &e.path);
-                    let mut st = sys::lstat(root, &src)?;
+                    let mut st = sys::lstat(pre_root, &src)?;
                     m.apply(&mut st);
-                    sys::copy_entry(root, &src, lower, &e.path, &st, true)?;
+                    sys::copy_entry(pre_root, &src, lower, &e.path, &st, true)?;
                 }
             }
         }
@@ -544,8 +641,8 @@ impl Commits {
             if let Ok(now) = sys::lstat(lower, &e.path).map(|st| Version::of(&st))
                 && now != m.version()
             {
-                journal.add_restored(&e.path, m.version(), now)?;
-                aliases.insert((e.path.clone(), m.version()), now);
+                journal.add_restored(root, &e.path, m.version(), now)?;
+                aliases.insert((root, e.path.clone(), m.version()), now);
             }
         }
         Ok(())
@@ -567,8 +664,7 @@ impl Commits {
         // Forget first: a crash before the files are gone leaves only files, which start sweeps.
         self.journal().forget_all(&done, oldest_open.is_none(), dropped)?;
         for g in done {
-            self.gens.unregister(g);
-            self.gens.remove_files(g)?;
+            self.unregister(g)?;
         }
         if oldest_open.is_none() {
             self.aliases.lock().unwrap().clear();

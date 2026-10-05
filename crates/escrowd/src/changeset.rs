@@ -11,6 +11,8 @@
 //! "The base" is the scope's snapshot: the project as it was when the scope opened.
 //! - A create or modify whose pinned inode is a base inode, matched by a delete
 //!   of the file that had that inode, is a rename.
+//! - Paths under an `ephemeral` rule are never in it: a rename out of one is a
+//!   create, a rename into one a delete.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{self, Read};
@@ -20,6 +22,7 @@ use std::path::{Path, PathBuf};
 use fuser::FileType;
 use rustix::fs::{OFlags, Stat};
 
+use crate::roots::Access;
 use crate::snapshot::Base;
 use crate::store::ScopeStore;
 use crate::sys;
@@ -36,6 +39,8 @@ pub enum Kind {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Change {
     pub kind: Kind,
+    /// The root the path is in (`roots::PROJECT`, `HOME`, `TMP`).
+    pub root: usize,
     pub path: PathBuf,
     /// Rename source.
     pub from: Option<PathBuf>,
@@ -49,6 +54,15 @@ pub struct ChangeSet {
 }
 
 pub fn build(base: &Base, h: &ScopeHandle) -> io::Result<ChangeSet> {
+    let store = h.store_read();
+    if !h.captures() {
+        return Ok(ChangeSet {
+            changes: Vec::new(),
+            reads: store.reads(),
+            labels: store.labels()?,
+        });
+    }
+    drop(store);
     let upper = h.upper.as_fd();
     let mut kinds: BTreeMap<PathBuf, Kind> = BTreeMap::new();
     let mut deletes: BTreeSet<PathBuf> = BTreeSet::new();
@@ -68,7 +82,27 @@ pub fn build(base: &Base, h: &ScopeHandle) -> io::Result<ChangeSet> {
     for d in deletes {
         kinds.insert(d, Kind::Delete);
     }
-    let changes = pair_renames(base, &store, kinds);
+    let ephemeral = |p: &Path| h.access(p) == Access::Ephemeral;
+    let changes = pair_renames(base, &store, kinds)
+        .into_iter()
+        .filter_map(|mut c| {
+            let from_ephemeral = c.from.as_deref().map(ephemeral);
+            match (ephemeral(&c.path), from_ephemeral) {
+                (true, Some(false)) => {
+                    c.path = c.from.take()?;
+                    c.kind = Kind::Delete;
+                }
+                (true, _) => return None,
+                (false, Some(true)) => {
+                    c.from = None;
+                    c.kind = Kind::Create;
+                }
+                _ => {}
+            }
+            c.root = h.root;
+            Some(c)
+        })
+        .collect();
     Ok(ChangeSet {
         changes,
         reads: store.reads(),
@@ -195,11 +229,13 @@ fn pair_renames(base: &Base, store: &ScopeStore, kinds: BTreeMap<PathBuf, Kind>)
         .map(|(p, k)| match sources.get(p) {
             Some(from) => Change {
                 kind: Kind::Rename,
+                root: 0,
                 path: p.clone(),
                 from: Some(from.clone()),
             },
             None => Change {
                 kind: *k,
+                root: 0,
                 path: p.clone(),
                 from: None,
             },

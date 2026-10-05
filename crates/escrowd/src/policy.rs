@@ -4,9 +4,16 @@
 //! version: 1
 //! read:
 //!   deny: [".env", "secrets/**"]   # a pattern without '/' matches the name at any depth
-//! sandbox:
-//!   read: ["~/.local/share/mise"]  # host paths sandboxes may read besides the system dirs
-//!   write: ["~/.cache/pnpm"]        # host paths sandboxes may write, outside escrow
+//! roots:
+//!   home:                           # $HOME through escrowd's views (absent: an empty tmpfs)
+//!     default: capture              # unlisted paths [default: deny]
+//!     deny: [~/.ssh, ~/.aws, ~/.gnupg]
+//!     passthrough: [~/.cache/pip, ~/.npm]
+//!     ephemeral: [~/.bash_history]
+//!   tmp: { default: ephemeral }     # /tmp (absent: a private tmpfs)
+//!   other:
+//!     read: ["~/.local/share/mise"] # host paths sandboxes may read besides the system dirs
+//!     passthrough: ["~/.cache/pnpm"] # host paths sandboxes may write, outside escrow
 //! close:
 //!   grace_ms: 2000                  # SIGTERM to a closing scope's children, SIGKILL after this
 //! ```
@@ -18,6 +25,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, bail};
 use serde::Deserialize;
 
+pub use crate::roots::Rule;
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Policy {
@@ -25,7 +34,7 @@ pub struct Policy {
     #[serde(default)]
     pub read: ReadRules,
     #[serde(default)]
-    pub sandbox: SandboxRules,
+    pub roots: Roots,
     #[serde(default)]
     pub close: CloseRules,
 }
@@ -53,28 +62,83 @@ impl Default for CloseRules {
     }
 }
 
-/// What a sandbox sees of the host besides the project and the system directories.
+/// What a sandbox sees outside the project besides the system directories.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SandboxRules {
-    /// Absolute paths (or `~/…`) bound read-only into every sandbox: toolchains, package stores.
+pub struct Roots {
+    /// `$HOME` through the views; None: an empty tmpfs.
+    pub home: Option<RootRules>,
+    /// `/tmp` through the views; None: a private tmpfs.
+    pub tmp: Option<RootRules>,
+    #[serde(default)]
+    pub other: OtherRules,
+}
+
+/// One root's rules: paths are absolute (or `~/…`) and inside the root.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RootRules {
+    /// The rule of unlisted paths [default: deny].
+    #[serde(default = "RootRules::default_rule")]
+    pub default: Rule,
+    #[serde(default)]
+    pub capture: Vec<String>,
+    #[serde(default)]
+    pub ephemeral: Vec<String>,
+    #[serde(default)]
+    pub passthrough: Vec<String>,
+    #[serde(default)]
+    pub deny: Vec<String>,
+}
+
+impl RootRules {
+    fn default_rule() -> Rule {
+        Rule::Deny
+    }
+
+    /// Every listed path with its rule, `~` expanded; each must lie inside `root`
+    /// (`key` names the root in errors).
+    pub fn paths(&self, key: &str, root: &Path) -> anyhow::Result<Vec<(PathBuf, Rule)>> {
+        let mut out = Vec::new();
+        for (list, rule) in [
+            (&self.capture, Rule::Capture),
+            (&self.ephemeral, Rule::Ephemeral),
+            (&self.passthrough, Rule::Passthrough),
+            (&self.deny, Rule::Deny),
+        ] {
+            for p in expand(key, list)? {
+                if !p.starts_with(root) {
+                    bail!("{key}: {} is not inside {}", p.display(), root.display());
+                }
+                out.push((p, rule));
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// Host paths outside the served roots' rules.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OtherRules {
+    /// Absolute paths (or `~/…`) bound read-only into every sandbox: toolchains, mirrors.
     #[serde(default)]
     pub read: Vec<String>,
     /// Absolute paths (or `~/…`) bound read-write into every sandbox, outside escrow:
     /// package stores and caches. The ledger records each one when a sandbox starts.
     #[serde(default)]
-    pub write: Vec<String>,
+    pub passthrough: Vec<String>,
 }
 
-impl SandboxRules {
+impl OtherRules {
     /// The read paths with `~` expanded; relative paths are an error.
     pub fn read_paths(&self) -> anyhow::Result<Vec<PathBuf>> {
-        expand("sandbox.read", &self.read)
+        expand("roots.other.read", &self.read)
     }
 
-    /// The write paths with `~` expanded; relative paths are an error.
-    pub fn write_paths(&self) -> anyhow::Result<Vec<PathBuf>> {
-        expand("sandbox.write", &self.write)
+    /// The passthrough paths with `~` expanded; relative paths are an error.
+    pub fn passthrough_paths(&self) -> anyhow::Result<Vec<PathBuf>> {
+        expand("roots.other.passthrough", &self.passthrough)
     }
 }
 
@@ -86,6 +150,7 @@ fn expand(key: &str, paths: &[String]) -> anyhow::Result<Vec<PathBuf>> {
                 Some(rest) => std::env::home_dir()
                     .with_context(|| format!("{key}: no home directory"))?
                     .join(rest),
+                None if p == "~" => std::env::home_dir().with_context(|| format!("{key}: no home directory"))?,
                 None => PathBuf::from(p),
             };
             if !path.is_absolute() {
@@ -134,21 +199,44 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_read_expands_home_and_needs_absolute_paths() {
-        let p = Policy::parse("version: 1\nsandbox:\n  read: ['~/tools', '/opt/x']\n").unwrap();
-        let paths = p.sandbox.read_paths().unwrap();
+    fn other_read_expands_home_and_needs_absolute_paths() {
+        let p = Policy::parse("version: 1\nroots:\n  other:\n    read: ['~/tools', '/opt/x']\n").unwrap();
+        let paths = p.roots.other.read_paths().unwrap();
         assert!(paths[0].is_absolute() && paths[0].ends_with("tools"));
         assert_eq!(paths[1], std::path::Path::new("/opt/x"));
-        let p = Policy::parse("version: 1\nsandbox:\n  read: ['rel/path']\n").unwrap();
-        assert!(p.sandbox.read_paths().is_err());
+        let p = Policy::parse("version: 1\nroots:\n  other:\n    read: ['rel/path']\n").unwrap();
+        assert!(p.roots.other.read_paths().is_err());
     }
 
     #[test]
-    fn sandbox_write_expands_home_and_needs_absolute_paths() {
-        let p = Policy::parse("version: 1\nsandbox:\n  write: ['~/.cache/pnpm']\n").unwrap();
-        assert!(p.sandbox.write_paths().unwrap()[0].ends_with(".cache/pnpm"));
-        let p = Policy::parse("version: 1\nsandbox:\n  write: ['cache']\n").unwrap();
-        assert!(p.sandbox.write_paths().is_err());
+    fn other_passthrough_expands_home_and_needs_absolute_paths() {
+        let p = Policy::parse("version: 1\nroots:\n  other:\n    passthrough: ['~/.cache/pnpm']\n").unwrap();
+        assert!(p.roots.other.passthrough_paths().unwrap()[0].ends_with(".cache/pnpm"));
+        let p = Policy::parse("version: 1\nroots:\n  other:\n    passthrough: ['cache']\n").unwrap();
+        assert!(p.roots.other.passthrough_paths().is_err());
+    }
+
+    #[test]
+    fn root_rules_default_to_deny_and_stay_inside_their_root() {
+        let p = Policy::parse(
+            "version: 1\nroots:\n  home: {deny: ['~/.ssh'], capture: ['~/.gitconfig']}\n  tmp: {default: ephemeral}\n",
+        )
+        .unwrap();
+        let home = p.roots.home.unwrap();
+        assert_eq!(home.default, Rule::Deny);
+        let home_dir = std::env::home_dir().unwrap();
+        let paths = home.paths("roots.home", &home_dir).unwrap();
+        assert_eq!(
+            paths,
+            [
+                (home_dir.join(".gitconfig"), Rule::Capture),
+                (home_dir.join(".ssh"), Rule::Deny)
+            ]
+        );
+        assert_eq!(p.roots.tmp.unwrap().default, Rule::Ephemeral);
+        let p = Policy::parse("version: 1\nroots:\n  tmp: {capture: ['/var/x']}\n").unwrap();
+        assert!(p.roots.tmp.unwrap().paths("roots.tmp", Path::new("/tmp")).is_err());
+        assert!(Policy::parse("version: 1\nroots:\n  home: {default: keep}\n").is_err());
     }
 
     #[test]
@@ -161,6 +249,7 @@ mod tests {
     #[test]
     fn rejects_unknown_keys_and_versions() {
         assert!(Policy::parse("version: 1\nreads: {}\n").is_err());
+        assert!(Policy::parse("version: 1\nsandbox: {write: []}\n").is_err());
         assert!(Policy::parse("version: 2\n").is_err());
         assert!(Policy::parse("read: {deny: []}\n").is_err());
     }

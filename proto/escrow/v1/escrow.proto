@@ -49,6 +49,18 @@ message OpenScopeResponse {
   string scope_id = 1;
   // Absolute path of the scope's virtual root inside the app's sandbox.
   string root = 2;
+  // The scope's views of the served roots outside the project (policy `roots:`).
+  repeated ScopeRoot roots = 3;
+}
+
+// A root outside the project ($HOME, /tmp) served through the scope's views.
+message ScopeRoot {
+  // The root's host path, e.g. /home/user.
+  string path = 1;
+  // The scope's view of it, as `root` above (on the host: <mount>/<scope_id>.home).
+  string view = 2;
+  // Host paths inside the root bound directly (passthrough and read paths): not rewritten.
+  repeated string direct = 3;
 }
 
 message CloseScopeRequest {
@@ -65,9 +77,10 @@ enum ChangeKind {
 
 message Change {
   ChangeKind kind = 1;
-  // Project-relative path; for a rename, the destination.
+  // Project-relative path, `~/…` in $HOME, absolute in other roots; for a rename,
+  // the destination.
   string path = 2;
-  // Rename source, project-relative.
+  // Rename source, in the same form.
   string from_path = 3;
 }
 
