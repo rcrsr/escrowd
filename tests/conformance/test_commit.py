@@ -10,6 +10,7 @@ daemon crash, leaves the project byte-identical.
 import os
 import shutil
 import subprocess
+from pathlib import Path
 
 import grpc
 import pytest
@@ -351,3 +352,110 @@ def test_crash_after_done_finishes_the_commit_on_restart(escrow_bin):
     finally:
         subprocess.run(["fusermount3", "-u", "-z", work / "mnt"], capture_output=True)
         shutil.rmtree(work, ignore_errors=True)
+
+
+def run_with_race(escrow_bin, n: int):
+    """Commit the small scenario while an editor writes the path of apply step n
+    (ESCROWD_FAULT=race:n). Returns None if step n does not exist; else the outcome."""
+    work = make_runtime_dir()
+    d = None
+    try:
+        d = Daemon(escrow_bin, work, env={"ESCROWD_FAULT": f"race:{n}"})
+        small_seed(d.project)
+        want = reference(work, small_seed, small_mutate)
+        before = {p: (mode, body) for p, mode, body in tree(d.project)}
+        with client(d) as c:
+            sid, root = open_root(d, c)
+            small_mutate(root)
+            c.close_scope(sid)
+            out = c.commit(sid, timeout=10)
+        d.stop()
+        log = (work / "daemon.log").read_text()
+        if f"race:{n} (" not in log:
+            assert out.status == pb.OUTCOME_STATUS_COMMITTED
+            return None
+        assert not leftovers(d.project) and d.generations() == []
+        if out.status == pb.OUTCOME_STATUS_COMMITTED:  # the step was a directory or a link
+            assert tree(d.project) == want, n
+            return "committed"
+        assert out.status == pb.OUTCOME_STATUS_CONFLICT, n
+        (raced,) = out.paths
+        assert any(f"op=conflict path={raced} " in line for line in d.ledger)
+        # Every other path is as before the commit; the editor's write survives.
+        after = {p: (mode, body) for p, mode, body in tree(d.project)}
+        old = before.pop(raced, (None, b""))[1]
+        assert after.pop(raced)[1] == old + b"editor\n", raced
+        # Under a raced path the editor's version wins: a directory the commit had
+        # already removed (to put a file there) is not restored around the editor's file.
+        for p in [p for p in before if p.startswith(raced + "/")]:
+            if p not in after:
+                del before[p]
+        # A directory the commit created stays when the editor's file is inside it.
+        for a in map(str, Path(raced).parents):
+            if a != "." and a not in before:
+                assert after.pop(a)[1] == b"", a
+        assert after == before, n
+        return "conflict"
+    finally:
+        if d:
+            d.stop()
+        subprocess.run(["fusermount3", "-u", "-z", work / "mnt"], capture_output=True)
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def test_an_editor_write_during_apply_is_a_conflict_and_survives(escrow_bin):
+    """#16: apply re-checks each file just before replacing or removing it."""
+    outcomes = []
+    n = 0
+    while (o := run_with_race(escrow_bin, n)) is not None:
+        outcomes.append(o)
+        n += 1
+    assert outcomes.count("conflict") >= 3, outcomes
+
+
+def test_a_crash_during_recovery_still_recovers(escrow_bin):
+    """Kill the commit mid-apply, then kill the restart mid-restore at each step:
+    the next clean start still leaves the project byte-identical."""
+    j = 0
+    while True:
+        work = make_runtime_dir()
+        d = None
+        try:
+            d = Daemon(escrow_bin, work, env={"ESCROWD_FAULT": "apply:4:abort"})
+            small_seed(d.project)
+            before = fingerprint(d.project)
+            with client(d) as c:
+                sid, root = open_root(d, c)
+                small_mutate(root)
+                c.close_scope(sid)
+                with pytest.raises(grpc.RpcError):
+                    c.commit(sid, timeout=10)
+            d.stop()
+            try:
+                Daemon(escrow_bin, work, env={"ESCROWD_FAULT": f"restore:{j}:abort"}).stop()
+                reached = False  # recovery finished before step j
+            except RuntimeError:
+                reached = True
+                subprocess.run(["fusermount3", "-u", "-z", work / "mnt"], capture_output=True)
+            d = Daemon(escrow_bin, work)
+            assert fingerprint(d.project) == before, j
+            assert not leftovers(d.project) and d.generations() == [], j
+        finally:
+            if d:
+                d.stop()
+            subprocess.run(["fusermount3", "-u", "-z", work / "mnt"], capture_output=True)
+            shutil.rmtree(work, ignore_errors=True)
+        if not reached:
+            break
+        j += 1
+    assert j > 0, "restore fault point never reached"
+
+
+def test_start_sweeps_generation_files_the_journal_forgot(start_daemon):
+    d = start_daemon()
+    d.stop()
+    orphan = d.state / "generations" / "42" / "x"
+    orphan.parent.mkdir(parents=True)
+    orphan.write_text("left by a crash between forget and remove\n")
+    d = start_daemon()
+    assert d.generations() == []

@@ -81,8 +81,8 @@ impl Service {
             .blocking(move |v| {
                 v.scope(&id2)
                     .map_err(|_| io::Error::new(io::ErrorKind::NotFound, format!("no scope {id2}")))?;
-                children.stop(&id2);
-                v.close_scope(&id2)
+                let stopped = children.stop(&id2);
+                v.close_scope_after(&id2, &stopped)
             })
             .await?;
         Ok(to_proto(id, cs))

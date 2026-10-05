@@ -2,7 +2,7 @@
 
 Oct 4, 2026 · Andre Bremer · Draft
 
-**Status, Oct 4, 2026: 2.1 done**: baseline for workloads A, B and C on the dev host and the benchmark VM at `564c36f`; suite 126 / 126 in CI on both runners ([PR #17](https://github.com/rcrsr/escrowd/pull/17)). Next: 2.2. Plan revised Oct 4, 2026 for issues [#11](https://github.com/rcrsr/escrowd/issues/11)–[#16](https://github.com/rcrsr/escrowd/issues/16).
+**Status, Oct 4, 2026: 2.1 done**: baseline for workloads A, B and C on the dev host and the benchmark VM at `564c36f`; suite 126 / 126 in CI on both runners ([PR #17](https://github.com/rcrsr/escrowd/pull/17)). **2.2 done**, Oct 4, 2026: 1,000 crash runs with 0 partial commits and 1,000 closes under load with 0 lost writes on the dev host; suite 132 / 132 and 50 crash runs with 0 partial in CI on both runners ([PR #18](https://github.com/rcrsr/escrowd/pull/18)). Next: 2.3. Plan revised Oct 4, 2026 for issues [#11](https://github.com/rcrsr/escrowd/issues/11)–[#16](https://github.com/rcrsr/escrowd/issues/16).
 
 Phase 2 takes the phase 1 POC to something an agent harness can lean on: commits that survive a crash at any point, real repositories at near-native speed, paths outside the project under the same rules as the project, and errors that tell the caller what went wrong. Phase 3 freezes the protocol on top of it, so every protocol change (path roots, diff, scope token, policy options) lands here or waits for a protocol version bump.
 
@@ -112,6 +112,25 @@ Phase 1 tested recovery with fault points (5 steps, error and abort modes). Phas
 - **Editor race** (#16): the conflict check runs before apply, so an editor can write a file between the check and its rename. Re-check each target's version immediately before its rename; a mismatch rolls the commit back as a conflict. Document what remains in the proposal's risk table.
 - **Close and flush.** Close sends SIGTERM to the scope's children, waits (2 s default, set in the policy), then SIGKILLs; writes made during the grace period land in the change set. A writer appends continuously while the scope closes; every byte written before close returns must be in the change set, across 1,000 closes. Report close latency at the 50th and 99th percentiles with 0, 1 and 10 running children.
 - CI runs 50 crash iterations per PR that touches `crates/escrowd/src/{commit,journal,snapshot}.rs` (a `soak` paths filter; CI stays PR-only). 1,000 run on the dev host by hand at the end of 2.2 and in 2.8; 100 per Lima host.
+
+As built (Oct 4, 2026):
+
+- **fsync audit.** The journal commits each state change with `synchronous = FULL` (WAL). Pre-images are copied without per-file fsync, then `syncfs` on the state filesystem runs before `prepared`. Apply fsyncs each new file before its rename and runs `syncfs` on the project filesystem before `done`. Any crash before `done` rolls back from the pre-images, so **the per-file fsync in apply is redundant**: 2.3 may drop it. One defect: rollback and GC removed a generation's pre-image files before forgetting it in the journal, so a crash between the two left a prepared generation without its pre-images, and the next start failed its rollback. Both now forget first; start sweeps generation directories the journal no longer names.
+- **Editor race.** Apply re-checks each file's inode, size and mtime (not ctime: removing a hard link changes the other links' ctime) against the journal just before removing or replacing it. A mismatch rolls back only the paths apply reached, leaves the raced path and everything under it as the editor left it, logs `op=conflict` and returns the conflict outcome. Rollback keeps a directory the commit created if the editor put a file in it, and ignores ENOTDIR for temporary files under a path the editor turned into a file. The window left is between the re-check and the rename; the proposal's risk table says so. `ESCROWD_FAULT=race:<n>` plays the editor at apply step n (debug builds).
+- **Close lost writes (found by the load check, present since phase 1).** A process killed by a signal sends no FUSE flush: its dirty pages reach the daemon only with the release, which the kernel sends as the process exits, after its sandbox's bwrap can already be reaped. Close froze the scope first and refused those writes with EBADF: a writer that had reported 68,463 writes left an empty file. Close now waits (up to 5 s) until the scope holds no handle opened by a process in a stopped sandbox's process group or by a process that is exiting or gone. Handles of live processes outside the sandboxes (the SDK's app) do not hold it up; the SDK fsyncs those. FUSE opens record the opener's pid for this.
+- **Grace period.** `close.grace_ms` in the policy (default 2000): SIGTERM to each command in the scope's sandboxes, then SIGKILL after the grace period. A command that handles SIGTERM keeps its last writes. When the sandbox's main command exits, bwrap's init exits and the kernel kills the rest of the sandbox, so the grace period is the main command's to use.
+- **Checks** (suite: 132): an editor write at every apply step of the small scenario (conflict and survives, or commits when the step is a directory or link); a second crash at every restore step of a recovery; the orphan sweep; the grace period kept and expired; 10 closes under a busy writer (the writer is a shell's grandchild: with `exec`, the sandbox outlives the writer's exit and the bug does not show).
+- **Soaks**: `tests/soak/crash.py N` (2,000 files, one scope, a kill at a uniform delay within the measured commit time, a second kill during recovery in a quarter of the runs) and `tests/soak/close.py N` (closes under a busy writer, then close latency). CI runs `crash.py 50` in the conformance job when the commit path changes (`soak` paths filter).
+
+Dev host results (`tests/soak/results/`):
+
+| Soak | Runs | Result |
+| --- | --- | --- |
+| Crash mid-commit | 1,000 (258 with a second kill during recovery) | 819 rolled back, 181 committed, **0 partial** |
+| Close under a busy writer | 1,000 | **0 lost** acknowledged writes |
+| Close latency, 0 / 1 / 10 children | 50 each | p50 1.5 / 7.0 / 27.8 ms, p99 2.1 / 7.7 / 30.8 ms |
+
+The commit in the crash soak takes 148 ms on the dev host (debug build), short of the 200 ms aimed for; the kills still spread across it, and the VM runs in 2.8 are slower.
 
 ### 2.3 Performance
 

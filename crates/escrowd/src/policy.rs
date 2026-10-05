@@ -7,6 +7,8 @@
 //! sandbox:
 //!   read: ["~/.local/share/mise"]  # host paths sandboxes may read besides the system dirs
 //!   write: ["~/.cache/pnpm"]        # host paths sandboxes may write, outside escrow
+//! close:
+//!   grace_ms: 2000                  # SIGTERM to a closing scope's children, SIGKILL after this
 //! ```
 //!
 //! Close-time write rules come with the decision tiers.
@@ -24,6 +26,31 @@ pub struct Policy {
     pub read: ReadRules,
     #[serde(default)]
     pub sandbox: SandboxRules,
+    #[serde(default)]
+    pub close: CloseRules,
+}
+
+/// How a scope's close treats its running children.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CloseRules {
+    /// Milliseconds between SIGTERM and SIGKILL (default 2000; 0 kills at once).
+    #[serde(default = "CloseRules::default_grace_ms")]
+    pub grace_ms: u64,
+}
+
+impl CloseRules {
+    fn default_grace_ms() -> u64 {
+        2000
+    }
+}
+
+impl Default for CloseRules {
+    fn default() -> Self {
+        CloseRules {
+            grace_ms: Self::default_grace_ms(),
+        }
+    }
 }
 
 /// What a sandbox sees of the host besides the project and the system directories.
@@ -122,6 +149,13 @@ mod tests {
         assert!(p.sandbox.write_paths().unwrap()[0].ends_with(".cache/pnpm"));
         let p = Policy::parse("version: 1\nsandbox:\n  write: ['cache']\n").unwrap();
         assert!(p.sandbox.write_paths().is_err());
+    }
+
+    #[test]
+    fn close_grace_defaults_to_two_seconds() {
+        assert_eq!(Policy::parse("version: 1\n").unwrap().close.grace_ms, 2000);
+        let p = Policy::parse("version: 1\nclose:\n  grace_ms: 0\n").unwrap();
+        assert_eq!(p.close.grace_ms, 0);
     }
 
     #[test]

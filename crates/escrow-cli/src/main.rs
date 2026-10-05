@@ -280,8 +280,9 @@ async fn run(
 
     if unscoped == Unscoped::Implicit {
         let settled = tokio::task::spawn_blocking(move || -> std::io::Result<String> {
-            children.stop(UNSCOPED);
-            let cs = views.close_scope(UNSCOPED)?;
+            // The app has exited; its last processes may still be writing back.
+            let stopped = children.stop(UNSCOPED);
+            let cs = views.close_scope_after(UNSCOPED, &stopped)?;
             let n = cs.changes.len();
             Ok(match on_exit {
                 OnExit::Discard => {

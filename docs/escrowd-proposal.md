@@ -193,6 +193,8 @@ Policy files hold software rules that run in the daemon, identical across langua
 | FUSE writeback cache holds writes past the end of a scope | fsync every open handle of the scope before its decision runs; `syncfs` alone is not a barrier on plain FUSE (spike 0.4) |
 | Inode numbers change on copy-up, confusing git, editors and build tools | Keep an origin-inode table so a file keeps its inode number after copy-up |
 | Reads of a live base see other scopes' commits mid-scope | Snapshot at open (reflink or btrfs), or record each file's version on first read and check it at commit |
+| An editor outside escrowd writes a file while a commit applies | Apply re-checks each file's inode, size and mtime just before replacing or removing it; a change rolls the commit back as a conflict and keeps the editor's version. A write in the microseconds between that re-check and the rename still loses to the commit |
+| A sandboxed process killed at close sends no FUSE flush, so its last writes arrive after it is gone | Close waits for the release of every handle held by a stopped sandbox or an exiting process before it freezes the scope (2.2) |
 
 ## Recommendations
 

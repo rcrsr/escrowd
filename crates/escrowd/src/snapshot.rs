@@ -168,6 +168,20 @@ impl Generations {
     }
 
     /// Delete a generation's pre-image files.
+    /// Remove generation directories the journal no longer names: a crash between
+    /// forgetting a generation and removing its files leaves them behind.
+    pub fn sweep(&self, keep: &std::collections::HashSet<u64>) -> io::Result<()> {
+        for e in fs::read_dir(&self.dir)? {
+            let e = e?;
+            if let Some(g) = e.file_name().to_str().and_then(|n| n.parse::<u64>().ok())
+                && !keep.contains(&g)
+            {
+                self.remove_files(g)?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn remove_files(&self, generation: u64) -> io::Result<()> {
         match fs::remove_dir_all(self.dir.join(generation.to_string())) {
             Err(e) if e.kind() != io::ErrorKind::NotFound => Err(e),
