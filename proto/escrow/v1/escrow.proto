@@ -103,6 +103,28 @@ message Change {
   string path = 2;
   // Rename source, in the same form.
   string from_path = 3;
+  // The processes that made the change (ids in ChangeSet.processes), the source of a
+  // rename included. Data writes count toward the process that opened the file.
+  repeated uint64 writers = 4;
+}
+
+// A process that changed the scope's files, as the daemon saw it at its first change.
+// The program and its device and inode are what the kernel ran; the arguments are
+// what the process says about itself (any process can rewrite its own argv).
+message Process {
+  // Unique across the daemon's ledger (`proc=<16 hex digits>`).
+  uint64 id = 1;
+  // In the daemon's PID namespace.
+  uint32 pid = 2;
+  // The binary (`/proc/<pid>/exe`), ending ` (deleted)` if it was removed.
+  string program = 3;
+  uint64 dev = 4;
+  uint64 ino = 5;
+  // Whole, as the process reported them; invalid UTF-8 replaced.
+  repeated string args = 6;
+  // The parent's id, in ChangeSet.processes; 0 when the chain stops (at the daemon,
+  // which starts every sandbox, at a session leader, or after 16 parents).
+  uint64 parent = 7;
 }
 
 enum ReadDecision {
@@ -135,6 +157,8 @@ message ChangeSet {
   // The close-time review: the software tier's verdict and the tiers above it the
   // change set needs (policy `write:` and `review:`).
   Review review = 7;
+  // Every writer of `changes` and its parent chain.
+  repeated Process processes = 8;
 }
 
 // The decision tiers, cheapest first.

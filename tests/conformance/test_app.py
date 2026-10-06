@@ -53,6 +53,8 @@ def misattributed(ledger: list[str], scopes: dict[str, list[str]]) -> list[str]:
     bad = []
     for line in ledger:
         fields = dict(f.split("=", 1) for f in line.split()[1:])
+        if "scope" not in fields and "proc" in fields:
+            continue  # a process, named by the scope lines that follow
         prefixes = scopes.get(fields["scope"])
         paths = [p for p in (fields.get("path"), fields.get("from")) if p]
         if prefixes is None or not all(owned(p, prefixes) for p in paths):

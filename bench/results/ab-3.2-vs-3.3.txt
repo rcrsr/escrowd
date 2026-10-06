@@ -1,0 +1,66 @@
+Phase 3.3 attribution cost, Oct 6, 2026: main (37fd9c2, 3.2) against the 3.3 branch with the exec
+check, release builds, escrow mode, express A and attrs A, 7 rounds alternating the binaries on the
+WSL2 dev host (load average 3 to 5 from other work). Seconds; total = clone + install + test.
+
+| Repo | Step | 3.2 median | 3.3 median | 3.3 / 3.2 | 3.2 best | 3.3 best |
+| --- | --- | --- | --- | --- | --- | --- |
+| express A | clone | 0.722 | 0.744 | 1.030× | 0.704 | 0.724 |
+| express A | install | 1.329 | 1.546 | 1.164× | 1.318 | 1.374 |
+| express A | test | 17.411 | 17.466 | 1.003× | 17.026 | 17.077 |
+| express A | total | 19.505 | 19.771 | 1.014× | 19.059 | 19.256 |
+| express A | wall | 20.939 | 21.196 | 1.012× | 20.468 | 20.640 |
+| attrs A | clone | 0.462 | 0.488 | 1.057× | 0.455 | 0.454 |
+| attrs A | install | 1.015 | 1.092 | 1.076× | 0.980 | 0.984 |
+| attrs A | test | 8.266 | 8.311 | 1.005× | 8.062 | 8.037 |
+| attrs A | total | 9.744 | 9.892 | 1.015× | 9.513 | 9.508 |
+| attrs A | wall | 10.113 | 10.128 | 1.002× | 9.786 | 9.734 |
+
+An earlier round of the same binaries gave totals of 1.034x and 1.063x, with the test steps
+(which write almost nothing) 1.03x and 1.07x and two outlier runs: host noise. Before the exec
+check (1.5 us a change), the totals were 0.997x and 1.018x.
+
+## 3.2 log
+host: Ubuntu 24.04.4 LTS, kernel 6.18.40.1-microsoft-standard-WSL2, 28 CPUs, node v24.21.0, pnpm 12.7.0, ripgrep 15.2.0, Python 3.14.7, escrow 0.1.0 (41f8eb1-dirty), runs 1
+run=1 mode=escrow repo=express workload=A clone=0.715242 install=1.32077 test=17.7831 passing=1238 wall=21.2437
+run=1 mode=escrow repo=attrs workload=A clone=0.47501 install=1.01465 test=8.25452 passing=1380 wall=9.97857
+host: Ubuntu 24.04.4 LTS, kernel 6.18.40.1-microsoft-standard-WSL2, 28 CPUs, node v24.21.0, pnpm 12.7.0, ripgrep 15.2.0, Python 3.14.7, escrow 0.1.0 (41f8eb1-dirty), runs 1
+run=1 mode=escrow repo=express workload=A clone=0.740818 install=1.33446 test=17.5766 passing=1238 wall=21.1368
+run=1 mode=escrow repo=attrs workload=A clone=0.489048 install=1.04048 test=9.54994 passing=1380 wall=11.3366
+host: Ubuntu 24.04.4 LTS, kernel 6.18.40.1-microsoft-standard-WSL2, 28 CPUs, node v24.21.0, pnpm 12.7.0, ripgrep 15.2.0, Python 3.14.7, escrow 0.1.0 (41f8eb1-dirty), runs 1
+run=1 mode=escrow repo=express workload=A clone=0.814875 install=1.4041 test=18.1745 passing=1238 wall=21.8308
+run=1 mode=escrow repo=attrs workload=A clone=0.459656 install=1.01721 test=8.81278 passing=1380 wall=10.5654
+host: Ubuntu 24.04.4 LTS, kernel 6.18.40.1-microsoft-standard-WSL2, 28 CPUs, node v24.21.0, pnpm 12.7.0, ripgrep 15.2.0, Python 3.14.7, escrow 0.1.0 (41f8eb1-dirty), runs 1
+run=1 mode=escrow repo=express workload=A clone=0.76144 install=1.33301 test=17.411 passing=1238 wall=20.939
+run=1 mode=escrow repo=attrs workload=A clone=0.462097 install=1.04413 test=8.36674 passing=1380 wall=10.1128
+host: Ubuntu 24.04.4 LTS, kernel 6.18.40.1-microsoft-standard-WSL2, 28 CPUs, node v24.21.0, pnpm 12.7.0, ripgrep 15.2.0, Python 3.14.7, escrow 0.1.0 (41f8eb1-dirty), runs 1
+run=1 mode=escrow repo=express workload=A clone=0.721985 install=1.32208 test=17.2781 passing=1238 wall=20.7511
+run=1 mode=escrow repo=attrs workload=A clone=0.454946 install=0.991441 test=8.26583 passing=1380 wall=9.93768
+host: Ubuntu 24.04.4 LTS, kernel 6.18.40.1-microsoft-standard-WSL2, 28 CPUs, node v24.21.0, pnpm 12.7.0, ripgrep 15.2.0, Python 3.14.7, escrow 0.1.0 (41f8eb1-dirty), runs 1
+run=1 mode=escrow repo=express workload=A clone=0.703955 install=1.32882 test=17.2915 passing=1238 wall=20.7398
+run=1 mode=escrow repo=attrs workload=A clone=0.486862 install=0.980356 test=8.09387 passing=1380 wall=9.78613
+host: Ubuntu 24.04.4 LTS, kernel 6.18.40.1-microsoft-standard-WSL2, 28 CPUs, node v24.21.0, pnpm 12.7.0, ripgrep 15.2.0, Python 3.14.7, escrow 0.1.0 (41f8eb1-dirty), runs 1
+run=1 mode=escrow repo=express workload=A clone=0.713798 install=1.31823 test=17.0265 passing=1238 wall=20.4679
+run=1 mode=escrow repo=attrs workload=A clone=0.458678 install=0.992167 test=8.062 passing=1380 wall=14.5472
+
+## 3.3 log
+host: Ubuntu 24.04.4 LTS, kernel 6.18.40.1-microsoft-standard-WSL2, 28 CPUs, node v24.21.0, pnpm 12.7.0, ripgrep 15.2.0, Python 3.14.7, escrow 0.1.0 (41f8eb1-dirty), runs 1
+run=1 mode=escrow repo=express workload=A clone=0.729071 install=1.48363 test=17.0768 passing=1238 wall=20.7478
+run=1 mode=escrow repo=attrs workload=A clone=0.479645 install=1.10204 test=8.31062 passing=1380 wall=10.1281
+host: Ubuntu 24.04.4 LTS, kernel 6.18.40.1-microsoft-standard-WSL2, 28 CPUs, node v24.21.0, pnpm 12.7.0, ripgrep 15.2.0, Python 3.14.7, escrow 0.1.0 (41f8eb1-dirty), runs 1
+run=1 mode=escrow repo=express workload=A clone=0.760389 install=1.54645 test=19.8263 passing=1238 wall=23.9175
+run=1 mode=escrow repo=attrs workload=A clone=0.550952 install=1.32703 test=12.5115 passing=1380 wall=14.6509
+host: Ubuntu 24.04.4 LTS, kernel 6.18.40.1-microsoft-standard-WSL2, 28 CPUs, node v24.21.0, pnpm 12.7.0, ripgrep 15.2.0, Python 3.14.7, escrow 0.1.0 (41f8eb1-dirty), runs 1
+run=1 mode=escrow repo=express workload=A clone=0.742273 install=1.5628 test=17.4657 passing=1238 wall=21.1963
+run=1 mode=escrow repo=attrs workload=A clone=0.488666 install=1.09206 test=8.32424 passing=1380 wall=10.1339
+host: Ubuntu 24.04.4 LTS, kernel 6.18.40.1-microsoft-standard-WSL2, 28 CPUs, node v24.21.0, pnpm 12.7.0, ripgrep 15.2.0, Python 3.14.7, escrow 0.1.0 (41f8eb1-dirty), runs 1
+run=1 mode=escrow repo=express workload=A clone=0.743795 install=1.3814 test=17.3832 passing=1238 wall=20.912
+run=1 mode=escrow repo=attrs workload=A clone=0.458329 install=0.984486 test=8.26905 passing=1380 wall=9.95326
+host: Ubuntu 24.04.4 LTS, kernel 6.18.40.1-microsoft-standard-WSL2, 28 CPUs, node v24.21.0, pnpm 12.7.0, ripgrep 15.2.0, Python 3.14.7, escrow 0.1.0 (41f8eb1-dirty), runs 1
+run=1 mode=escrow repo=express workload=A clone=0.72401 install=1.37413 test=17.1575 passing=1238 wall=20.6402
+run=1 mode=escrow repo=attrs workload=A clone=0.454323 install=1.01639 test=8.03713 passing=1380 wall=9.73435
+host: Ubuntu 24.04.4 LTS, kernel 6.18.40.1-microsoft-standard-WSL2, 28 CPUs, node v24.21.0, pnpm 12.7.0, ripgrep 15.2.0, Python 3.14.7, escrow 0.1.0 (41f8eb1-dirty), runs 1
+run=1 mode=escrow repo=express workload=A clone=0.811412 install=2.74142 test=17.9592 passing=1238 wall=22.9794
+run=1 mode=escrow repo=attrs workload=A clone=0.488223 install=1.0506 test=8.15466 passing=1380 wall=9.9247
+host: Ubuntu 24.04.4 LTS, kernel 6.18.40.1-microsoft-standard-WSL2, 28 CPUs, node v24.21.0, pnpm 12.7.0, ripgrep 15.2.0, Python 3.14.7, escrow 0.1.0 (41f8eb1-dirty), runs 1
+run=1 mode=escrow repo=express workload=A clone=4.65404 install=5.36819 test=18.289 passing=1238 wall=47.3252
+run=1 mode=escrow repo=attrs workload=A clone=6.6545 install=5.34568 test=8.79742 passing=1380 wall=43.4095

@@ -78,6 +78,7 @@ fn to_proto(views: &Views, scope_id: String, cs: changeset::ChangeSet, diff: Str
                     .as_deref()
                     .map(|f| path_str(&views.shown(c.root, f)))
                     .unwrap_or_default(),
+                writers: c.writers,
             })
             .collect(),
         reads: cs
@@ -97,6 +98,19 @@ fn to_proto(views: &Views, scope_id: String, cs: changeset::ChangeSet, diff: Str
         diff,
         unscoped_ops: cs.unscoped,
         review: cs.review.map(review_proto),
+        processes: cs
+            .procs
+            .into_values()
+            .map(|p| Process {
+                id: p.id,
+                pid: p.pid,
+                program: path_str(&p.program),
+                dev: p.dev,
+                ino: p.ino,
+                args: p.args,
+                parent: p.parent,
+            })
+            .collect(),
     }
 }
 

@@ -29,6 +29,8 @@
 //! write:                            # software tier: a change set that breaks one is discarded
 //!   deny: ["*.pem"]                 # paths it must not touch (created, changed, deleted, renamed)
 //!   deny_content: ["BEGIN PRIVATE KEY"] # bytes no file it writes may contain
+//!   only_by:                        # paths only these programs may change, matched on the
+//!     - {paths: [".git/**"], programs: ["/usr/bin/git"]} # binary's device and inode
 //! ```
 //!
 //! Paths in `review:` and `write:` are as the change set shows them: project-relative,
@@ -119,6 +121,23 @@ pub struct WriteRules {
     /// Byte strings no file a change set writes may contain.
     #[serde(default)]
     pub deny_content: Vec<String>,
+    #[serde(default)]
+    pub only_by: Vec<OnlyBy>,
+}
+
+/// Paths matching `paths` change only through processes running one of `programs`
+/// (absolute paths, `~/` expanded; a symlink names its target).
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OnlyBy {
+    pub paths: Vec<String>,
+    pub programs: Vec<String>,
+}
+
+impl OnlyBy {
+    pub fn program_paths(&self) -> anyhow::Result<Vec<PathBuf>> {
+        expand("write.only_by.programs", &self.programs)
+    }
 }
 
 /// What a commit that conflicts with the project does.
@@ -420,6 +439,14 @@ mod tests {
         assert!(Tier::Software < Tier::Llm && Tier::Llm < Tier::Human);
         assert!(Policy::parse("version: 1\nreview: [{paths: [a], tier: robot}]\n").is_err());
         assert!(Policy::parse("version: 1\nwrite: {only: [a]}\n").is_err());
+        let p = Policy::parse("version: 1\nwrite: {only_by: [{paths: ['.git/**'], programs: ['/usr/bin/git']}]}\n")
+            .unwrap();
+        assert_eq!(
+            p.write.only_by[0].program_paths().unwrap(),
+            [PathBuf::from("/usr/bin/git")]
+        );
+        let p = Policy::parse("version: 1\nwrite: {only_by: [{paths: [a], programs: [git]}]}\n").unwrap();
+        assert!(p.write.only_by[0].program_paths().is_err());
     }
 
     #[test]

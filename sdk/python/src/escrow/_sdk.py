@@ -109,6 +109,22 @@ class Change:
     kind: str  # create, modify, delete, rename
     path: str  # project-relative; for a rename, the destination
     from_path: str | None = None
+    # Ids of the processes that made it (`ChangeSet.processes`).
+    writers: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class Process:
+    """A process that changed the scope's files. The program and its device and inode
+    are what the kernel ran; the arguments are what the process says about itself."""
+
+    id: int
+    pid: int
+    program: str
+    dev: int
+    ino: int
+    args: list[str]
+    parent: int  # the parent's id in `ChangeSet.processes`; 0 where the chain stops
 
 
 @dataclass(frozen=True)
@@ -128,8 +144,8 @@ class Review:
     # return then becomes a discard), else "commit".
     verdict: str = "commit"
     reasons: list[str] = field(default_factory=list)
-    # Tiers above software the change set needs, cheapest first ("llm", "human"); the
-    # daemon refuses to commit while any is listed.
+    # Tiers above software the change set needs, cheapest first ("llm", "human"); a
+    # commit then holds the scope for them.
     tiers: list[str] = field(default_factory=list)
     # A review rule requires the agent to wait for those tiers.
     wait_required: bool = False
@@ -158,21 +174,33 @@ class ChangeSet:
     # Changes that reached the unscoped mode while the scope was open (0 in passthrough).
     unscoped: int = 0
     review: Review = field(default_factory=Review)
+    # Every change's writers and their parents, by id.
+    processes: dict[int, Process] = field(default_factory=dict)
 
     @property
     def paths(self) -> list[str]:
         return [c.path for c in self.changes]
 
+    def writers(self, change: Change) -> list[Process]:
+        return [self.processes[w] for w in change.writers if w in self.processes]
+
     @classmethod
     def from_proto(cls, cs: pb.ChangeSet) -> ChangeSet:
         return cls(
             scope_id=cs.scope_id,
-            changes=[Change(_KINDS[c.kind], c.path, c.from_path or None) for c in cs.changes],
+            changes=[
+                Change(_KINDS[c.kind], c.path, c.from_path or None, tuple(c.writers))
+                for c in cs.changes
+            ],
             reads=[Read(r.path, r.decision == pb.READ_DECISION_ALLOW) for r in cs.reads],
             labels=dict(cs.labels),
             diff=cs.diff,
             unscoped=cs.unscoped_ops,
             review=Review.from_proto(cs.review),
+            processes={
+                p.id: Process(p.id, p.pid, p.program, p.dev, p.ino, list(p.args), p.parent)
+                for p in cs.processes
+            },
         )
 
 
