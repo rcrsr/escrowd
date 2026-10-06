@@ -12,7 +12,8 @@
 //! Exec keeps the PID and start time, so every request also compares the binary's
 //! device and inode with the cached ones (one `stat` of `/proc/<tid>/exe`). A fork
 //! (its parent's binary and arguments: not exec'd yet, or a subshell) also has its
-//! arguments read again, so a fork that execs its parent's binary is seen too. A
+//! arguments read again, so a fork that execs its parent's binary is seen too; so
+//! does a process read with no arguments (caught mid-exec). A
 //! process that execs its own binary again with new arguments keeps its old record.
 //!
 //! The chain stops before the daemon (it starts every sandbox), at PID 1, after a
@@ -53,8 +54,9 @@ pub struct Info {
 pub struct Proc {
     pub info: Info,
     pub parent: Option<Arc<Proc>>,
-    /// Has its parent's binary and arguments: its arguments are checked on every request.
-    forked: bool,
+    /// A fork (its parent's binary and arguments) or caught mid-exec (no arguments yet):
+    /// its arguments are checked on every request.
+    unsettled: bool,
 }
 
 impl Proc {
@@ -97,7 +99,7 @@ fn args(pid: u32) -> Vec<String> {
 /// Whether task `id` still runs what `p` recorded (no exec since); None if it is gone.
 fn current(id: u32, p: &Proc) -> Option<bool> {
     let m = fs::metadata(format!("/proc/{id}/exe")).ok()?;
-    Some((m.dev(), m.ino()) == (p.info.dev, p.info.ino) && (!p.forked || args(id) == p.info.args))
+    Some((m.dev(), m.ino()) == (p.info.dev, p.info.ino) && (!p.unsettled || args(id) == p.info.args))
 }
 
 /// The process (thread group) a thread belongs to.
@@ -232,9 +234,10 @@ impl Procs {
             self.process(st.ppid, parents - 1, fresh)
         };
         let (dev, ino) = (bin.dev(), bin.ino());
-        let forked = parent
-            .as_ref()
-            .is_some_and(|p| (p.info.dev, p.info.ino) == (dev, ino) && p.info.args == args);
+        let unsettled = args.is_empty()
+            || parent
+                .as_ref()
+                .is_some_and(|p| (p.info.dev, p.info.ino) == (dev, ino) && p.info.args == args);
         let p = Arc::new(Proc {
             info: Info {
                 id: new_id(),
@@ -246,7 +249,7 @@ impl Procs {
                 parent: parent.as_ref().map_or(0, |p| p.info.id),
             },
             parent,
-            forked,
+            unsettled,
         });
         insert(&self.procs, pid, st.start, &p);
         fresh.push(p.clone());
@@ -292,7 +295,11 @@ mod tests {
             }
             std::thread::sleep(Duration::from_millis(2));
         }
-        panic!("{pid} never ran {program}");
+        let (p, _) = procs.of(pid).unwrap();
+        panic!(
+            "{pid} never ran {program}: {:?} {:?} unsettled={}",
+            p.info.program, p.info.args, p.unsettled
+        );
     }
 
     #[test]
