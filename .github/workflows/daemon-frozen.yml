@@ -1,0 +1,37 @@
+name: Daemon frozen
+
+# Phase 4 builds on the frozen daemon and protocol: a PR labeled `phase-4` must not
+# change crates/escrowd/ or proto/. Its own workflow because it runs on label
+# changes too, which must not re-run or cancel CI.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+concurrency:
+  group: daemon-frozen-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  daemon-frozen:
+    name: Daemon frozen
+    runs-on: ubuntu-latest
+    steps:
+      - name: No daemon or protocol change under phase-4
+        if: contains(github.event.pull_request.labels.*.name, 'phase-4')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          changed=$(gh pr diff "$PR" --repo "$REPO" --name-only | grep -E '^(crates/escrowd/|proto/)' || true)
+          if [[ -n "$changed" ]]; then
+            echo "::error::a phase-4 PR changes the frozen daemon or protocol; split it out:"
+            echo "$changed"
+            exit 1
+          fi
+          echo "no daemon or protocol change"

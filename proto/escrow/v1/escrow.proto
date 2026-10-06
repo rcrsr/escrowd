@@ -1,24 +1,20 @@
-// escrowd protocol: SDKs mark scopes, the daemon captures, gates and decides.
-// Served as gRPC over a Unix socket (path in ESCROW_SOCKET). The schema evolves
-// through phase 1 and freezes in phase 3; Ping reports PROTOCOL_VERSION.
+// escrowd protocol v1: SDKs mark scopes, the daemon captures, gates and decides.
+// Served as gRPC over a Unix socket (path in ESCROW_SOCKET). Frozen at protocol 7
+// (tag protocol-v1): fields and calls are only added; a breaking change is a new
+// package, escrow.v2. The specification, with status codes, the exec socket's
+// frames and the `escrow exec` interface, is docs/protocol.md.
 //
-// Spawning a scope's child needs file descriptors, which gRPC cannot carry, so
-// it has its own socket beside the gRPC one: `<ESCROW_SOCKET>.exec`. Each
-// connection starts one child. Frames are a little-endian u32 length followed
-// by one message. The client sends the length of a SpawnRequest with its
-// stdin, stdout and stderr attached (SCM_RIGHTS), then the request, then any
-// number of SpawnSignal. The daemon answers with SpawnEvent frames: `pid`,
-// then `exit_code`, or `error` alone. Closing the connection kills the child.
-//
-// Reviewers decide held scopes over a third socket, `<ESCROW_SOCKET>.review`
-// (service Reviewer), created mode 0600 and never bound into a sandbox: the file
-// mode is the credential. Scope tokens give no access there, and the review socket
+// Three sockets: `<ESCROW_SOCKET>` serves EscrowService; `<ESCROW_SOCKET>.exec`
+// starts a scope's children (file descriptors, which gRPC cannot carry; framed
+// SpawnRequest, SpawnEvent and SpawnSignal below); `<ESCROW_SOCKET>.review` serves
+// ReviewerService, created mode 0600 and never bound into a sandbox: the file mode
+// is the credential. Scope tokens give no access there, and the review socket
 // gives no scope rights.
 syntax = "proto3";
 
 package escrow.v1;
 
-service Escrow {
+service EscrowService {
   // Liveness and version handshake.
   rpc Ping(PingRequest) returns (PingResponse);
 
@@ -32,7 +28,7 @@ service Escrow {
   // scope's sandboxes, freezes the scope and returns its change set. Close, Decide
   // and the exec socket need the scope's token (from OpenScope); a missing or wrong
   // token fails with PERMISSION_DENIED. The unscoped scope has no token.
-  rpc CloseScope(CloseScopeRequest) returns (ChangeSet);
+  rpc CloseScope(CloseScopeRequest) returns (CloseScopeResponse);
 
   // Apply the close-time decision: commit, discard or return to agent. The verdict is
   // the opener's proposal and only tightens the review's (ChangeSet.review): a commit
@@ -40,27 +36,27 @@ service Escrow {
   // of one that needs a tier above software holds the scope for those reviewers
   // (OUTCOME_STATUS_HELD). A held scope is the reviewers' to decide: its opener can
   // only discard (withdraw) it; a commit or a return fails with PERMISSION_DENIED.
-  rpc Decide(DecideRequest) returns (Outcome);
+  rpc Decide(DecideRequest) returns (DecideResponse);
 
   // Close the implicit default scope (unscoped = implicit) and return its change
   // set; decide it like any scope (scope id "unscoped"). After a commit or a
   // discard the daemon opens a fresh default scope at the same path.
-  rpc SettleUnscoped(SettleUnscopedRequest) returns (ChangeSet);
+  rpc SettleUnscoped(SettleUnscopedRequest) returns (SettleUnscopedResponse);
 
   // The change set of a closed, undecided scope, diff included, without closing
   // anything: an open scope fails with FAILED_PRECONDITION. For `escrow diff`.
-  rpc GetChangeSet(GetChangeSetRequest) returns (ChangeSet);
+  rpc GetChangeSet(GetChangeSetRequest) returns (GetChangeSetResponse);
 
   // Follow a held scope (Decide returned OUTCOME_STATUS_HELD) to its verdict: an
   // OUTCOME_STATUS_HELD outcome now and after each tier's review (`tiers` the ones
   // still to review), then the final outcome, and the stream ends. A scope decided
   // already gets its last outcome; one that is not held fails with
   // FAILED_PRECONDITION. Needs the scope's token, like Decide.
-  rpc AwaitDecision(AwaitDecisionRequest) returns (stream Outcome);
+  rpc AwaitDecision(AwaitDecisionRequest) returns (stream AwaitDecisionResponse);
 }
 
-// Served on `<ESCROW_SOCKET>.review` only.
-service Reviewer {
+// Served on `<ESCROW_SOCKET>.review` only; EscrowService on the main socket only.
+service ReviewerService {
   // The held scopes, oldest hold first.
   rpc ListHeld(ListHeldRequest) returns (ListHeldResponse);
 
@@ -75,13 +71,14 @@ service Reviewer {
   // which the ledger records. After the last pending tier the scope is decided with
   // the verdict so far, as Decide would (a commit can conflict); before it, the
   // outcome is OUTCOME_STATUS_HELD with the tiers left.
-  rpc Review(ReviewRequest) returns (Outcome);
+  rpc Review(ReviewRequest) returns (ReviewResponse);
 }
 
 message PingRequest {}
 
 message PingResponse {
   string daemon_version = 1;
+  // 7 for the whole of escrow.v1 (the freeze); lower: a daemon from before it.
   uint32 protocol_version = 2;
 }
 
@@ -117,6 +114,10 @@ message ScopeRoot {
 message CloseScopeRequest {
   string scope_id = 1;
   string token = 2;
+}
+
+message CloseScopeResponse {
+  ChangeSet change_set = 1;
 }
 
 enum ChangeKind {
@@ -220,6 +221,10 @@ message GetChangeSetRequest {
   string scope_id = 1;
 }
 
+message GetChangeSetResponse {
+  ChangeSet change_set = 1;
+}
+
 enum Verdict {
   VERDICT_UNSPECIFIED = 0;
   VERDICT_COMMIT = 1;
@@ -238,6 +243,12 @@ message DecideRequest {
   bool wait = 5;
 }
 
+message DecideResponse {
+  Outcome outcome = 1;
+}
+
+// A client treats a value it does not know as not decided yet, like
+// OUTCOME_STATUS_HELD: later daemons may add review states.
 enum OutcomeStatus {
   OUTCOME_STATUS_UNSPECIFIED = 0;
   OUTCOME_STATUS_COMMITTED = 1;
@@ -298,9 +309,17 @@ message SpawnSignal {
 
 message SettleUnscopedRequest {}
 
+message SettleUnscopedResponse {
+  ChangeSet change_set = 1;
+}
+
 message AwaitDecisionRequest {
   string scope_id = 1;
   string token = 2;
+}
+
+message AwaitDecisionResponse {
+  Outcome outcome = 1;
 }
 
 // One tier's verdict on a held scope.
@@ -367,4 +386,8 @@ message ReviewRequest {
   repeated string reasons = 4;
   // A human loosens the verdict so far (recorded in the ledger).
   bool override = 5;
+}
+
+message ReviewResponse {
+  Outcome outcome = 1;
 }

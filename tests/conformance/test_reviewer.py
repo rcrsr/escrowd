@@ -81,13 +81,13 @@ def test_the_review_socket_is_private_and_separate(start_daemon):
     channel = grpc.insecure_channel(
         f"unix:{d.socket}", options=[("grpc.default_authority", "localhost")]
     )
-    stub = escrow_pb2_grpc.ReviewerStub(channel)
+    stub = escrow_pb2_grpc.ReviewerServiceStub(channel)
     assert code(lambda: stub.ListHeld(pb.ListHeldRequest(), timeout=5))[0] == (
         grpc.StatusCode.UNIMPLEMENTED
     )
     channel.close()
     with reviewer(d) as rv:
-        stub = escrow_pb2_grpc.EscrowStub(rv._channel)
+        stub = escrow_pb2_grpc.EscrowServiceStub(rv._channel)
         assert code(lambda: stub.Ping(pb.PingRequest(), timeout=5))[0] == (
             grpc.StatusCode.UNIMPLEMENTED
         )

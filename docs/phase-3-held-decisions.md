@@ -2,7 +2,7 @@
 
 Oct 5, 2026 · Andre Bremer · Draft
 
-**Status, Oct 6, 2026: 3.1 to 3.5 built**; 3.6 next. Phase 2 is done ([plan](phase-2-hardening.md), exit runs in [PR #25](https://github.com/rcrsr/escrowd/pull/25)).
+**Status, Oct 6, 2026: 3.1 to 3.6 built**; 3.7 next. The protocol is frozen at 7 ([spec](protocol.md)). Phase 2 is done ([plan](phase-2-hardening.md), exit runs in [PR #25](https://github.com/rcrsr/escrowd/pull/25)).
 
 Today an agent host blocks on a *pre*-approval: a permission prompt before a tool runs, judged on a description of the effect. Phase 3 makes escrow's decision a *post*-approval: the work runs in a scope, and independent reviewers judge the staged change set, with the client and escrowd negotiating whether the agent waits. The design is in the proposal ([Held decisions](escrowd-proposal.md#held-decisions)); a runnable model plays it ([`examples/held-decisions/model.py`](../examples/held-decisions/model.py)). Phase 3 builds it into escrowd and the Python SDK, attributes every change to the process that made it so reviewers can judge who changed what (added Oct 6, 2026), then freezes the protocol, so phase 4's TypeScript SDK and phase 7's reviewers build on a fixed v1.
 
@@ -163,6 +163,17 @@ Phase 2 changed the protocol five times (versions 2 to 6) and 3.2–3.4 change i
 - **Exec socket.** Frames are documented in the proto's header comment only. Move them to the spec with an example exchange; a TypeScript SDK runs the `escrow exec` binary as Python does (Node cannot pass file descriptors over a Unix socket), so the binary's interface (`--scope`, `--socket`, `ESCROW_SCOPE_TOKEN`, exit code 125 on an exec error) is part of the frozen surface too.
 - **Versioning.** `Ping.protocol_version` becomes 7 at the freeze and then changes only with a new package (`escrow.v2`). Additions (new fields, new calls) stay compatible under `buf breaking`'s wire rules.
 - **CI.** `buf lint` and `buf breaking --against '.git#tag=protocol-v1'` run in the Rust job; a `daemon-frozen` job fails a PR that changes `crates/escrowd/` or `proto/` while the `phase-4` label is on it.
+
+**As built (Oct 6, 2026).**
+
+- **Spec.** [`docs/protocol.md`](protocol.md): the three sockets, the scope lifecycle, each call's token and errors, the status code table, versioning and unknown values, the exec socket's frames with an example exchange, and `escrow exec`'s interface and exit codes. A conformance check fails when the spec misses a call or a typed error.
+- **Review.** The schema passes `buf lint`'s STANDARD rules with no exceptions. The services are `EscrowService` and `ReviewerService`. Every call has its own response message: `CloseScopeResponse`, `DecideResponse`, `SettleUnscopedResponse`, `GetChangeSetResponse`, `AwaitDecisionResponse` and `ReviewResponse` wrap the shared `ChangeSet` and `Outcome`, so a later version adds a field to one call's response alone. No other field changed.
+- **Errors.** One table in the spec: `NOT_FOUND`, `PERMISSION_DENIED`, `FAILED_PRECONDITION`, `INVALID_ARGUMENT`, `ABORTED` (a commit rolled back; retry), `UNAVAILABLE`, `DEADLINE_EXCEEDED`, `UNIMPLEMENTED`, then `INTERNAL`. The Python client raises a typed error per code (`escrow._errors`: `EscrowNotFoundError`, `EscrowPermissionError`, `EscrowStateError`, …), each an `EscrowRpcError` and still a `grpc.RpcError` with `code()` and `details()`, so existing callers keep working.
+- **Statuses.** The SDK maps an unknown `OutcomeStatus` to `held` and follows `AwaitDecision` until a status it knows as final; an unknown tier or change kind is `"unknown"`.
+- **Versioning.** `PROTOCOL_VERSION` is 7. CI uses buf's FILE rules, not the wire rules planned: renaming or deleting a call breaks clients over gRPC, and the WIRE rules miss it.
+- **CI.** A `Protocol` job of its own, not in the Rust job: it needs the full history and the tag, and no Rust toolchain. It runs `buf lint`, `buf format --diff --exit-code` and `buf breaking --against '.git#tag=protocol-v1'` (skipped until the tag exists), and the CI Gate requires it. buf is pinned in `mise.toml` (1.73.0, `buf.yaml` at the root); the pre-push hook lints too. `daemon-frozen.yml` is a workflow of its own, since it runs on label changes, which must not re-run or cancel CI. It fails a `phase-4` PR that changes `crates/escrowd/` or `proto/`; phase 4 adds it to the `main` ruleset's required checks.
+- **Tag.** `protocol-v1` goes on the merge commit of this sub-phase.
+- **Checks.** 4 in `tests/conformance/test_protocol.py`: each status code's typed error, a stream's typed error, unknown values, and the spec's coverage.
 
 ### 3.7 Exit runs
 

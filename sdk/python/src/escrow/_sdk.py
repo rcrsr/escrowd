@@ -52,11 +52,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from escrow._client import connect
+from escrow._errors import EscrowError
 from escrow.v1 import escrow_pb2 as pb
-
-
-class EscrowError(Exception):
-    pass
 
 
 class EscrowUnscopedError(EscrowError, PermissionError):
@@ -102,18 +99,19 @@ _KINDS = {
     pb.CHANGE_KIND_DELETE: "delete",
     pb.CHANGE_KIND_RENAME: "rename",
 }
-_STATUS = {
+# The decided statuses. Any other value, one a later daemon adds included, is not
+# decided yet: "held" (docs/protocol.md, "Unknown values").
+_DECIDED = {
     pb.OUTCOME_STATUS_COMMITTED: "committed",
     pb.OUTCOME_STATUS_DISCARDED: "discarded",
     pb.OUTCOME_STATUS_RETURNED: "returned",
     pb.OUTCOME_STATUS_CONFLICT: "conflict",
-    pb.OUTCOME_STATUS_HELD: "held",
 }
 
 
 @dataclass(frozen=True)
 class Change:
-    kind: str  # create, modify, delete, rename
+    kind: str  # create, modify, delete, rename; "unknown" for a kind added later
     path: str  # project-relative; for a rename, the destination
     from_path: str | None = None
     # Ids of the processes that made it (`ChangeSet.processes`).
@@ -143,6 +141,10 @@ class Read:
 _TIERS = {pb.TIER_SOFTWARE: "software", pb.TIER_LLM: "llm", pb.TIER_HUMAN: "human"}
 
 
+def _tiers(tiers) -> list[str]:
+    return [_TIERS.get(t, "unknown") for t in tiers]
+
+
 @dataclass(frozen=True)
 class Review:
     """The daemon's close-time review (policy `write:` and `review:`)."""
@@ -162,7 +164,7 @@ class Review:
         return cls(
             verdict="discard" if r.verdict == pb.VERDICT_DISCARD else "commit",
             reasons=list(r.reasons),
-            tiers=[_TIERS[t] for t in r.tiers],
+            tiers=_tiers(r.tiers),
             wait_required=r.wait_required,
         )
 
@@ -196,7 +198,7 @@ class ChangeSet:
         return cls(
             scope_id=cs.scope_id,
             changes=[
-                Change(_KINDS[c.kind], c.path, c.from_path or None, tuple(c.writers))
+                Change(_KINDS.get(c.kind, "unknown"), c.path, c.from_path or None, tuple(c.writers))
                 for c in cs.changes
             ],
             reads=[Read(r.path, r.decision == pb.READ_DECISION_ALLOW) for r in cs.reads],
@@ -213,7 +215,9 @@ class ChangeSet:
 
 @dataclass(frozen=True)
 class Outcome:
-    status: str  # committed, discarded, returned, conflict, held
+    # committed, discarded, returned, conflict, held (not decided yet, a status added
+    # later included)
+    status: str
     paths: list[str]  # changed paths, or the conflicting ones
     # Why: the decide callback's or the rules' reasons; after a review, each tier's
     # (`llm: …`, `human: …`).
@@ -354,12 +358,12 @@ def settle_unscoped(decide: Decide | None = None, *, wait: bool = True) -> Outco
 
 def _outcome(out: pb.Outcome, cs: ChangeSet, reasons: tuple[str, ...] = ()) -> Outcome:
     return Outcome(
-        _STATUS[out.status],
+        _DECIDED.get(out.status, "held"),
         list(out.paths),
         list(out.reasons) or list(reasons),
         cs,
         out.reopened,
-        [_TIERS[t] for t in out.tiers],
+        _tiers(out.tiers),
         out.wait,
     )
 
@@ -375,7 +379,7 @@ def _await(held: Outcome, token: str, timeout: float | None = None) -> Outcome:
     last = None
     with connect(_cfg.socket) as c:
         for last in c.await_decision(held.changes.scope_id, token=token, timeout=timeout):
-            if last.status != pb.OUTCOME_STATUS_HELD:
+            if last.status in _DECIDED:
                 break
     if last is None:
         raise EscrowError(f"scope {held.changes.scope_id}: no verdict")

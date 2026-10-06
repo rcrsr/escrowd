@@ -28,9 +28,9 @@ pub mod store;
 pub mod sys;
 pub mod views;
 
-/// Protocol version reported by `Ping`. Bumped on any incompatible change
-/// until phase 3 freezes the schema.
-pub const PROTOCOL_VERSION: u32 = 6;
+/// Protocol version reported by `Ping`: 7 since the freeze (tag `protocol-v1`),
+/// for the whole of `escrow.v1`; see `docs/protocol.md`.
+pub const PROTOCOL_VERSION: u32 = 7;
 
 pub mod proto {
     tonic::include_proto!("escrow.v1");
