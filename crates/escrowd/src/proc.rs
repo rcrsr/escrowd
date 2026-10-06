@@ -9,6 +9,12 @@
 //! exited and had its ID reused, which takes the kernel's PID allocator wrapping
 //! around `pid_max`.
 //!
+//! Exec keeps the PID and start time, so every request also compares the binary's
+//! device and inode with the cached ones (one `stat` of `/proc/<tid>/exe`). A fork
+//! (its parent's binary and arguments: not exec'd yet, or a subshell) also has its
+//! arguments read again, so a fork that execs its parent's binary is seen too. A
+//! process that execs its own binary again with new arguments keeps its old record.
+//!
 //! The chain stops before the daemon (it starts every sandbox), at PID 1, after a
 //! session leader (a host app's shell), or after `MAX_PARENTS` parents.
 //!
@@ -47,6 +53,8 @@ pub struct Info {
 pub struct Proc {
     pub info: Info,
     pub parent: Option<Arc<Proc>>,
+    /// Has its parent's binary and arguments: its arguments are checked on every request.
+    forked: bool,
 }
 
 impl Proc {
@@ -72,6 +80,24 @@ fn stat(pid: u32) -> Option<Stat> {
         session: f.get(3)?.parse().ok()?,
         start: f.get(19)?.parse().ok()?,
     })
+}
+
+fn args(pid: u32) -> Vec<String> {
+    let args = fs::read(format!("/proc/{pid}/cmdline"))
+        .unwrap_or_default()
+        .split(|b| *b == 0)
+        .map(|a| String::from_utf8_lossy(a).into_owned())
+        .collect::<Vec<_>>();
+    match args.split_last() {
+        Some((last, rest)) if last.is_empty() => rest.to_vec(), // the trailing NUL
+        _ => args,
+    }
+}
+
+/// Whether task `id` still runs what `p` recorded (no exec since); None if it is gone.
+fn current(id: u32, p: &Proc) -> Option<bool> {
+    let m = fs::metadata(format!("/proc/{id}/exe")).ok()?;
+    Some((m.dev(), m.ino()) == (p.info.dev, p.info.ino) && (!p.forked || args(id) == p.info.args))
 }
 
 /// The process (thread group) a thread belongs to.
@@ -163,13 +189,19 @@ impl Procs {
         if tid == 0 {
             return None;
         }
-        if let Some(e) = self.tasks.lock().unwrap().get(&tid)
-            && e.checked.elapsed() < RECHECK
+        let hit = self
+            .tasks
+            .lock()
+            .unwrap()
+            .get(&tid)
+            .map(|e| (e.proc.clone(), e.checked.elapsed() < RECHECK));
+        let st = match hit {
+            Some((p, true)) if current(tid, &p)? => return Some((p, Vec::new())),
+            _ => stat(tid)?,
+        };
+        if let Some(p) = cached(&self.tasks, tid, st.start)
+            && current(tid, &p)?
         {
-            return Some((e.proc.clone(), Vec::new()));
-        }
-        let st = stat(tid)?;
-        if let Some(p) = cached(&self.tasks, tid, st.start) {
             return Some((p, Vec::new()));
         }
         let pid = tgid(tid)?;
@@ -185,37 +217,36 @@ impl Procs {
             return None;
         }
         let st = stat(pid)?;
-        if let Some(p) = cached(&self.procs, pid, st.start) {
+        if let Some(p) = cached(&self.procs, pid, st.start)
+            && current(pid, &p)?
+        {
             return Some(p);
         }
         let exe = format!("/proc/{pid}/exe");
         let program = fs::read_link(&exe).ok()?; // none for a kernel thread
-        let bin = fs::metadata(&exe).ok();
-        let args = fs::read(format!("/proc/{pid}/cmdline"))
-            .unwrap_or_default()
-            .split(|b| *b == 0)
-            .map(|a| String::from_utf8_lossy(a).into_owned())
-            .collect::<Vec<_>>();
-        let args = match args.split_last() {
-            Some((last, rest)) if last.is_empty() => rest.to_vec(), // the trailing NUL
-            _ => args,
-        };
+        let bin = fs::metadata(&exe).ok()?;
+        let args = args(pid);
         let parent = if st.session == pid || parents == 0 {
             None
         } else {
             self.process(st.ppid, parents - 1, fresh)
         };
+        let (dev, ino) = (bin.dev(), bin.ino());
+        let forked = parent
+            .as_ref()
+            .is_some_and(|p| (p.info.dev, p.info.ino) == (dev, ino) && p.info.args == args);
         let p = Arc::new(Proc {
             info: Info {
                 id: new_id(),
                 pid,
                 program,
-                dev: bin.as_ref().map_or(0, |m| m.dev()),
-                ino: bin.as_ref().map_or(0, |m| m.ino()),
+                dev,
+                ino,
                 args,
                 parent: parent.as_ref().map_or(0, |p| p.info.id),
             },
             parent,
+            forked,
         });
         insert(&self.procs, pid, st.start, &p);
         fresh.push(p.clone());
@@ -234,14 +265,14 @@ mod tests {
             ..Procs::default()
         };
         let mut child = std::process::Command::new("sleep").arg("5").spawn().unwrap();
-        let (p, fresh) = procs.of(child.id()).unwrap();
+        let (p, fresh) = after_exec(&procs, child.id(), "sleep");
         assert_eq!(p.info.pid, child.id());
         assert!(p.info.program.ends_with("sleep"), "{:?}", p.info.program);
         assert_eq!(p.info.args, ["sleep", "5"]);
         let me = p.parent.as_ref().unwrap();
         assert_eq!(me.info.pid, std::process::id());
         assert_eq!(p.info.parent, me.info.id);
-        assert!(fresh.len() >= 2 && Arc::ptr_eq(fresh.last().unwrap(), &p));
+        assert!(Arc::ptr_eq(fresh.last().unwrap(), &p));
         // Cached: the same process, nothing new.
         let (again, fresh) = procs.of(child.id()).unwrap();
         assert!(Arc::ptr_eq(&again, &p) && fresh.is_empty());
@@ -251,12 +282,50 @@ mod tests {
         assert!(procs.of(child.id()).is_none());
     }
 
+    /// The process of `pid` once `program` is its `argv[0]` (a spawned child may not
+    /// have exec'd yet).
+    fn after_exec(procs: &Procs, pid: u32, program: &str) -> (Arc<Proc>, Vec<Arc<Proc>>) {
+        for _ in 0..500 {
+            let (p, fresh) = procs.of(pid).unwrap();
+            if p.info.args.first().is_some_and(|a| a == program) {
+                return (p, fresh);
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        panic!("{pid} never ran {program}");
+    }
+
+    #[test]
+    fn an_exec_is_a_new_process() {
+        use std::io::Write;
+        let procs = Procs {
+            daemon: 0,
+            ..Procs::default()
+        };
+        let mut child = std::process::Command::new("sh")
+            .args(["-c", "read x; exec sleep 5"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let sh = after_exec(&procs, child.id(), "sh").0;
+        assert_eq!(sh.info.args, ["sh", "-c", "read x; exec sleep 5"]);
+        child.stdin.as_mut().unwrap().write_all(b"\n").unwrap();
+        let sleep = after_exec(&procs, child.id(), "sleep").0;
+        assert_eq!(
+            (sleep.info.pid, &sleep.info.args[..]),
+            (sh.info.pid, &["sleep".to_string(), "5".to_string()][..])
+        );
+        assert_ne!(sleep.info.id, sh.info.id);
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
     #[test]
     fn stops_before_the_daemon() {
         let procs = Procs::default(); // this test process plays the daemon
         let mut child = std::process::Command::new("sleep").arg("5").spawn().unwrap();
-        let (p, fresh) = procs.of(child.id()).unwrap();
-        assert!(p.parent.is_none() && fresh.len() == 1);
+        let (p, fresh) = after_exec(&procs, child.id(), "sleep");
+        assert!(p.parent.is_none() && fresh.len() <= 1);
         assert!(procs.of(std::process::id()).is_none());
         child.kill().unwrap();
         child.wait().unwrap();

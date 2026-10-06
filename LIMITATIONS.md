@@ -25,8 +25,8 @@ Status as of Oct 6, 2026: phase 3, after sub-phase 3.3.
 
 | Limit | Status |
 | --- | --- |
-| A process's arguments are what it says about itself: any process can rewrite its own `argv`. A script reports its interpreter as its program (`/usr/bin/dash`, not the script). | By design (3.3); `write.only_by` matches the binary's device and inode, which the kernel set. |
-| A write through a file descriptor counts toward the process that opened the file: a descriptor inherited or passed, an `mmap` write and the kernel's writeback all name the opener. | By design, decided Oct 6, 2026: no per-write cost, and the writeback cache keeps its speed. |
+| A process's arguments are what it says about itself: any process can rewrite its own `argv`. A script reports its interpreter as its program (`/usr/bin/dash`, not the script). A process that execs its own binary again with new arguments keeps its first record. | By design (3.3); `write.only_by` matches the binary's device and inode, which the kernel set. |
+| A write through a file descriptor counts toward the process that opened the file: a descriptor inherited or passed, an `mmap` write and the kernel's writeback all name the opener. The process that writes and closes it also shows, since the kernel sends the file's times in its name. | By design, decided Oct 6, 2026: no per-write cost, and the writeback cache keeps its speed. |
 | In-process SDK IO names the host process: two tool calls in one host differ only by their scopes' labels. | By design (3.3). |
 | Reads, lookups and listings name no process; only changes do (create, open for writing, mkdir, symlink, link, rename, unlink, rmdir, setattr). | By design (3.3): attribution costs one `/proc` read per change, none per read. |
 | The parent chain stops before the daemon, after a session leader or after 16 parents. A program's path is as its own mount namespace shows it (a sandboxed binary in the project: its project path). | By design (3.3). |

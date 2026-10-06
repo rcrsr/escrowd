@@ -69,6 +69,23 @@ def test_a_sandboxed_command_is_the_writer(daemon):
     assert Path(ancestors[-1].program).name == "bwrap"
 
 
+def test_an_exec_starts_a_new_writer(daemon):
+    """The shell opens `out.txt`, then execs cp in the same process: one PID, two
+    programs, each with its own changes."""
+    d = daemon
+    (d.project / "a.txt").write_text("a\n")
+    with client(d) as c:
+        s = c.open_scope().scope_id
+        r = d.exec(s, "sh", "-c", "exec 3>out.txt; exec cp a.txt b.txt")
+        assert r.returncode == 0, r.stderr
+        cs = c.close_scope(s)
+    (shell,) = writers(cs, "out.txt")
+    (cp,) = writers(cs, "b.txt")
+    assert (shell.program, cp.program) == (real("sh"), real("cp"))
+    assert cp.args == ["cp", "a.txt", "b.txt"]
+    assert shell.pid == cp.pid and shell.id != cp.id
+
+
 @pytest.mark.skipif(shutil.which("git") is None, reason="git not installed")
 def test_git_commit_is_attributed_to_git(daemon):
     """Exit criterion 2: `.git/` changes name git and its arguments, started by the shell."""
@@ -79,12 +96,12 @@ def test_git_commit_is_attributed_to_git(daemon):
         r = d.exec(s, "sh", "-c", script, env={"HOME": None, "GIT_CONFIG_NOSYSTEM": "1"})
         assert r.returncode == 0, r.stderr
         cs = c.close_scope(s)
-    gits = {p.program for p in cs.processes if Path(p.program).name == "git"}
+    gits = {p.program for p in cs.processes if p.program == real("git")}
     assert gits == {real("git")}
     commit = [p for c in cs.changes if c.path.startswith(".git/") for p in writers(cs, c.path)]
     args = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty"]
     assert args + ["-m", "m"] in [p.args for p in commit]
-    assert all(Path(p.program).name == "git" for p in commit)
+    assert all(p.program == real("git") for p in commit)
     assert all(chain(cs, p)[1].args[:2] == ["sh", "-c"] for p in commit)
 
 
@@ -108,11 +125,12 @@ def test_a_rename_carries_the_writers_of_its_source(daemon):
         r = d.exec(s, "sh", "-c", "mv tmp final; mv old.txt new.txt")
         assert r.returncode == 0, r.stderr
         cs = c.close_scope(s)
-    progs = lambda path: sorted(Path(p.program).name for p in writers(cs, path))  # noqa: E731
-    assert progs("final") == sorted([Path(sys.executable).resolve().name, "mv"])
+    progs = lambda path: sorted(p.program for p in writers(cs, path))  # noqa: E731
+    mv = real("mv")  # a symlink on some hosts (gnumv on Ubuntu 26.04)
+    assert progs("final") == sorted([os.path.realpath(sys.executable), mv])
     kinds = {ch.path: (ch.kind, ch.from_path) for ch in cs.changes}
     assert kinds["new.txt"] == (pb.CHANGE_KIND_RENAME, "old.txt")
-    assert progs("new.txt") == ["mv"]
+    assert progs("new.txt") == [mv]
 
 
 def test_the_ledger_names_each_process_once(daemon):
