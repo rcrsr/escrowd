@@ -2,15 +2,12 @@ name: Daemon frozen
 
 # Phase 4 builds on the frozen daemon and protocol: a PR labeled `phase-4` must not
 # change crates/escrowd/ or proto/. Its own workflow because it runs on label
-# changes too, which must not re-run or cancel CI.
+# changes too, which must not re-run or cancel CI. No concurrency group: a push and
+# a label change arrive together, and a cancelled run reads as a failed check.
 
 on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
-
-concurrency:
-  group: daemon-frozen-${{ github.ref }}
-  cancel-in-progress: true
 
 permissions:
   contents: read
