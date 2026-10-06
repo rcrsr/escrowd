@@ -179,10 +179,51 @@ def snapshot() -> None:
     out["old"] = outcome(old)
 
 
+def held() -> None:
+    """Held decisions, 1.1 to 1.3 (a policy sends `h/` to reviewers, `h/auth/` to a
+    human; the suite reviews): the opener's commit is held, its own token cannot
+    commit it, and the session's next scope opens only after the verdict."""
+    with escrow.scope("guarded", session="agent", wait=False) as s:
+        owns(s, "h")
+        os.makedirs(P / "h" / "auth")
+        write("h/auth/login.py", "guarded")
+    out["held"] = outcome(s) | {"tiers": s.outcome.tiers, "wait": s.outcome.wait}
+    with escrow.connect() as c:
+        try:
+            c.commit(s.id, token=s._scope_token)
+            out["self_commit"] = "committed"
+        except Exception as e:  # grpc.RpcError
+            out["self_commit"] = e.code().name  # ty: ignore[unresolved-attribute]
+    # A required wait: this open waits for the verdict, so it reads the committed file.
+    with escrow.scope("next", session="agent") as n:
+        owns(n, "h")
+        out["next_reads"] = (P / "h" / "auth" / "login.py").read_text()
+    out["next"] = outcome(n)
+    s.wait_decided()
+    out["guarded"] = outcome(s)
+
+
+def held_continue() -> None:
+    """Held decisions, 1.4 and 1.5 (`n/` is reviewed, the wait optional): the agent
+    continues past a held scope, so its next scope edits a stale snapshot and that
+    edit conflicts; the reviewer of the second sees the first."""
+    with escrow.scope("turn1", session="agent", wait=False) as a:
+        owns(a, "n")
+        write("n/guide.md", "turn1")
+    with escrow.scope("turn2", session="agent", wait=False) as b:
+        owns(b, "n")
+        out["turn2_sees"] = (P / "n" / "guide.md").read_text()
+        write("n/guide.md", "turn2")
+    out["held"] = [a.outcome.status, b.outcome.status]  # ty: ignore[possibly-missing-attribute]
+    a.wait_decided()
+    b.wait_decided()
+    out["turn1"], out["turn2"] = outcome(a), outcome(b)
+
+
 CHECKS = {
     f.__name__.replace("_", "-"): f
     for f in (escrowed, child, concurrent, discarded, atomic, conflict, denied_read)
-    + (unscoped, snapshot)
+    + (unscoped, snapshot, held, held_continue)
 }
 
 if __name__ == "__main__":

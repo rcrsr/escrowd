@@ -2,7 +2,7 @@
 
 Every known limit of escrowd as built, in one place. Each entry says where it is tracked. Update this file when a limit is found or lifted; the plans keep the detail.
 
-Status as of Oct 6, 2026: phase 3, after sub-phase 3.4.
+Status as of Oct 6, 2026: phase 3, after sub-phase 3.5.
 
 ## Capture
 
@@ -89,6 +89,7 @@ Status as of Oct 6, 2026: phase 3, after sub-phase 3.4.
 | A scope's history entry holds its diff (up to `diff.max_bytes`), so `history.sqlite` grows with the diffs of up to 100 decisions per session. | By design (3.4); decisions of scopes without a session that were never held are not kept. |
 | While the unscoped scope (`implicit` mode) is held, IO outside scopes fails as on any closed scope, until its verdict. | By design (3.2): `SettleUnscoped` meets the same review rules, decided Oct 5, 2026. |
 | A session's next `OpenScope` waits behind a held scope only up to the client's deadline (`grpc-timeout`); a client without one waits until the verdict. | By design (3.2). |
+| The Python SDK waits for a held verdict with no deadline: `escrow.scope(..., wait=True)` and a session's next open block until reviewers decide. `s.wait_decided(timeout=…)` and `await s.decided(timeout=…)` take one. | By design (3.5): the agent's turn is the reviewers' to end. |
 | A `deny` rule lets lookups pass: a denied file's name, size and times are visible to `stat`, its contents and listings are not. | By design, decided Oct 5, 2026 (listed paths inside a denied directory must stay reachable). |
 | A scope's view of a root the policy stops serving is dropped (with its changes) at the next daemon start. | By design (2.4). |
 | `escrow exec` passes argv, cwd and environment as UTF-8 (lossy). | Carried since 1.5. |

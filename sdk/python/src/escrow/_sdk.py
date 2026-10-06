@@ -15,6 +15,12 @@ and a write on a file opened in a scope that has closed raises `EscrowStaleHandl
 both are `OSError`s, as before. At close, `s.outcome.unscoped` counts the changes that
 reached the unscoped mode while the scope was open (a warning: IO that escaped it).
 
+Held decisions: a commit of a change set the policy's `review:` rules send to reviewers
+is held. `escrow.scope(..., wait=True)` (the default) then returns after the reviewers'
+verdict; `wait=False` returns with `s.outcome.status == "held"`, and `s.wait_decided()`
+or `await s.decided()` gives the verdict later. A rule can require the wait: the
+scope's session (`session=`) then opens no new scope until the verdict.
+
 Each scope holds its token (from the daemon, kept on the `Scope` object only): closing,
 deciding and `escrow exec` in the scope send it, so code that learns a scope id from a
 path cannot decide that scope. `escrow exec` gets it in `ESCROW_SCOPE_TOKEN`, which the
@@ -28,6 +34,7 @@ stderr passed to children.
 
 from __future__ import annotations
 
+import asyncio
 import builtins
 import contextvars
 import errno
@@ -208,11 +215,18 @@ class ChangeSet:
 class Outcome:
     status: str  # committed, discarded, returned, conflict, held
     paths: list[str]  # changed paths, or the conflicting ones
+    # Why: the decide callback's or the rules' reasons; after a review, each tier's
+    # (`llm: …`, `human: …`).
     reasons: list[str]
     changes: ChangeSet
     # The scope is open again with its changes (`resume=` it): status returned, or a
     # conflict under the policy's `conflict.verdict: return`.
     reopened: bool = False
+    # Status held: the tiers still to review, cheapest first ("llm", "human").
+    tiers: list[str] = field(default_factory=list)
+    # Status held: the session's next scope waits for the verdict (a rule requires it,
+    # or the scope asked to wait).
+    wait: bool = False
 
     @property
     def reads(self) -> list[Read]:
@@ -326,21 +340,46 @@ def init(
     _install(project, socket, os.environ.get("ESCROW_VIEWS"), unscoped)
 
 
-def settle_unscoped(decide: Decide | None = None) -> Outcome:
-    """Close the implicit default scope and apply `decide` (default: commit) to it."""
+def settle_unscoped(decide: Decide | None = None, *, wait: bool = True) -> Outcome:
+    """Close the implicit default scope and apply `decide` (default: commit) to it; a
+    held change set is waited for unless `wait` is False."""
     with connect(_cfg.socket) as c:
         cs = ChangeSet.from_proto(c.settle_unscoped())
         d = decide(cs) if decide else None
         if inspect.isawaitable(d):
             raise EscrowError("settle_unscoped: decide must be synchronous")
-        return _apply(c, cs, d, "")
+        out = _apply(c, cs, d, "", wait)
+    return _await(out, "") if wait and out.status == "held" else out
 
 
-def _apply(c, cs: ChangeSet, d: Decision | None, token: str) -> Outcome:
+def _outcome(out: pb.Outcome, cs: ChangeSet, reasons: tuple[str, ...] = ()) -> Outcome:
+    return Outcome(
+        _STATUS[out.status],
+        list(out.paths),
+        list(out.reasons) or list(reasons),
+        cs,
+        out.reopened,
+        [_TIERS[t] for t in out.tiers],
+        out.wait,
+    )
+
+
+def _apply(c, cs: ChangeSet, d: Decision | None, token: str, wait: bool) -> Outcome:
     d = d or commit()
-    out = c.decide(cs.scope_id, d.verdict, reasons=list(d.reasons), token=token)
-    reasons = list(out.reasons) or list(d.reasons)
-    return Outcome(_STATUS[out.status], list(out.paths), reasons, cs, out.reopened)
+    out = c.decide(cs.scope_id, d.verdict, reasons=list(d.reasons), token=token, wait=wait)
+    return _outcome(out, cs, d.reasons)
+
+
+def _await(held: Outcome, token: str, timeout: float | None = None) -> Outcome:
+    """Follow a held scope to its verdict (the daemon's AwaitDecision stream)."""
+    last = None
+    with connect(_cfg.socket) as c:
+        for last in c.await_decision(held.changes.scope_id, token=token, timeout=timeout):
+            if last.status != pb.OUTCOME_STATUS_HELD:
+                break
+    if last is None:
+        raise EscrowError(f"scope {held.changes.scope_id}: no verdict")
+    return _outcome(last, held.changes)
 
 
 # ---- scopes ----
@@ -350,7 +389,14 @@ class Scope:
     """`with escrow.scope(...) as s:` or `async with …`: IO in the body is escrowed; at
     exit the scope's open files are fsynced, the scope closes, `decide` (default: commit)
     gets the change set and `s.outcome` holds the result. An exception in the body
-    discards the scope and propagates."""
+    discards the scope and propagates.
+
+    `decide`'s verdict is a proposal: the policy's rules only tighten it, and a commit
+    of a change set that needs reviewers is held. With `wait` (the default) the exit
+    returns after their verdict; without, `s.outcome.status` is "held" and
+    `s.wait_decided()` or `await s.decided()` gives the verdict. `session` orders an
+    agent's scopes: a scope of the session does not open while another is held with a
+    wait (`s.outcome.wait`)."""
 
     def __init__(
         self,
@@ -359,10 +405,14 @@ class Scope:
         decide: Decide | None = None,
         labels: dict[str, str] | None = None,
         resume: Scope | None = None,
+        session: str | None = None,
+        wait: bool = True,
     ):
         if not _cfg.socket:
             raise EscrowError("call escrow.init() first")
         self.name, self.labels, self.decide = name, labels or {}, decide
+        self.session = session if session is not None else resume.session if resume else ""
+        self.wait = wait
         self.id = resume.id if resume else ""
         # The scope's capability; never put in a path, a label or a child's environment.
         self._scope_token = resume._scope_token if resume else ""
@@ -377,7 +427,7 @@ class Scope:
     def _enter(self) -> Scope:
         if not self.id:
             with connect(_cfg.socket) as c:
-                s = c.open_scope(self.name, self.labels)
+                s = c.open_scope(self.name, self.labels, timeout=None, session=self.session)
             self.id = s.scope_id
             self._scope_token = s.token
             self.root = _view(s.root)
@@ -403,15 +453,27 @@ class Scope:
             )
         return cs
 
-    def _finish(self, cs: ChangeSet, d: Decision | None) -> None:
-        # The working directory is per process: once decided, move it out of the scope's
-        # views (gone after a commit or a discard) to the same path in the project.
+    def _propose(self, cs: ChangeSet, d: Decision | None) -> None:
+        # The working directory is per process: once decided (or held: closed), move it
+        # out of the scope's views to the same path in the project.
         cwd = _cfg.orig["os.getcwd"]()
         back = _unmap_from(self, cwd)
         with connect(_cfg.socket) as c:
-            self.outcome = _apply(c, cs, d, self._scope_token)
+            self.outcome = _apply(c, cs, d, self._scope_token, self.wait)
         if back != cwd:
             _chdir_nearest(back)
+
+    def wait_decided(self, timeout: float | None = None) -> Outcome:
+        """The scope's verdict: at once unless it is held, else after its reviewers."""
+        if self.outcome is None:
+            raise EscrowError(f"scope {self.id} is not decided: it is still open")
+        if self.outcome.status == "held":
+            self.outcome = _await(self.outcome, self._scope_token, timeout)
+        return self.outcome
+
+    async def decided(self, timeout: float | None = None) -> Outcome:
+        """`wait_decided` without blocking the event loop."""
+        return await asyncio.to_thread(self.wait_decided, timeout)
 
     def __enter__(self) -> Scope:
         return self._enter()
@@ -419,11 +481,13 @@ class Scope:
     def __exit__(self, exc_type, exc, tb) -> None:
         cs = self._close()
         if exc is not None:
-            return self._finish(cs, discard(f"{exc_type.__name__}: {exc}"))
+            return self._propose(cs, discard(f"{exc_type.__name__}: {exc}"))
         d = self.decide(cs) if self.decide else None
         if inspect.isawaitable(d):
             raise EscrowError("a sync scope needs a sync decide; use `async with`")
-        self._finish(cs, d)
+        self._propose(cs, d)
+        if self.wait:
+            self.wait_decided()
 
     async def __aenter__(self) -> Scope:
         return self._enter()
@@ -431,11 +495,13 @@ class Scope:
     async def __aexit__(self, exc_type, exc, tb) -> None:
         cs = self._close()
         if exc is not None:
-            return self._finish(cs, discard(f"{exc_type.__name__}: {exc}"))
+            return self._propose(cs, discard(f"{exc_type.__name__}: {exc}"))
         d = self.decide(cs) if self.decide else None
         if inspect.isawaitable(d):
             d = await d
-        self._finish(cs, d)
+        self._propose(cs, d)
+        if self.wait:
+            await self.decided()
 
     def flush(self) -> None:
         """Push every dirty page of the scope to the daemon: fsync its open files

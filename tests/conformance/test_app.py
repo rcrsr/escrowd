@@ -13,11 +13,16 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
+import grpc
 import pytest
 from conftest import ROOT, write_policy
 from scenario import fingerprint, tree
+
+import escrow
+from escrow.v1 import escrow_pb2 as pb
 
 APP = ROOT / "examples" / "test-app" / "app.py"
 sys.path.insert(0, str(APP.parent))
@@ -70,7 +75,8 @@ class App:
         (work / "run").mkdir()
         self.policy = write_policy(work, deny_read=(".env",))
 
-    def run(self, check: str, mode: str = "deny", env: dict | None = None) -> dict:
+    def run(self, check: str, mode: str = "deny", env: dict | None = None, reviewer=None) -> dict:
+        """`reviewer(rv)`, if given, is called on the review socket until the app exits."""
         clean = {k: v for k, v in os.environ.items() if not k.startswith("ESCROW")}
         clean |= {
             "ESCROW_EXE": str(self.bin),
@@ -79,11 +85,42 @@ class App:
         }
         argv = [sys.executable, APP, self.project, mode, self.policy, check]
         env = clean | (env or {})
-        r = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=60)
-        assert r.returncode == 0, r.stderr
-        out = json.loads(r.stdout.strip().splitlines()[-1])
+        if reviewer is None:
+            r = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=60)
+            stdout, stderr, code = r.stdout, r.stderr, r.returncode
+        else:
+            stdout, stderr, code = self._reviewed(argv, env, reviewer)
+        assert code == 0, stderr
+        out = json.loads(stdout.strip().splitlines()[-1])
         assert misattributed(self.ledger, out["scopes"]) == [], "misattributed ledger entries"
         return out
+
+    def _reviewed(self, argv, env, reviewer):
+        p = subprocess.Popen(
+            argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+        )
+        deadline = time.monotonic() + 60
+        rv = None
+        try:
+            while p.poll() is None and time.monotonic() < deadline:
+                if rv is None:
+                    socks = list((self.work / "run" / "escrowd").glob("*/escrow.sock.review"))
+                    if socks:
+                        rv = escrow.Reviewer(str(socks[0]))
+                if rv is not None:
+                    try:
+                        reviewer(rv)
+                    except grpc.RpcError as e:
+                        if e.code() != grpc.StatusCode.UNAVAILABLE:  # the app exited
+                            raise
+                time.sleep(0.05)
+        finally:
+            if rv is not None:
+                rv.close()
+            if p.poll() is None:
+                p.kill()
+        stdout, stderr = p.communicate()
+        return stdout, stderr, p.returncode
 
     @property
     def ledger(self) -> list[str]:
@@ -235,3 +272,72 @@ def test_8_snapshot_at_open(app):
     assert out["listing"] == ["f.txt"]
     assert out["old"] == {"status": "committed", "paths": [], "reasons": []}
     assert (app.project / "s" / "f.txt").read_text() == "new:s/f.txt\n"
+
+
+REVIEW = """review:
+  - {paths: ['h/auth/**'], tier: human}
+  - {paths: ['h/**'], tier: llm}
+  - {paths: ['n/**'], tier: llm, wait: optional}
+"""
+
+
+def scripted(plan: dict[str, list[tuple]], seen: dict):
+    """A reviewer that gives each held scope, by name, its planned verdicts in order
+    (tier, verdict, reasons, override), oldest hold first; `seen[name]` keeps what
+    GetHeld showed before the first."""
+
+    def review(rv: escrow.Reviewer) -> None:
+        for h in rv.list_held():
+            steps = plan.get(h.name)
+            if not steps:
+                continue
+            seen.setdefault(h.name, rv.get_held(h.scope_id))
+            tier, verdict, reasons, override = steps.pop(0)
+            rv.review(h.scope_id, tier, verdict, reasons=reasons, override=override)
+
+    return review
+
+
+def test_held_1_1_to_1_3_wait_independence_monotonic(app):
+    """Exit criteria 1.1, 1.2 and 1.3 through the SDK."""
+    app.policy = write_policy(app.work, deny_read=(".env",), extra=REVIEW)
+    seen: dict = {}
+    plan = {
+        "guarded": [
+            (pb.TIER_LLM, pb.VERDICT_DISCARD, ["checks nothing"], False),
+            (pb.TIER_HUMAN, pb.VERDICT_COMMIT, ["a fixture"], True),
+        ]
+    }
+    out = app.run("held", reviewer=scripted(plan, seen))
+    assert out["held"]["status"] == "held"
+    assert (out["held"]["tiers"], out["held"]["wait"]) == (["llm", "human"], True)
+    assert out["self_commit"] == "PERMISSION_DENIED"  # 1.2
+    assert out["next_reads"] == "guarded:h/auth/login.py\n"  # 1.1: opened after the verdict
+    assert out["guarded"] == {
+        "status": "committed",
+        "paths": ["h", "h/auth", "h/auth/login.py"],
+        "reasons": ["llm: checks nothing", "human: a fixture"],
+    }
+    assert out["next"]["status"] == "committed"
+    guarded = seen["guarded"].held.scope_id
+    ops = [x.split()[2] for x in app.ledger if f" scope={guarded} " in x]
+    assert ops[-4:] == ["op=review-llm", "op=override", "op=review-human", "op=decide"]  # 1.3
+
+
+def test_held_1_4_and_1_5_continue_conflicts_history(app):
+    """Exit criteria 1.4 and 1.5 through the SDK."""
+    app.policy = write_policy(app.work, deny_read=(".env",), extra=REVIEW)
+    (app.project / "n").mkdir()
+    (app.project / "n" / "guide.md").write_text("base\n")
+    seen: dict = {}
+    commit = (pb.TIER_LLM, pb.VERDICT_COMMIT, [], False)
+    out = app.run("held-continue", reviewer=scripted({"turn1": [commit], "turn2": [commit]}, seen))
+    assert out["held"] == ["held", "held"]
+    assert out["turn2_sees"] == "base\n"  # its snapshot lacks turn 1
+    assert out["turn1"]["status"] == "committed"
+    assert (out["turn2"]["status"], out["turn2"]["paths"]) == ("conflict", ["n/guide.md"])  # 1.4
+    assert (app.project / "n" / "guide.md").read_text() == "turn1:n/guide.md\n"
+    # 1.5: turn 2's reviewer saw turn 1's change set and verdict.
+    (h,) = seen["turn2"].history
+    assert h.name == "turn1" and h.outcome.status == pb.OUTCOME_STATUS_COMMITTED
+    assert "+turn1:n/guide.md" in h.change_set.diff

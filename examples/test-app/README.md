@@ -12,7 +12,9 @@ python app.py PROJECT MODE POLICY CHECK
 mode; an agent host should use `deny`, where a write outside a scope raises
 `EscrowUnscopedError` instead of reaching the project. CHECK is one of
 `escrowed`, `child`, `concurrent`, `discarded`, `atomic`, `conflict`, `denied-read`,
-`unscoped` and `snapshot`. The app prints one JSON object: what it saw, each scope's
+`unscoped` and `snapshot`, plus phase 3's `held` and `held-continue` (held decisions,
+with a policy that sends `h/` and `n/` to reviewers; the suite reviews on the review
+socket while the app runs). The app prints one JSON object: what it saw, each scope's
 outcome and, under `scopes`, the path prefixes each scope id may touch.
 
 `tests/conformance/test_app.py` seeds the project, runs each check and fails on any ledger

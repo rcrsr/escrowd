@@ -41,11 +41,11 @@ class Client:
         self,
         name: str = "",
         labels: dict[str, str] | None = None,
-        timeout: float = 5.0,
+        timeout: float | None = 5.0,
         session: str = "",
     ) -> escrow_pb2.OpenScopeResponse:
         """In a `session` with a scope held with a wait, the call waits for its verdict
-        up to `timeout`, then fails with FAILED_PRECONDITION."""
+        up to `timeout` (None: no limit), then fails with FAILED_PRECONDITION."""
         req = escrow_pb2.OpenScopeRequest(name=name, labels=labels or {}, session=session)
         resp = self._stub.OpenScope(req, timeout=timeout)
         self.tokens[resp.scope_id] = resp.token
