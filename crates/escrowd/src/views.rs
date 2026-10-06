@@ -32,12 +32,13 @@ use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuar
 use fuser::{Errno, FileType};
 use rustix::fs::{OFlags, Stat};
 
-use crate::changeset::{self, ChangeSet};
+use crate::changeset::{self, ChangeSet, Kind};
 use crate::commit::{Commits, Lowers, Outcome};
 use crate::diff;
 use crate::gate::Gate;
 use crate::ledger::Ledger;
 use crate::policy::{ConflictRules, ConflictVerdict};
+use crate::review;
 use crate::roots::{self, Access, PROJECT, Rules};
 use crate::snapshot::Base;
 use crate::store::{ScopeState, ScopeStore, VersionKind, moved};
@@ -67,6 +68,16 @@ pub struct Opened {
 fn token_sha256(token: &str) -> String {
     use sha2::{Digest, Sha256};
     diff::hex(&Sha256::digest(token.as_bytes()))
+}
+
+/// `rel` in `dir` opened for reading if it is a regular file; None for anything else.
+fn regular_file(dir: std::os::fd::BorrowedFd, rel: &Path) -> io::Result<Option<File>> {
+    let f = match sys::open(dir, rel, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK, 0) {
+        Ok(f) => f,
+        Err(e) if matches!(e.raw_os_error(), Some(libc::ELOOP | libc::ENOENT | libc::ENXIO)) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    Ok(f.metadata()?.is_file().then_some(f))
 }
 
 pub fn errno(e: io::Error) -> Errno {
@@ -306,6 +317,7 @@ pub struct Views {
     commits: Commits,
     unscoped: Unscoped,
     conflict: ConflictRules,
+    review: review::Rules,
     notifier: std::sync::OnceLock<fuser::Notifier>,
     scopes: RwLock<HashMap<String, Arc<ScopeHandle>>>,
     next_idx: Mutex<u64>,
@@ -329,6 +341,7 @@ impl Views {
         gate: Gate,
         unscoped: Unscoped,
         conflict: ConflictRules,
+        review: review::Rules,
     ) -> io::Result<Self> {
         let scopes_dir = state_dir.join("scopes");
         fs::create_dir_all(&scopes_dir)?;
@@ -366,6 +379,7 @@ impl Views {
             commits,
             unscoped,
             conflict,
+            review,
             notifier: std::sync::OnceLock::new(),
             scopes: RwLock::new(HashMap::new()),
             next_idx: Mutex::new(0),
@@ -607,6 +621,7 @@ impl Views {
             reads: Vec::new(),
             labels: HashMap::new(),
             unscoped: 0,
+            review: None,
         };
         for h in hs {
             let cs = changeset::build(&self.base(h), h)?;
@@ -623,10 +638,58 @@ impl Views {
         Ok(out)
     }
 
-    /// The change set of a closed scope; an open scope is an error (InvalidInput).
+    /// The change set of a closed scope, with its review; an open scope is an error
+    /// (InvalidInput).
     pub fn closed_change_set(&self, id: &str) -> io::Result<ChangeSet> {
         let hs = self.closed_handles(id)?;
-        self.change_set(&hs)
+        let mut cs = self.change_set(&hs)?;
+        cs.review = Some(self.review(id, &hs, &cs, false)?);
+        Ok(cs)
+    }
+
+    /// Whether the policy has `review:` or `write:` rules.
+    pub fn reviews(&self) -> bool {
+        !self.review.is_empty()
+    }
+
+    /// Run the software tier's write rules over `cs` and find the tiers above it that
+    /// `cs` needs; `log`: write each broken rule to the ledger.
+    fn review(&self, id: &str, hs: &[Arc<ScopeHandle>], cs: &ChangeSet, log: bool) -> io::Result<review::Review> {
+        let mut hits = Vec::new();
+        let mut shown = Vec::new();
+        for c in &cs.changes {
+            let path = self.shown(c.root, &c.path);
+            let from = c.from.as_deref().map(|f| self.shown(c.root, f));
+            if let Some(p) = std::iter::once(&path).chain(&from).find(|p| self.review.denied(p)) {
+                hits.push(review::Hit {
+                    path: p.clone(),
+                    content: None,
+                });
+            } else if c.kind != Kind::Delete
+                && self.review.checks_content()
+                && let Some(h) = hs.iter().find(|h| h.root == c.root)
+                && let Some(f) = regular_file(h.upper.as_fd(), &c.path)?
+                && let Some(found) = self.review.forbidden_content(f)?
+            {
+                hits.push(review::Hit {
+                    path: path.clone(),
+                    content: Some(found.to_string()),
+                });
+            }
+            shown.push(path);
+            shown.extend(from);
+        }
+        if log {
+            for hit in &hits {
+                let op = if hit.content.is_some() {
+                    "write-content"
+                } else {
+                    "write-deny"
+                };
+                self.ledger.append(id, op, &hit.path, None, "deny");
+            }
+        }
+        Ok(self.review.review(shown.iter().map(PathBuf::as_path), hits))
     }
 
     /// The content diff of a closed scope's change set `cs`, against its snapshot.
@@ -669,7 +732,8 @@ impl Views {
     /// Close after stopping the scope's sandboxes (process groups `stopped`).
     pub fn close_scope_after(&self, id: &str, stopped: &[i32]) -> io::Result<ChangeSet> {
         let hs = self.handles(id)?;
-        if !hs[0].is_closed() {
+        let first = !hs[0].is_closed();
+        if first {
             self.settle_dead_handles(id, stopped, std::time::Duration::from_secs(5));
             if id != UNSCOPED {
                 let now = self.unscoped_changes.load(Ordering::Relaxed);
@@ -684,6 +748,7 @@ impl Views {
         }
         let mut cs = self.change_set(&hs)?;
         cs.unscoped = hs[0].unscoped_seen.load(Ordering::Relaxed);
+        cs.review = Some(self.review(id, &hs, &cs, first)?);
         Ok(cs)
     }
 

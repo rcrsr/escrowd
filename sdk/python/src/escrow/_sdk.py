@@ -116,6 +116,33 @@ class Read:
     allowed: bool
 
 
+_TIERS = {pb.TIER_SOFTWARE: "software", pb.TIER_LLM: "llm", pb.TIER_HUMAN: "human"}
+
+
+@dataclass(frozen=True)
+class Review:
+    """The daemon's close-time review (policy `write:` and `review:`)."""
+
+    # The software tier's verdict: "discard" when a write rule broke (a commit or a
+    # return then becomes a discard), else "commit".
+    verdict: str = "commit"
+    reasons: list[str] = field(default_factory=list)
+    # Tiers above software the change set needs, cheapest first ("llm", "human"); the
+    # daemon refuses to commit while any is listed.
+    tiers: list[str] = field(default_factory=list)
+    # A review rule requires the agent to wait for those tiers.
+    wait_required: bool = False
+
+    @classmethod
+    def from_proto(cls, r: pb.Review) -> Review:
+        return cls(
+            verdict="discard" if r.verdict == pb.VERDICT_DISCARD else "commit",
+            reasons=list(r.reasons),
+            tiers=[_TIERS[t] for t in r.tiers],
+            wait_required=r.wait_required,
+        )
+
+
 @dataclass(frozen=True)
 class ChangeSet:
     """What a closed scope would do to the project, and what it read."""
@@ -129,6 +156,7 @@ class ChangeSet:
     diff: str = ""
     # Changes that reached the unscoped mode while the scope was open (0 in passthrough).
     unscoped: int = 0
+    review: Review = field(default_factory=Review)
 
     @property
     def paths(self) -> list[str]:
@@ -143,6 +171,7 @@ class ChangeSet:
             labels=dict(cs.labels),
             diff=cs.diff,
             unscoped=cs.unscoped_ops,
+            review=Review.from_proto(cs.review),
         )
 
 

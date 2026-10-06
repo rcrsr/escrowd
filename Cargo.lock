@@ -369,6 +369,7 @@ dependencies = [
  "fuser",
  "globset",
  "libc",
+ "memchr",
  "prost",
  "protoc-bin-vendored",
  "rusqlite",
