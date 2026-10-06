@@ -2,7 +2,7 @@
 
 Every known limit of escrowd as built, in one place. Each entry says where it is tracked. Update this file when a limit is found or lifted; the plans keep the detail.
 
-Status as of Oct 6, 2026: phase 3, after sub-phase 3.5.
+Status as of Oct 6, 2026: phase 3, after sub-phase 3.6 (protocol frozen).
 
 ## Capture
 
@@ -90,6 +90,7 @@ Status as of Oct 6, 2026: phase 3, after sub-phase 3.5.
 | While the unscoped scope (`implicit` mode) is held, IO outside scopes fails as on any closed scope, until its verdict. | By design (3.2): `SettleUnscoped` meets the same review rules, decided Oct 5, 2026. |
 | A session's next `OpenScope` waits behind a held scope only up to the client's deadline (`grpc-timeout`); a client without one waits until the verdict. | By design (3.2). |
 | The Python SDK waits for a held verdict with no deadline: `escrow.scope(..., wait=True)` and a session's next open block until reviewers decide. `s.wait_decided(timeout=…)` and `await s.decided(timeout=…)` take one. | By design (3.5): the agent's turn is the reviewers' to end. |
+| Protocol v1 has no feature negotiation: `protocol_version` stays 7, so a client finds a call a daemon lacks by `UNIMPLEMENTED` and a field it lacks by its default value. | By design (3.6, `docs/protocol.md`): v1 only adds; a break is `escrow.v2`. |
 | A `deny` rule lets lookups pass: a denied file's name, size and times are visible to `stat`, its contents and listings are not. | By design, decided Oct 5, 2026 (listed paths inside a denied directory must stay reachable). |
 | A scope's view of a root the policy stops serving is dropped (with its changes) at the next daemon start. | By design (2.4). |
 | `escrow exec` passes argv, cwd and environment as UTF-8 (lossy). | Carried since 1.5. |

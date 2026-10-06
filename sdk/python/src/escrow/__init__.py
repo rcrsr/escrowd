@@ -12,11 +12,22 @@ print(s.outcome.status, s.outcome.paths)
 """
 
 from escrow._client import Client, Reviewer, connect, connect_reviewer
+from escrow._errors import (
+    EscrowAbortedError,
+    EscrowError,
+    EscrowInvalidArgumentError,
+    EscrowNotFoundError,
+    EscrowPermissionError,
+    EscrowRpcError,
+    EscrowStateError,
+    EscrowTimeoutError,
+    EscrowUnavailableError,
+    EscrowUnsupportedError,
+)
 from escrow._sdk import (
     Change,
     ChangeSet,
     Decision,
-    EscrowError,
     EscrowStaleHandleError,
     EscrowUnscopedError,
     EscrowUnscopedWarning,
@@ -39,10 +50,19 @@ __all__ = [
     "ChangeSet",
     "Client",
     "Decision",
+    "EscrowAbortedError",
     "EscrowError",
+    "EscrowInvalidArgumentError",
+    "EscrowNotFoundError",
+    "EscrowPermissionError",
+    "EscrowRpcError",
     "EscrowStaleHandleError",
+    "EscrowStateError",
+    "EscrowTimeoutError",
+    "EscrowUnavailableError",
     "EscrowUnscopedError",
     "EscrowUnscopedWarning",
+    "EscrowUnsupportedError",
     "Outcome",
     "Process",
     "Read",

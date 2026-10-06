@@ -1,13 +1,18 @@
-"""gRPC client for the escrowd Unix socket."""
+"""gRPC client for the escrowd Unix socket. A failed call raises the typed error of its
+status code (`escrow._errors`), a grpc.RpcError too."""
 
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from typing import TypeVar
 
 import grpc
 
+from escrow._errors import typed
 from escrow.v1 import escrow_pb2, escrow_pb2_grpc
+
+T = TypeVar("T")
 
 
 def _channel(socket: str) -> grpc.Channel:
@@ -23,6 +28,21 @@ def _channel(socket: str) -> grpc.Channel:
     )
 
 
+def _call(method: Callable[..., T], req, timeout: float | None) -> T:
+    try:
+        return method(req, timeout=timeout)
+    except grpc.RpcError as e:
+        raise typed(e) from e
+
+
+def _stream(responses) -> Iterator[escrow_pb2.Outcome]:
+    try:
+        for r in responses:
+            yield r.outcome
+    except grpc.RpcError as e:
+        raise typed(e) from e
+
+
 class Client:
     """One connection. Closing, deciding and spawning in a scope take the scope's token
     (`OpenScopeResponse.token`); a client remembers the tokens of the scopes it opened
@@ -32,10 +52,10 @@ class Client:
         self.socket = socket
         self.tokens: dict[str, str] = {}
         self._channel = _channel(socket)
-        self._stub = escrow_pb2_grpc.EscrowStub(self._channel)
+        self._stub = escrow_pb2_grpc.EscrowServiceStub(self._channel)
 
     def ping(self, timeout: float = 5.0) -> escrow_pb2.PingResponse:
-        return self._stub.Ping(escrow_pb2.PingRequest(), timeout=timeout)
+        return _call(self._stub.Ping, escrow_pb2.PingRequest(), timeout)
 
     def open_scope(
         self,
@@ -47,7 +67,7 @@ class Client:
         """In a `session` with a scope held with a wait, the call waits for its verdict
         up to `timeout` (None: no limit), then fails with FAILED_PRECONDITION."""
         req = escrow_pb2.OpenScopeRequest(name=name, labels=labels or {}, session=session)
-        resp = self._stub.OpenScope(req, timeout=timeout)
+        resp = _call(self._stub.OpenScope, req, timeout)
         self.tokens[resp.scope_id] = resp.token
         return resp
 
@@ -59,7 +79,7 @@ class Client:
     ) -> escrow_pb2.ChangeSet:
         """Freeze the scope and return its change set. Fsync the scope's open files first."""
         req = escrow_pb2.CloseScopeRequest(scope_id=scope_id, token=self._token(scope_id, token))
-        return self._stub.CloseScope(req, timeout=timeout)
+        return _call(self._stub.CloseScope, req, timeout).change_set
 
     def decide(
         self,
@@ -79,7 +99,7 @@ class Client:
             token=self._token(scope_id, token),
             wait=wait,
         )
-        return self._stub.Decide(req, timeout=timeout)
+        return _call(self._stub.Decide, req, timeout).outcome
 
     def commit(
         self, scope_id: str, token: str | None = None, timeout: float = 60.0, wait: bool = False
@@ -93,13 +113,14 @@ class Client:
 
     def settle_unscoped(self, timeout: float = 30.0) -> escrow_pb2.ChangeSet:
         """Close the implicit default scope and return its change set (scope id "unscoped")."""
-        return self._stub.SettleUnscoped(escrow_pb2.SettleUnscopedRequest(), timeout=timeout)
+        return _call(
+            self._stub.SettleUnscoped, escrow_pb2.SettleUnscopedRequest(), timeout
+        ).change_set
 
     def get_change_set(self, scope_id: str, timeout: float = 30.0) -> escrow_pb2.ChangeSet:
         """A closed, undecided scope's change set and diff; an open scope fails."""
-        return self._stub.GetChangeSet(
-            escrow_pb2.GetChangeSetRequest(scope_id=scope_id), timeout=timeout
-        )
+        req = escrow_pb2.GetChangeSetRequest(scope_id=scope_id)
+        return _call(self._stub.GetChangeSet, req, timeout).change_set
 
     def discard(
         self, scope_id: str, token: str | None = None, timeout: float = 30.0
@@ -112,7 +133,7 @@ class Client:
         """Follow a held scope: OUTCOME_STATUS_HELD after each tier's review, then the
         final outcome. A scope decided already yields its last outcome."""
         req = escrow_pb2.AwaitDecisionRequest(scope_id=scope_id, token=self._token(scope_id, token))
-        return self._stub.AwaitDecision(req, timeout=timeout)
+        return _stream(self._stub.AwaitDecision(req, timeout=timeout))
 
     def close(self) -> None:
         self._channel.close()
@@ -130,13 +151,13 @@ class Reviewer:
     def __init__(self, socket: str):
         self.socket = socket
         self._channel = _channel(socket)
-        self._stub = escrow_pb2_grpc.ReviewerStub(self._channel)
+        self._stub = escrow_pb2_grpc.ReviewerServiceStub(self._channel)
 
     def list_held(self, timeout: float = 5.0) -> list[escrow_pb2.HeldScope]:
-        return list(self._stub.ListHeld(escrow_pb2.ListHeldRequest(), timeout=timeout).scopes)
+        return list(_call(self._stub.ListHeld, escrow_pb2.ListHeldRequest(), timeout).scopes)
 
     def get_held(self, scope_id: str, timeout: float = 30.0) -> escrow_pb2.GetHeldResponse:
-        return self._stub.GetHeld(escrow_pb2.GetHeldRequest(scope_id=scope_id), timeout=timeout)
+        return _call(self._stub.GetHeld, escrow_pb2.GetHeldRequest(scope_id=scope_id), timeout)
 
     def review(
         self,
@@ -155,7 +176,7 @@ class Reviewer:
             reasons=reasons or [],
             override=override,
         )
-        return self._stub.Review(req, timeout=timeout)
+        return _call(self._stub.Review, req, timeout).outcome
 
     def close(self) -> None:
         self._channel.close()

@@ -24,6 +24,7 @@ jobs:
       python: ${{ steps.filter.outputs.python }}
       conformance: ${{ steps.filter.outputs.conformance }}
       soak: ${{ steps.filter.outputs.soak }}
+      protocol: ${{ steps.filter.outputs.protocol }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -48,6 +49,11 @@ jobs:
               - 'proto/**'
               - '.python-version'
               - '.github/workflows/ci.yml'
+            protocol:
+              - 'proto/**'
+              - 'buf.yaml'
+              - 'mise.toml'
+              - '.github/workflows/ci.yml'
             # The commit path: runs the crash soak (50 random kills) after the suite.
             soak:
               - 'crates/escrowd/src/commit.rs'
@@ -62,6 +68,7 @@ jobs:
               - 'tests/**'
               - 'examples/**'
               - 'packaging/**'
+              - 'docs/protocol.md'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
@@ -88,6 +95,41 @@ jobs:
           cargo fmt --check
           cargo clippy --locked --all-targets -- -D warnings
           cargo test --locked
+
+  # The frozen protocol (docs/protocol.md): buf lint and format, and no breaking change
+  # against the protocol-v1 tag (buf's FILE rules: generated code keeps compiling).
+  check-protocol:
+    name: Protocol
+    needs: changes
+    if: needs.changes.outputs.protocol == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Read the buf pin
+        id: pin
+        run: echo "buf=$(sed -n 's/^buf = "\(.*\)"$/\1/p' mise.toml)" >> "$GITHUB_OUTPUT"
+
+      - uses: bufbuild/buf-action@v1
+        with:
+          version: ${{ steps.pin.outputs.buf }}
+          setup_only: true
+
+      - name: Lint and format
+        run: |
+          buf lint
+          buf format --diff --exit-code
+
+      - name: No breaking change since protocol-v1
+        run: |
+          if ! git rev-parse -q --verify refs/tags/protocol-v1 > /dev/null; then
+            echo "::notice::no protocol-v1 tag yet: nothing to compare"
+            exit 0
+          fi
+          buf breaking --against '.git#tag=protocol-v1'
 
   # Early warning, not required by the CI Gate: the workspace on current stable Rust
   # instead of the rust-toolchain.toml pin (RUSTUP_TOOLCHAIN overrides the file).
@@ -188,7 +230,7 @@ jobs:
   ci-gate:
     name: CI Gate
     if: always()
-    needs: [check-rust, check-python, conformance, lockfiles]
+    needs: [check-rust, check-protocol, check-python, conformance, lockfiles]
     runs-on: ubuntu-latest
     steps:
       - name: Check results

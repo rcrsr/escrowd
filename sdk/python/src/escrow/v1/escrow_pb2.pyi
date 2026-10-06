@@ -125,6 +125,12 @@ class CloseScopeRequest(_message.Message):
     token: str
     def __init__(self, scope_id: _Optional[str] = ..., token: _Optional[str] = ...) -> None: ...
 
+class CloseScopeResponse(_message.Message):
+    __slots__ = ("change_set",)
+    CHANGE_SET_FIELD_NUMBER: _ClassVar[int]
+    change_set: ChangeSet
+    def __init__(self, change_set: _Optional[_Union[ChangeSet, _Mapping]] = ...) -> None: ...
+
 class Change(_message.Message):
     __slots__ = ("kind", "path", "from_path", "writers")
     KIND_FIELD_NUMBER: _ClassVar[int]
@@ -208,6 +214,12 @@ class GetChangeSetRequest(_message.Message):
     scope_id: str
     def __init__(self, scope_id: _Optional[str] = ...) -> None: ...
 
+class GetChangeSetResponse(_message.Message):
+    __slots__ = ("change_set",)
+    CHANGE_SET_FIELD_NUMBER: _ClassVar[int]
+    change_set: ChangeSet
+    def __init__(self, change_set: _Optional[_Union[ChangeSet, _Mapping]] = ...) -> None: ...
+
 class DecideRequest(_message.Message):
     __slots__ = ("scope_id", "verdict", "reasons", "token", "wait")
     SCOPE_ID_FIELD_NUMBER: _ClassVar[int]
@@ -221,6 +233,12 @@ class DecideRequest(_message.Message):
     token: str
     wait: bool
     def __init__(self, scope_id: _Optional[str] = ..., verdict: _Optional[_Union[Verdict, str]] = ..., reasons: _Optional[_Iterable[str]] = ..., token: _Optional[str] = ..., wait: _Optional[bool] = ...) -> None: ...
+
+class DecideResponse(_message.Message):
+    __slots__ = ("outcome",)
+    OUTCOME_FIELD_NUMBER: _ClassVar[int]
+    outcome: Outcome
+    def __init__(self, outcome: _Optional[_Union[Outcome, _Mapping]] = ...) -> None: ...
 
 class Outcome(_message.Message):
     __slots__ = ("scope_id", "status", "paths", "reasons", "reopened", "tiers", "wait")
@@ -281,6 +299,12 @@ class SettleUnscopedRequest(_message.Message):
     __slots__ = ()
     def __init__(self) -> None: ...
 
+class SettleUnscopedResponse(_message.Message):
+    __slots__ = ("change_set",)
+    CHANGE_SET_FIELD_NUMBER: _ClassVar[int]
+    change_set: ChangeSet
+    def __init__(self, change_set: _Optional[_Union[ChangeSet, _Mapping]] = ...) -> None: ...
+
 class AwaitDecisionRequest(_message.Message):
     __slots__ = ("scope_id", "token")
     SCOPE_ID_FIELD_NUMBER: _ClassVar[int]
@@ -288,6 +312,12 @@ class AwaitDecisionRequest(_message.Message):
     scope_id: str
     token: str
     def __init__(self, scope_id: _Optional[str] = ..., token: _Optional[str] = ...) -> None: ...
+
+class AwaitDecisionResponse(_message.Message):
+    __slots__ = ("outcome",)
+    OUTCOME_FIELD_NUMBER: _ClassVar[int]
+    outcome: Outcome
+    def __init__(self, outcome: _Optional[_Union[Outcome, _Mapping]] = ...) -> None: ...
 
 class TierReview(_message.Message):
     __slots__ = ("tier", "verdict", "reasons", "override")
@@ -385,3 +415,9 @@ class ReviewRequest(_message.Message):
     reasons: _containers.RepeatedScalarFieldContainer[str]
     override: bool
     def __init__(self, scope_id: _Optional[str] = ..., tier: _Optional[_Union[Tier, str]] = ..., verdict: _Optional[_Union[Verdict, str]] = ..., reasons: _Optional[_Iterable[str]] = ..., override: _Optional[bool] = ...) -> None: ...
+
+class ReviewResponse(_message.Message):
+    __slots__ = ("outcome",)
+    OUTCOME_FIELD_NUMBER: _ClassVar[int]
+    outcome: Outcome
+    def __init__(self, outcome: _Optional[_Union[Outcome, _Mapping]] = ...) -> None: ...

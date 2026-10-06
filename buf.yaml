@@ -1,0 +1,11 @@
+# buf: lint and breaking-change checks for proto/ (docs/protocol.md, "Versioning").
+# CI runs `buf lint` and `buf breaking --against '.git#tag=protocol-v1'`.
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+breaking:
+  use:
+    - FILE

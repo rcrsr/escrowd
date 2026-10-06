@@ -25,7 +25,7 @@ if _version_not_supported:
     )
 
 
-class EscrowStub:
+class EscrowServiceStub:
     """Missing associated documentation comment in .proto file."""
 
     def __init__(self, channel):
@@ -35,43 +35,43 @@ class EscrowStub:
             channel: A grpc.Channel.
         """
         self.Ping = channel.unary_unary(
-                '/escrow.v1.Escrow/Ping',
+                '/escrow.v1.EscrowService/Ping',
                 request_serializer=escrow_dot_v1_dot_escrow__pb2.PingRequest.SerializeToString,
                 response_deserializer=escrow_dot_v1_dot_escrow__pb2.PingResponse.FromString,
                 _registered_method=True)
         self.OpenScope = channel.unary_unary(
-                '/escrow.v1.Escrow/OpenScope',
+                '/escrow.v1.EscrowService/OpenScope',
                 request_serializer=escrow_dot_v1_dot_escrow__pb2.OpenScopeRequest.SerializeToString,
                 response_deserializer=escrow_dot_v1_dot_escrow__pb2.OpenScopeResponse.FromString,
                 _registered_method=True)
         self.CloseScope = channel.unary_unary(
-                '/escrow.v1.Escrow/CloseScope',
+                '/escrow.v1.EscrowService/CloseScope',
                 request_serializer=escrow_dot_v1_dot_escrow__pb2.CloseScopeRequest.SerializeToString,
-                response_deserializer=escrow_dot_v1_dot_escrow__pb2.ChangeSet.FromString,
+                response_deserializer=escrow_dot_v1_dot_escrow__pb2.CloseScopeResponse.FromString,
                 _registered_method=True)
         self.Decide = channel.unary_unary(
-                '/escrow.v1.Escrow/Decide',
+                '/escrow.v1.EscrowService/Decide',
                 request_serializer=escrow_dot_v1_dot_escrow__pb2.DecideRequest.SerializeToString,
-                response_deserializer=escrow_dot_v1_dot_escrow__pb2.Outcome.FromString,
+                response_deserializer=escrow_dot_v1_dot_escrow__pb2.DecideResponse.FromString,
                 _registered_method=True)
         self.SettleUnscoped = channel.unary_unary(
-                '/escrow.v1.Escrow/SettleUnscoped',
+                '/escrow.v1.EscrowService/SettleUnscoped',
                 request_serializer=escrow_dot_v1_dot_escrow__pb2.SettleUnscopedRequest.SerializeToString,
-                response_deserializer=escrow_dot_v1_dot_escrow__pb2.ChangeSet.FromString,
+                response_deserializer=escrow_dot_v1_dot_escrow__pb2.SettleUnscopedResponse.FromString,
                 _registered_method=True)
         self.GetChangeSet = channel.unary_unary(
-                '/escrow.v1.Escrow/GetChangeSet',
+                '/escrow.v1.EscrowService/GetChangeSet',
                 request_serializer=escrow_dot_v1_dot_escrow__pb2.GetChangeSetRequest.SerializeToString,
-                response_deserializer=escrow_dot_v1_dot_escrow__pb2.ChangeSet.FromString,
+                response_deserializer=escrow_dot_v1_dot_escrow__pb2.GetChangeSetResponse.FromString,
                 _registered_method=True)
         self.AwaitDecision = channel.unary_stream(
-                '/escrow.v1.Escrow/AwaitDecision',
+                '/escrow.v1.EscrowService/AwaitDecision',
                 request_serializer=escrow_dot_v1_dot_escrow__pb2.AwaitDecisionRequest.SerializeToString,
-                response_deserializer=escrow_dot_v1_dot_escrow__pb2.Outcome.FromString,
+                response_deserializer=escrow_dot_v1_dot_escrow__pb2.AwaitDecisionResponse.FromString,
                 _registered_method=True)
 
 
-class EscrowServicer:
+class EscrowServiceServicer:
     """Missing associated documentation comment in .proto file."""
 
     def Ping(self, request, context):
@@ -142,7 +142,7 @@ class EscrowServicer:
         raise NotImplementedError('Method not implemented!')
 
 
-def add_EscrowServicer_to_server(servicer, server):
+def add_EscrowServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'Ping': grpc.unary_unary_rpc_method_handler(
                     servicer.Ping,
@@ -157,37 +157,37 @@ def add_EscrowServicer_to_server(servicer, server):
             'CloseScope': grpc.unary_unary_rpc_method_handler(
                     servicer.CloseScope,
                     request_deserializer=escrow_dot_v1_dot_escrow__pb2.CloseScopeRequest.FromString,
-                    response_serializer=escrow_dot_v1_dot_escrow__pb2.ChangeSet.SerializeToString,
+                    response_serializer=escrow_dot_v1_dot_escrow__pb2.CloseScopeResponse.SerializeToString,
             ),
             'Decide': grpc.unary_unary_rpc_method_handler(
                     servicer.Decide,
                     request_deserializer=escrow_dot_v1_dot_escrow__pb2.DecideRequest.FromString,
-                    response_serializer=escrow_dot_v1_dot_escrow__pb2.Outcome.SerializeToString,
+                    response_serializer=escrow_dot_v1_dot_escrow__pb2.DecideResponse.SerializeToString,
             ),
             'SettleUnscoped': grpc.unary_unary_rpc_method_handler(
                     servicer.SettleUnscoped,
                     request_deserializer=escrow_dot_v1_dot_escrow__pb2.SettleUnscopedRequest.FromString,
-                    response_serializer=escrow_dot_v1_dot_escrow__pb2.ChangeSet.SerializeToString,
+                    response_serializer=escrow_dot_v1_dot_escrow__pb2.SettleUnscopedResponse.SerializeToString,
             ),
             'GetChangeSet': grpc.unary_unary_rpc_method_handler(
                     servicer.GetChangeSet,
                     request_deserializer=escrow_dot_v1_dot_escrow__pb2.GetChangeSetRequest.FromString,
-                    response_serializer=escrow_dot_v1_dot_escrow__pb2.ChangeSet.SerializeToString,
+                    response_serializer=escrow_dot_v1_dot_escrow__pb2.GetChangeSetResponse.SerializeToString,
             ),
             'AwaitDecision': grpc.unary_stream_rpc_method_handler(
                     servicer.AwaitDecision,
                     request_deserializer=escrow_dot_v1_dot_escrow__pb2.AwaitDecisionRequest.FromString,
-                    response_serializer=escrow_dot_v1_dot_escrow__pb2.Outcome.SerializeToString,
+                    response_serializer=escrow_dot_v1_dot_escrow__pb2.AwaitDecisionResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'escrow.v1.Escrow', rpc_method_handlers)
+            'escrow.v1.EscrowService', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('escrow.v1.Escrow', rpc_method_handlers)
+    server.add_registered_method_handlers('escrow.v1.EscrowService', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
-class Escrow:
+class EscrowService:
     """Missing associated documentation comment in .proto file."""
 
     @staticmethod
@@ -204,7 +204,7 @@ class Escrow:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/escrow.v1.Escrow/Ping',
+            '/escrow.v1.EscrowService/Ping',
             escrow_dot_v1_dot_escrow__pb2.PingRequest.SerializeToString,
             escrow_dot_v1_dot_escrow__pb2.PingResponse.FromString,
             options,
@@ -231,7 +231,7 @@ class Escrow:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/escrow.v1.Escrow/OpenScope',
+            '/escrow.v1.EscrowService/OpenScope',
             escrow_dot_v1_dot_escrow__pb2.OpenScopeRequest.SerializeToString,
             escrow_dot_v1_dot_escrow__pb2.OpenScopeResponse.FromString,
             options,
@@ -258,9 +258,9 @@ class Escrow:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/escrow.v1.Escrow/CloseScope',
+            '/escrow.v1.EscrowService/CloseScope',
             escrow_dot_v1_dot_escrow__pb2.CloseScopeRequest.SerializeToString,
-            escrow_dot_v1_dot_escrow__pb2.ChangeSet.FromString,
+            escrow_dot_v1_dot_escrow__pb2.CloseScopeResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -285,9 +285,9 @@ class Escrow:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/escrow.v1.Escrow/Decide',
+            '/escrow.v1.EscrowService/Decide',
             escrow_dot_v1_dot_escrow__pb2.DecideRequest.SerializeToString,
-            escrow_dot_v1_dot_escrow__pb2.Outcome.FromString,
+            escrow_dot_v1_dot_escrow__pb2.DecideResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -312,9 +312,9 @@ class Escrow:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/escrow.v1.Escrow/SettleUnscoped',
+            '/escrow.v1.EscrowService/SettleUnscoped',
             escrow_dot_v1_dot_escrow__pb2.SettleUnscopedRequest.SerializeToString,
-            escrow_dot_v1_dot_escrow__pb2.ChangeSet.FromString,
+            escrow_dot_v1_dot_escrow__pb2.SettleUnscopedResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -339,9 +339,9 @@ class Escrow:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/escrow.v1.Escrow/GetChangeSet',
+            '/escrow.v1.EscrowService/GetChangeSet',
             escrow_dot_v1_dot_escrow__pb2.GetChangeSetRequest.SerializeToString,
-            escrow_dot_v1_dot_escrow__pb2.ChangeSet.FromString,
+            escrow_dot_v1_dot_escrow__pb2.GetChangeSetResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -366,9 +366,9 @@ class Escrow:
         return grpc.experimental.unary_stream(
             request,
             target,
-            '/escrow.v1.Escrow/AwaitDecision',
+            '/escrow.v1.EscrowService/AwaitDecision',
             escrow_dot_v1_dot_escrow__pb2.AwaitDecisionRequest.SerializeToString,
-            escrow_dot_v1_dot_escrow__pb2.Outcome.FromString,
+            escrow_dot_v1_dot_escrow__pb2.AwaitDecisionResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -380,8 +380,8 @@ class Escrow:
             _registered_method=True)
 
 
-class ReviewerStub:
-    """Served on `<ESCROW_SOCKET>.review` only.
+class ReviewerServiceStub:
+    """Served on `<ESCROW_SOCKET>.review` only; EscrowService on the main socket only.
     """
 
     def __init__(self, channel):
@@ -391,24 +391,24 @@ class ReviewerStub:
             channel: A grpc.Channel.
         """
         self.ListHeld = channel.unary_unary(
-                '/escrow.v1.Reviewer/ListHeld',
+                '/escrow.v1.ReviewerService/ListHeld',
                 request_serializer=escrow_dot_v1_dot_escrow__pb2.ListHeldRequest.SerializeToString,
                 response_deserializer=escrow_dot_v1_dot_escrow__pb2.ListHeldResponse.FromString,
                 _registered_method=True)
         self.GetHeld = channel.unary_unary(
-                '/escrow.v1.Reviewer/GetHeld',
+                '/escrow.v1.ReviewerService/GetHeld',
                 request_serializer=escrow_dot_v1_dot_escrow__pb2.GetHeldRequest.SerializeToString,
                 response_deserializer=escrow_dot_v1_dot_escrow__pb2.GetHeldResponse.FromString,
                 _registered_method=True)
         self.Review = channel.unary_unary(
-                '/escrow.v1.Reviewer/Review',
+                '/escrow.v1.ReviewerService/Review',
                 request_serializer=escrow_dot_v1_dot_escrow__pb2.ReviewRequest.SerializeToString,
-                response_deserializer=escrow_dot_v1_dot_escrow__pb2.Outcome.FromString,
+                response_deserializer=escrow_dot_v1_dot_escrow__pb2.ReviewResponse.FromString,
                 _registered_method=True)
 
 
-class ReviewerServicer:
-    """Served on `<ESCROW_SOCKET>.review` only.
+class ReviewerServiceServicer:
+    """Served on `<ESCROW_SOCKET>.review` only; EscrowService on the main socket only.
     """
 
     def ListHeld(self, request, context):
@@ -440,7 +440,7 @@ class ReviewerServicer:
         raise NotImplementedError('Method not implemented!')
 
 
-def add_ReviewerServicer_to_server(servicer, server):
+def add_ReviewerServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'ListHeld': grpc.unary_unary_rpc_method_handler(
                     servicer.ListHeld,
@@ -455,18 +455,18 @@ def add_ReviewerServicer_to_server(servicer, server):
             'Review': grpc.unary_unary_rpc_method_handler(
                     servicer.Review,
                     request_deserializer=escrow_dot_v1_dot_escrow__pb2.ReviewRequest.FromString,
-                    response_serializer=escrow_dot_v1_dot_escrow__pb2.Outcome.SerializeToString,
+                    response_serializer=escrow_dot_v1_dot_escrow__pb2.ReviewResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
-            'escrow.v1.Reviewer', rpc_method_handlers)
+            'escrow.v1.ReviewerService', rpc_method_handlers)
     server.add_generic_rpc_handlers((generic_handler,))
-    server.add_registered_method_handlers('escrow.v1.Reviewer', rpc_method_handlers)
+    server.add_registered_method_handlers('escrow.v1.ReviewerService', rpc_method_handlers)
 
 
  # This class is part of an EXPERIMENTAL API.
-class Reviewer:
-    """Served on `<ESCROW_SOCKET>.review` only.
+class ReviewerService:
+    """Served on `<ESCROW_SOCKET>.review` only; EscrowService on the main socket only.
     """
 
     @staticmethod
@@ -483,7 +483,7 @@ class Reviewer:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/escrow.v1.Reviewer/ListHeld',
+            '/escrow.v1.ReviewerService/ListHeld',
             escrow_dot_v1_dot_escrow__pb2.ListHeldRequest.SerializeToString,
             escrow_dot_v1_dot_escrow__pb2.ListHeldResponse.FromString,
             options,
@@ -510,7 +510,7 @@ class Reviewer:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/escrow.v1.Reviewer/GetHeld',
+            '/escrow.v1.ReviewerService/GetHeld',
             escrow_dot_v1_dot_escrow__pb2.GetHeldRequest.SerializeToString,
             escrow_dot_v1_dot_escrow__pb2.GetHeldResponse.FromString,
             options,
@@ -537,9 +537,9 @@ class Reviewer:
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/escrow.v1.Reviewer/Review',
+            '/escrow.v1.ReviewerService/Review',
             escrow_dot_v1_dot_escrow__pb2.ReviewRequest.SerializeToString,
-            escrow_dot_v1_dot_escrow__pb2.Outcome.FromString,
+            escrow_dot_v1_dot_escrow__pb2.ReviewResponse.FromString,
             options,
             channel_credentials,
             insecure,

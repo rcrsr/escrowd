@@ -9,8 +9,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use escrowd::commit::Outcome;
 use escrowd::daemon::{Config, default_runtime_dir};
 use escrowd::exec::{ExecConn, TOKEN_ENV, exec_socket};
-use escrowd::proto::escrow_client::EscrowClient;
-use escrowd::proto::reviewer_client::ReviewerClient;
+use escrowd::proto::escrow_service_client::EscrowServiceClient;
+use escrowd::proto::reviewer_service_client::ReviewerServiceClient;
 use escrowd::proto::{
     GetChangeSetRequest, GetHeldRequest, HeldScope, ListHeldRequest, OutcomeStatus, ReviewRequest, SpawnRequest, Tier,
     Verdict,
@@ -249,7 +249,7 @@ fn held_line(h: &HeldScope, now_ms: u64) -> String {
 
 async fn review(socket: Option<PathBuf>, project: Option<PathBuf>, action: ReviewAction) -> anyhow::Result<()> {
     let socket = review_socket(&socket_of(socket, project)?);
-    let mut client = ReviewerClient::new(channel(&socket).await?).max_decoding_message_size(usize::MAX);
+    let mut client = ReviewerServiceClient::new(channel(&socket).await?).max_decoding_message_size(usize::MAX);
     let err = |s: tonic::Status| anyhow::anyhow!("{}", s.message());
     let now_ms = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -355,7 +355,9 @@ async fn review(socket: Option<PathBuf>, project: Option<PathBuf>, action: Revie
         })
         .await
         .map_err(err)?
-        .into_inner();
+        .into_inner()
+        .outcome
+        .unwrap_or_default();
     if o.status() == OutcomeStatus::Held {
         writeln!(out, "{} held for {}", o.scope_id, tiers(&o.tiers))?;
     } else {
@@ -372,12 +374,14 @@ async fn review(socket: Option<PathBuf>, project: Option<PathBuf>, action: Revie
 
 async fn diff(socket: Option<PathBuf>, project: Option<PathBuf>, scope: String) -> anyhow::Result<()> {
     let socket = socket_of(socket, project)?;
-    let cs = EscrowClient::new(channel(&socket).await?)
+    let cs = EscrowServiceClient::new(channel(&socket).await?)
         .max_decoding_message_size(usize::MAX)
         .get_change_set(GetChangeSetRequest { scope_id: scope })
         .await
         .map_err(|s| anyhow::anyhow!("{}", s.message()))?
-        .into_inner();
+        .into_inner()
+        .change_set
+        .unwrap_or_default();
     std::io::stdout().lock().write_all(cs.diff.as_bytes())?;
     Ok(())
 }

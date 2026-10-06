@@ -1,5 +1,5 @@
-//! gRPC services over Unix sockets: `Escrow` for clients, `Reviewer` on the review
-//! socket (`<socket>.review`, mode 0600) for reviewers of held scopes.
+//! gRPC services over Unix sockets: `EscrowService` for clients, `ReviewerService` on
+//! the review socket (`<socket>.review`, mode 0600) for reviewers of held scopes.
 
 use std::io;
 use std::os::unix::fs::PermissionsExt;
@@ -15,8 +15,8 @@ use tonic::{Request, Response, Status};
 
 use crate::exec::Children;
 use crate::policy::ConflictVerdict;
-use crate::proto::escrow_server::{Escrow, EscrowServer};
-use crate::proto::reviewer_server::{Reviewer, ReviewerServer};
+use crate::proto::escrow_service_server::{EscrowService, EscrowServiceServer};
+use crate::proto::reviewer_service_server::{ReviewerService, ReviewerServiceServer};
 use crate::proto::*;
 use crate::review::{self as rules, Decision};
 use crate::store::Hold;
@@ -26,7 +26,7 @@ use crate::{changeset, commit, diff, policy};
 /// The session's earlier decisions a reviewer gets.
 const HISTORY: usize = 20;
 
-/// Served on the protocol socket (`Escrow`) and the review socket (`Reviewer`).
+/// Served on the protocol socket (`EscrowService`) and the review socket (`ReviewerService`).
 #[derive(Clone)]
 pub struct Service(Arc<Shared>);
 
@@ -423,7 +423,8 @@ impl Service {
 
     /// Send a client following scope `id` its hold's updates, then its first kept
     /// decision after `after` (history sequence), and stop.
-    async fn follow(&self, id: String, after: u64, tx: mpsc::Sender<Result<Outcome, Status>>) {
+    async fn follow(&self, id: String, after: u64, tx: mpsc::Sender<Result<AwaitDecisionResponse, Status>>) {
+        let send = |out: Result<Outcome, Status>| tx.send(out.map(|o| AwaitDecisionResponse { outcome: Some(o) }));
         let mut changed = self.changed.subscribe();
         let mut sent: Option<Vec<policy::Tier>> = None;
         loop {
@@ -445,19 +446,18 @@ impl Service {
                 .await;
             match state {
                 Err(e) => {
-                    let _ = tx.send(Err(e)).await;
+                    let _ = send(Err(e)).await;
                     return;
                 }
                 Ok((Some(hold), _)) if sent.as_ref() != Some(&hold.tiers) => {
                     sent = Some(hold.tiers.clone());
-                    if tx.send(Ok(held_outcome(id.clone(), &hold))).await.is_err() {
+                    if send(Ok(held_outcome(id.clone(), &hold))).await.is_err() {
                         return;
                     }
                 }
                 Ok((_, Some(l))) => {
                     let out = Decided::decode(&l.entry[..]).ok().and_then(|d| d.outcome);
-                    let _ = tx
-                        .send(out.ok_or_else(|| Status::internal(format!("scope {id}: unreadable history entry"))))
+                    let _ = send(out.ok_or_else(|| Status::internal(format!("scope {id}: unreadable history entry"))))
                         .await;
                     return;
                 }
@@ -485,7 +485,7 @@ impl Service {
 }
 
 #[tonic::async_trait]
-impl Escrow for Service {
+impl EscrowService for Service {
     async fn ping(&self, _req: Request<PingRequest>) -> Result<Response<PingResponse>, Status> {
         Ok(Response::new(PingResponse {
             daemon_version: env!("CARGO_PKG_VERSION").into(),
@@ -539,14 +539,16 @@ impl Escrow for Service {
         }))
     }
 
-    async fn close_scope(&self, req: Request<CloseScopeRequest>) -> Result<Response<ChangeSet>, Status> {
+    async fn close_scope(&self, req: Request<CloseScopeRequest>) -> Result<Response<CloseScopeResponse>, Status> {
         let req = req.into_inner();
-        Ok(Response::new(self.close(req.scope_id, req.token).await?))
+        Ok(Response::new(CloseScopeResponse {
+            change_set: Some(self.close(req.scope_id, req.token).await?),
+        }))
     }
 
     /// Decide; keep the decision of a scope in a session, or held; then wake the opens
     /// waiting behind a held scope and the clients following it.
-    async fn decide(&self, req: Request<DecideRequest>) -> Result<Response<Outcome>, Status> {
+    async fn decide(&self, req: Request<DecideRequest>) -> Result<Response<DecideResponse>, Status> {
         let req = req.into_inner();
         let (id, token) = (req.scope_id.clone(), req.token.clone());
         let who = self
@@ -571,18 +573,26 @@ impl Escrow for Service {
             }
             self.notify();
         }
-        Ok(Response::new(out))
+        Ok(Response::new(DecideResponse { outcome: Some(out) }))
     }
 
     /// Close the implicit default scope and return its change set; decide it as scope `unscoped`.
-    async fn settle_unscoped(&self, _req: Request<SettleUnscopedRequest>) -> Result<Response<ChangeSet>, Status> {
+    async fn settle_unscoped(
+        &self,
+        _req: Request<SettleUnscopedRequest>,
+    ) -> Result<Response<SettleUnscopedResponse>, Status> {
         if self.views.unscoped() != Unscoped::Implicit {
             return Err(Status::failed_precondition("settle_unscoped needs unscoped = implicit"));
         }
-        Ok(Response::new(self.close(UNSCOPED.to_string(), String::new()).await?))
+        Ok(Response::new(SettleUnscopedResponse {
+            change_set: Some(self.close(UNSCOPED.to_string(), String::new()).await?),
+        }))
     }
 
-    async fn get_change_set(&self, req: Request<GetChangeSetRequest>) -> Result<Response<ChangeSet>, Status> {
+    async fn get_change_set(
+        &self,
+        req: Request<GetChangeSetRequest>,
+    ) -> Result<Response<GetChangeSetResponse>, Status> {
         let (id, caps) = (req.into_inner().scope_id, self.diff);
         let id2 = id.clone();
         let (cs, diff) = self
@@ -592,10 +602,12 @@ impl Escrow for Service {
                 Ok((cs, diff))
             })
             .await?;
-        Ok(Response::new(to_proto(&self.views, id, cs, diff)))
+        Ok(Response::new(GetChangeSetResponse {
+            change_set: Some(to_proto(&self.views, id, cs, diff)),
+        }))
     }
 
-    type AwaitDecisionStream = ReceiverStream<Result<Outcome, Status>>;
+    type AwaitDecisionStream = ReceiverStream<Result<AwaitDecisionResponse, Status>>;
 
     /// A held scope's updates until its verdict; a decided scope's last outcome.
     async fn await_decision(
@@ -604,6 +616,9 @@ impl Escrow for Service {
     ) -> Result<Response<Self::AwaitDecisionStream>, Status> {
         let AwaitDecisionRequest { scope_id: id, token } = req.into_inner();
         let id2 = id.clone();
+        // A review or a withdrawal drops the scope before it records the decision: read
+        // between their steps, the scope would be neither live nor kept.
+        let settled = self.reviewing.lock().await;
         let (live, latest) = self
             .blocking(move |v| {
                 // The last kept decision first: a hold seen after it is decided later,
@@ -636,6 +651,7 @@ impl Escrow for Service {
                 Ok((live, latest.map(|l| l.seq)))
             })
             .await?;
+        drop(settled);
         let after = match (&live, latest) {
             // Held: follow it to a decision newer than the last kept.
             (Some(who), seq) if who.hold.is_some() => seq.unwrap_or(0),
@@ -652,7 +668,7 @@ impl Escrow for Service {
 }
 
 #[tonic::async_trait]
-impl Reviewer for Service {
+impl ReviewerService for Service {
     async fn list_held(&self, _req: Request<ListHeldRequest>) -> Result<Response<ListHeldResponse>, Status> {
         let held = self.blocking(|v| v.held_scopes()).await?;
         Ok(Response::new(ListHeldResponse {
@@ -682,7 +698,7 @@ impl Reviewer for Service {
     }
 
     /// A tier's verdict; after the last pending tier, the scope is decided.
-    async fn review(&self, req: Request<ReviewRequest>) -> Result<Response<Outcome>, Status> {
+    async fn review(&self, req: Request<ReviewRequest>) -> Result<Response<ReviewResponse>, Status> {
         let req = req.into_inner();
         let tier = tier_from(req.tier).ok_or_else(|| Status::invalid_argument("tier must be llm or human"))?;
         let verdict = match Verdict::try_from(req.verdict).unwrap_or(Verdict::Unspecified) {
@@ -715,7 +731,7 @@ impl Reviewer for Service {
             }
         };
         self.notify();
-        Ok(Response::new(out))
+        Ok(Response::new(ReviewResponse { outcome: Some(out) }))
     }
 }
 
@@ -749,13 +765,13 @@ pub async fn serve(socket: &Path, service: Service, shutdown: impl Future<Output
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let reviewers = tokio::spawn(
         tonic::transport::Server::builder()
-            .add_service(ReviewerServer::new(service.clone()))
+            .add_service(ReviewerServiceServer::new(service.clone()))
             .serve_with_incoming_shutdown(UnixListenerStream::new(review_listener), async {
                 let _ = stopped.await;
             }),
     );
     let result = tonic::transport::Server::builder()
-        .add_service(EscrowServer::new(service))
+        .add_service(EscrowServiceServer::new(service))
         .serve_with_incoming_shutdown(UnixListenerStream::new(listener), shutdown)
         .await;
     let _ = stop.send(());
