@@ -8,7 +8,7 @@ Phase 3 (held decisions: a post-approval by independent reviewers, negotiated wa
 
 - `LIMITATIONS.md`: every known limit of escrowd as built and where it is tracked; update it when a limit is found or lifted.
 - `docs/escrowd-proposal.md`: the design (scopes, escrow, FUSE capture, bwrap isolation, threat model, roadmap phases 0–9, renumbered Oct 5, 2026).
-- `docs/phase-3-held-decisions.md`: the active plan (draft). Sub-phases 3.1–3.6: review rules, held scopes and sessions, the reviewer role and `escrow review`, the Python SDK, the protocol freeze, exit runs; plus open questions. Update it when a decision is made or an open question closes (tick the box, add the date).
+- `docs/phase-3-held-decisions.md`: the active plan (draft). Sub-phases 3.1–3.7: review rules, held scopes and sessions, process attribution, the reviewer role and `escrow review`, the Python SDK, the protocol freeze, exit runs; plus open questions. Update it when a decision is made or an open question closes (tick the box, add the date).
 - `docs/phase-4-typescript-sdk.md`: the next plan (draft). Sub-phases 4.1–4.5: an nx workspace for the whole repo, the TypeScript SDK (TypeScript 7, ESM, Node 22 and 24, oxlint, oxfmt, Vitest, `@grpc/grpc-js`), the conformance suite ported to TypeScript, exit runs.
 - `docs/phase-2-hardening.md`: the completed phase 2 plan (sub-phases 2.1–2.8 with as-built notes, exit runs Oct 5, 2026).
 - `docs/phase-1-poc.md`: the completed phase 1 plan (sub-phases 1.1–1.7 with as-built notes, exit criteria met Oct 4, 2026).
