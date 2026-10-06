@@ -2,7 +2,7 @@
 
 Oct 5, 2026 · Andre Bremer · Draft
 
-**Status, Oct 6, 2026: 3.1, 3.2 and 3.3 built**; 3.4 next. Phase 2 is done ([plan](phase-2-hardening.md), exit runs in [PR #25](https://github.com/rcrsr/escrowd/pull/25)).
+**Status, Oct 6, 2026: 3.1 to 3.4 built**; 3.5 next. Phase 2 is done ([plan](phase-2-hardening.md), exit runs in [PR #25](https://github.com/rcrsr/escrowd/pull/25)).
 
 Today an agent host blocks on a *pre*-approval: a permission prompt before a tool runs, judged on a description of the effect. Phase 3 makes escrow's decision a *post*-approval: the work runs in a scope, and independent reviewers judge the staged change set, with the client and escrowd negotiating whether the agent waits. The design is in the proposal ([Held decisions](escrowd-proposal.md#held-decisions)); a runnable model plays it ([`examples/held-decisions/model.py`](../examples/held-decisions/model.py)). Phase 3 builds it into escrowd and the Python SDK, attributes every change to the process that made it so reviewers can judge who changed what (added Oct 6, 2026), then freezes the protocol, so phase 4's TypeScript SDK and phase 7's reviewers build on a fixed v1.
 
@@ -125,6 +125,20 @@ FUSE gives every request the caller's process ID, in the daemon's PID namespace,
 - **Calls.** `ListHeld`, `GetHeld` (change set with its writers, diff, the session's earlier change sets and verdicts), `Review(scope, tier, verdict, reasons, override)`. Monotonic: a verdict looser than the one so far fails unless `override` and the tier is human; the ledger records each verdict and every override.
 - **`AwaitDecision(scope, token)`** streams `held(tier)` updates, then the outcome; the client's existing `Decide` stays for unheld scopes.
 - **`escrow review`**: `list`, `show <scope>` (diff, writers and history), `commit|discard|return <scope> [--reason …] [--override]`. It is the human tier until phase 7's review interface.
+
+**As built (Oct 6, 2026).**
+
+- **The review socket.** `<socket>.review` serves the `Reviewer` service only, and the protocol socket serves `Escrow` only: each answers the other's calls with `UNIMPLEMENTED`. It is bound under a temporary name, set to mode 0600, then renamed into place, so no other user can connect in between. Sandboxes hide it, as they hide the other two sockets.
+- **Calls.** `ListHeld` returns the held scopes, oldest hold first, each with its name, labels, session, pending tiers, wait, verdict so far and tier reviews. `GetHeld` adds the change set (writers and diff) and the session's last 20 decisions. `Review(scope, tier, verdict, reasons, override)` gives a tier's verdict.
+- **Tier order.** The tier must be pending. An LLM reviews only when it is the next tier. A human may review while the LLM tier is still pending, and the human's verdict then stands for it too. Without this, every LLM-tier hold would stall until phase 7 brings an LLM reviewer. The software tier is not a reviewer (`INVALID_ARGUMENT`).
+- **Monotonic verdicts.** Order: commit < return < discard. A looser verdict than the one so far fails with `PERMISSION_DENIED`, unless the tier is human and `override` is set. Each verdict is a ledger line `op=review-<tier> decision=<verdict>`; an override adds `op=override decision=<from>-to-<to>` before it. A discard goes on to the human tier, as in the model.
+- **Deciding.** After the last pending tier the daemon applies the verdict so far, as `Decide` would: a commit can conflict (rule 1.4), a return reopens the scope with each tier's reasons (`llm: …`), and every outcome unblocks the session. Until then the hold keeps the verdicts in the scope's store (`reviews` table, `hold_verdict`), so they survive a restart. Reviews and an opener's withdrawal of a held scope run one at a time.
+- **History.** `<state>/history.sqlite` keeps each decision of a scope that has a session or was held: its change set with the diff, the outcome and the tier reviews, as a `Decided` message. Each session keeps its newest 100 decisions, and scopes without a session keep 100 in all.
+- **`AwaitDecision(scope, token)`.** It streams `OUTCOME_STATUS_HELD` with the pending tiers, again after each review, then the final outcome, and ends. A scope decided already, or reopened by a return, gets its last outcome from the history, after a restart too. A scope that is not held fails with `FAILED_PRECONDITION`. The token is checked against the live scope, or against the hash the history kept.
+- **`escrow review [--socket S | --project P]`.** It runs `list`, `show <scope>` (tiers, reviews, each change with its writer chains, the session's earlier decisions, the diff) and `commit|discard|return <scope> [--tier llm|human] [--reason R]… [--override]`. The tier defaults to human.
+- **Python client.** `escrow.connect_reviewer()` returns `Reviewer` (`list_held`, `get_held`, `review`); `Client.await_decision`. The SDK's `escrow.scope` uses them in 3.5.
+- **Protocol.** The `Reviewer` service, `AwaitDecision`, and the `HeldScope`, `TierReview`, `Decided`, `ReviewRequest` and related messages. All additive, so `PROTOCOL_VERSION` stays 6 until the freeze.
+- **Checks.** `tests/conformance/test_reviewer.py` has 12 tests: the socket's mode and separation, listing and reading holds, tier order, a human standing for the LLM, monotonic verdicts and the ledgered override (rule 1.3), a reviewer's return reopening the scope and unblocking the session, `AwaitDecision` through two tiers and after the decision, a withdrawn hold ending its stream, rule 1.4's conflict, rule 1.5's session history, holds and verdicts across two restarts, and `escrow review`. Plus a unit test in `history.rs`.
 
 ### 3.5 Python SDK
 

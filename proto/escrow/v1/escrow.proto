@@ -9,6 +9,11 @@
 // stdin, stdout and stderr attached (SCM_RIGHTS), then the request, then any
 // number of SpawnSignal. The daemon answers with SpawnEvent frames: `pid`,
 // then `exit_code`, or `error` alone. Closing the connection kills the child.
+//
+// Reviewers decide held scopes over a third socket, `<ESCROW_SOCKET>.review`
+// (service Reviewer), created mode 0600 and never bound into a sandbox: the file
+// mode is the credential. Scope tokens give no access there, and the review socket
+// gives no scope rights.
 syntax = "proto3";
 
 package escrow.v1;
@@ -45,6 +50,32 @@ service Escrow {
   // The change set of a closed, undecided scope, diff included, without closing
   // anything: an open scope fails with FAILED_PRECONDITION. For `escrow diff`.
   rpc GetChangeSet(GetChangeSetRequest) returns (ChangeSet);
+
+  // Follow a held scope (Decide returned OUTCOME_STATUS_HELD) to its verdict: an
+  // OUTCOME_STATUS_HELD outcome now and after each tier's review (`tiers` the ones
+  // still to review), then the final outcome, and the stream ends. A scope decided
+  // already gets its last outcome; one that is not held fails with
+  // FAILED_PRECONDITION. Needs the scope's token, like Decide.
+  rpc AwaitDecision(AwaitDecisionRequest) returns (stream Outcome);
+}
+
+// Served on `<ESCROW_SOCKET>.review` only.
+service Reviewer {
+  // The held scopes, oldest hold first.
+  rpc ListHeld(ListHeldRequest) returns (ListHeldResponse);
+
+  // A held scope: its change set with writers and diff, its tiers' verdicts so far
+  // and its session's earlier decisions.
+  rpc GetHeld(GetHeldRequest) returns (GetHeldResponse);
+
+  // A tier's verdict on a held scope. The tier must be one the scope still waits
+  // for; a human's verdict also stands for the cheaper tiers still pending. Verdicts
+  // only tighten (commit < return < discard): a looser verdict than the one so far
+  // fails with PERMISSION_DENIED unless the tier is human and `override` is set,
+  // which the ledger records. After the last pending tier the scope is decided with
+  // the verdict so far, as Decide would (a commit can conflict); before it, the
+  // outcome is OUTCOME_STATUS_HELD with the tiers left.
+  rpc Review(ReviewRequest) returns (Outcome);
 }
 
 message PingRequest {}
@@ -266,3 +297,74 @@ message SpawnSignal {
 }
 
 message SettleUnscopedRequest {}
+
+message AwaitDecisionRequest {
+  string scope_id = 1;
+  string token = 2;
+}
+
+// One tier's verdict on a held scope.
+message TierReview {
+  Tier tier = 1;
+  Verdict verdict = 2;
+  repeated string reasons = 3;
+  // A human loosened the verdict so far.
+  bool override = 4;
+}
+
+message HeldScope {
+  string scope_id = 1;
+  string name = 2;
+  map<string, string> labels = 3;
+  string session = 4;
+  // The tiers still to review, cheapest first.
+  repeated Tier tiers = 5;
+  // The session's next scope waits for the verdict.
+  bool wait = 6;
+  // The strictest verdict so far: VERDICT_COMMIT before any review.
+  Verdict verdict = 7;
+  // The tiers' verdicts so far, in order.
+  repeated TierReview reviews = 8;
+  // When the scope was held, in milliseconds since the Unix epoch.
+  uint64 held_at_ms = 9;
+}
+
+message ListHeldRequest {}
+
+message ListHeldResponse {
+  repeated HeldScope scopes = 1;
+}
+
+message GetHeldRequest {
+  string scope_id = 1;
+}
+
+message GetHeldResponse {
+  HeldScope held = 1;
+  // Diff and writers included.
+  ChangeSet change_set = 2;
+  // The session's earlier decisions, oldest first (up to 20; none without a session).
+  repeated Decided history = 3;
+}
+
+// A decided scope, kept for its session's reviewers and for AwaitDecision.
+message Decided {
+  string scope_id = 1;
+  string name = 2;
+  // As it was decided, diff included; empty when an open scope was discarded.
+  ChangeSet change_set = 3;
+  Outcome outcome = 4;
+  // The tiers' verdicts, when the scope was held.
+  repeated TierReview reviews = 5;
+  // Milliseconds since the Unix epoch.
+  uint64 decided_at_ms = 6;
+}
+
+message ReviewRequest {
+  string scope_id = 1;
+  Tier tier = 2;
+  Verdict verdict = 3;
+  repeated string reasons = 4;
+  // A human loosens the verdict so far (recorded in the ledger).
+  bool override = 5;
+}

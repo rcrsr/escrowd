@@ -33,6 +33,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::policy::Tier;
 use crate::proc::{Info, Proc};
+use crate::review::{Decision, TierReview};
 use crate::sys::{self, Version};
 use crate::views::UPPER_BIT;
 
@@ -50,11 +51,16 @@ pub enum ScopeState {
 }
 
 /// A closed scope waiting for reviewers: the tiers still to review, cheapest first,
-/// and whether its session's next scope waits for the verdict.
+/// whether its session's next scope waits for the verdict, and the verdicts so far.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hold {
     pub tiers: Vec<Tier>,
     pub wait: bool,
+    /// Milliseconds since the Unix epoch.
+    pub at_ms: u64,
+    /// The strictest verdict so far (commit before any review).
+    pub verdict: Decision,
+    pub reviews: Vec<TierReview>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -140,7 +146,24 @@ CREATE TABLE IF NOT EXISTS procs (
     args BLOB NOT NULL,
     parent INTEGER NOT NULL
 ) STRICT;
+CREATE TABLE IF NOT EXISTS reviews (
+    seq INTEGER PRIMARY KEY,
+    tier TEXT NOT NULL,
+    verdict TEXT NOT NULL,
+    override INTEGER NOT NULL,
+    reasons BLOB NOT NULL
+) STRICT;
 ";
+
+/// Strings joined by NUL (none: empty), as the store keeps arguments and reasons.
+fn split_nul(b: &[u8]) -> Vec<String> {
+    if b.is_empty() {
+        return Vec::new();
+    }
+    b.split(|b| *b == 0)
+        .map(|a| String::from_utf8_lossy(a).into_owned())
+        .collect()
+}
 
 fn sql(e: rusqlite::Error) -> io::Error {
     io::Error::other(e)
@@ -279,13 +302,41 @@ impl ScopeStore {
         let session = text("session")?.unwrap_or_default();
         let hold = match text("hold_tiers")? {
             None => None,
-            Some(t) => Some(Hold {
-                tiers: t
-                    .split(',')
-                    .map(|t| Tier::parse(t).ok_or_else(|| io::Error::other(format!("bad held tier {t}"))))
-                    .collect::<io::Result<_>>()?,
-                wait: text("hold_wait")?.is_some_and(|w| w == "1"),
-            }),
+            Some(t) => {
+                let tier = |t: &str| Tier::parse(t).ok_or_else(|| io::Error::other(format!("bad held tier {t}")));
+                let decision =
+                    |d: &str| Decision::parse(d).ok_or_else(|| io::Error::other(format!("bad held verdict {d}")));
+                let mut st = db
+                    .prepare("SELECT tier, verdict, override, reasons FROM reviews ORDER BY seq")
+                    .map_err(sql)?;
+                let rows = st
+                    .query_map([], |r| {
+                        Ok((
+                            r.get::<_, String>(0)?,
+                            r.get::<_, String>(1)?,
+                            r.get::<_, i64>(2)?,
+                            r.get::<_, Vec<u8>>(3)?,
+                        ))
+                    })
+                    .map_err(sql)?;
+                let mut reviews = Vec::new();
+                for row in rows {
+                    let (t, v, o, reasons) = row.map_err(sql)?;
+                    reviews.push(TierReview {
+                        tier: tier(&t)?,
+                        verdict: decision(&v)?,
+                        over: o != 0,
+                        reasons: split_nul(&reasons),
+                    });
+                }
+                Some(Hold {
+                    tiers: t.split(',').map(tier).collect::<io::Result<_>>()?,
+                    wait: text("hold_wait")?.is_some_and(|w| w == "1"),
+                    at_ms: text("hold_at")?.and_then(|t| t.parse().ok()).unwrap_or(0),
+                    verdict: decision(&text("hold_verdict")?.unwrap_or_else(|| "commit".into()))?,
+                    reviews,
+                })
+            }
         };
         let state = match meta("state")? {
             rusqlite::types::Value::Text(t) if t == "closed" => ScopeState::Closed,
@@ -343,13 +394,7 @@ impl ScopeStore {
                         program: sys::path_from(r.get(2)?),
                         dev: r.get::<_, i64>(3)? as u64,
                         ino: r.get::<_, i64>(4)? as u64,
-                        args: if args.is_empty() {
-                            Vec::new()
-                        } else {
-                            args.split(|b| *b == 0)
-                                .map(|a| String::from_utf8_lossy(a).into_owned())
-                                .collect()
-                        },
+                        args: split_nul(&args),
                         parent: r.get::<_, i64>(6)? as u64,
                     };
                     Ok((info.id, info))
@@ -458,19 +503,45 @@ impl ScopeStore {
     pub fn set_hold(&mut self, hold: Option<Hold>) -> io::Result<()> {
         let db = self.db.get_mut().unwrap();
         let tx = db.transaction().map_err(sql)?;
-        tx.execute("DELETE FROM meta WHERE key IN ('hold_tiers', 'hold_wait')", [])
-            .map_err(sql)?;
+        tx.execute(
+            "DELETE FROM meta WHERE key IN ('hold_tiers', 'hold_wait', 'hold_at', 'hold_verdict')",
+            [],
+        )
+        .map_err(sql)?;
+        tx.execute("DELETE FROM reviews", []).map_err(sql)?;
         if let Some(h) = &hold {
             let tiers: Vec<&str> = h.tiers.iter().map(|t| t.as_str()).collect();
             tx.execute(
-                "INSERT INTO meta VALUES ('hold_tiers', ?1), ('hold_wait', ?2)",
-                params![tiers.join(","), if h.wait { "1" } else { "0" }],
+                "INSERT INTO meta VALUES ('hold_tiers', ?1), ('hold_wait', ?2), ('hold_at', ?3), ('hold_verdict', ?4)",
+                params![
+                    tiers.join(","),
+                    if h.wait { "1" } else { "0" },
+                    h.at_ms.to_string(),
+                    h.verdict.as_str()
+                ],
             )
             .map_err(sql)?;
+            for r in &h.reviews {
+                tx.execute(
+                    "INSERT INTO reviews (tier, verdict, override, reasons) VALUES (?1, ?2, ?3, ?4)",
+                    params![
+                        r.tier.as_str(),
+                        r.verdict.as_str(),
+                        r.over as i64,
+                        r.reasons.join("\0").into_bytes()
+                    ],
+                )
+                .map_err(sql)?;
+            }
         }
         tx.commit().map_err(sql)?;
         self.hold = hold;
         Ok(())
+    }
+
+    /// SHA-256 of the scope's token, hex; None: it has none.
+    pub fn token_sha256(&self) -> Option<&str> {
+        self.token_sha256.as_deref()
     }
 
     pub fn labels(&self) -> io::Result<HashMap<String, String>> {

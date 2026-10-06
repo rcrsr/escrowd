@@ -208,6 +208,7 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
     let sockets = [
         socket_dir.join(&socket_name),
         exec::exec_socket(&socket_dir.join(&socket_name)),
+        rpc::review_socket(&socket_dir.join(&socket_name)),
     ];
     // Open every base before anything is mounted, so reads of it never loop through a view.
     // A root the policy does not serve is opened too: recovery may need it.
@@ -306,7 +307,11 @@ impl Daemon {
             read: self.read.clone(),
             write: self.write.clone(),
             hide_dirs: vec![self.state.clone(), self.mount.clone()],
-            hide_files: vec![self.socket.clone(), exec::exec_socket(&self.socket)],
+            hide_files: vec![
+                self.socket.clone(),
+                exec::exec_socket(&self.socket),
+                rpc::review_socket(&self.socket),
+            ],
             home: self.home.clone(),
         }
     }

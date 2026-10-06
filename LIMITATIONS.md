@@ -2,7 +2,7 @@
 
 Every known limit of escrowd as built, in one place. Each entry says where it is tracked. Update this file when a limit is found or lifted; the plans keep the detail.
 
-Status as of Oct 6, 2026: phase 3, after sub-phase 3.3.
+Status as of Oct 6, 2026: phase 3, after sub-phase 3.4.
 
 ## Capture
 
@@ -83,7 +83,10 @@ Status as of Oct 6, 2026: phase 3, after sub-phase 3.3.
 | `conflict.reads` is off by default: two concurrent scopes can each read a file the other changes and both commit (write skew). | By design, decided Oct 5, 2026: sessions that wait (phase 3) serialize one agent's scopes; hosts that need serializable scopes turn it on. |
 | `conflict.reads` checks files read through the scope's view; reads not yet written to the store when the daemon was killed drop out of the check, as they drop out of the change set. | By design (2.7, 2.3). |
 | One daemon per `escrow run`; nested scopes are not supported. | Carried. |
-| Until reviewers can connect (3.4), a held scope is decided only by its opener's withdrawal (discard): no tier gives a verdict yet. | Phase 3.4 (reviewer role, `escrow review`). |
+| No LLM reviewer exists yet: an LLM-tier hold waits for a stand-in on the review socket, or for a human, whose verdict also stands for a pending LLM tier. | Phase 7 (LLM auditor). |
+| Anyone who can open the review socket (the daemon's user, mode 0600) reviews as any tier: the socket does not tell an LLM from a human, and `--tier` is the caller's word. | By design, decided Oct 5, 2026: the file mode is the credential; per-tier credentials come with phase 7's reviewers. |
+| The history keeps the newest 100 decisions per session (and 100 of scopes without one); a reviewer sees the last 20. `AwaitDecision` on a scope whose decision dropped out fails with `NOT_FOUND`. | By design (3.4). |
+| A scope's history entry holds its diff (up to `diff.max_bytes`), so `history.sqlite` grows with the diffs of up to 100 decisions per session. | By design (3.4); decisions of scopes without a session that were never held are not kept. |
 | While the unscoped scope (`implicit` mode) is held, IO outside scopes fails as on any closed scope, until its verdict. | By design (3.2): `SettleUnscoped` meets the same review rules, decided Oct 5, 2026. |
 | A session's next `OpenScope` waits behind a held scope only up to the client's deadline (`grpc-timeout`); a client without one waits until the verdict. | By design (3.2). |
 | A `deny` rule lets lookups pass: a denied file's name, size and times are visible to `stat`, its contents and listings are not. | By design, decided Oct 5, 2026 (listed paths inside a denied directory must stay reachable). |
