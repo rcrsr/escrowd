@@ -12,13 +12,14 @@ Status as of Oct 5, 2026: phase 2, after sub-phase 2.8.
 | `os.spawn*`, `os.exec*` and `os.fork` bypass the SDK's scope (`os.system`, `os.posix_spawn*` and `subprocess` run in it since 2.6). | Carried; each scope's outcome counts what reached the unscoped mode (`s.outcome.unscoped`). |
 | `os.chdir` into the project moves the whole process's working directory into the scope's view: another task's native code with relative paths follows it until the scope is decided. | By design (2.6): the working directory is per process. |
 | `s.outcome.unscoped` counts every change the unscoped mode saw while the scope was open, including other tasks' and threads' (and from daemon start, after a restart); 0 in `passthrough` mode. | By design (2.6). |
+| In the host process, an absolute symlink to a project path is followed by the kernel to the project path, which the unscoped mode serves, not the scope (sandboxed children resolve it inside the scope's view). | Found Oct 5, 2026 (proposal scrub); carried. |
 | Child file descriptors beyond 0–2 are not passed to `escrow exec` children. | Carried since 1.5. |
 | `passthrough` mode IO is unlogged: one `op=passthrough` ledger line at daemon start only. | By design, decided Oct 4, 2026 (logging each operation would route it through FUSE); built in 2.7. `deny` is the mode for agent hosts. |
 | Paths outside `$HOME`, `/tmp` and the project are not captured: other host paths are read-only binds (`roots.other.read`) or unescrowed passthrough binds. | By design (2.4). |
 | `passthrough` paths (package caches) are shared and unescrowed: one ledger line per bind at sandbox start, the IO itself unlogged. | By design (2.4, #11). |
 | In `passthrough` unscoped mode, the app's own `$HOME` and `/tmp` stay empty tmpfs even when the policy serves them; its scopes get their views. | By design, decided Oct 5, 2026: no unscoped scope exists to serve them. |
 | The SDK rewrites absolute paths under a served root (`os.path.expanduser` gives one); a literal `~/x` passed to `open` is a relative path, as in Python. | By design. |
-| No network capture; `--unshare-net` blocks the network. | Phase 8. |
+| No network capture; `--unshare-net` blocks the network. | Phase 9. |
 
 ## Filesystem semantics
 
@@ -50,7 +51,7 @@ Status as of Oct 5, 2026: phase 2, after sub-phase 2.8.
 
 | Limit | Status |
 | --- | --- |
-| Linux only, kernel 6.8 or later. | macOS in phase 7. |
+| Linux only, kernel 6.8 or later. | macOS in phase 8. |
 | Ubuntu 24.04+ needs escrowd's own bwrap and AppArmor profile (`packaging/ubuntu/install.sh`); never set the userns sysctl to 0. | By design (0.1, 0.2). |
 | Ubuntu 26.04 confines `fusermount3` to mountpoints under `$HOME`, `/mnt`, `/run/user/<uid>`, `/media` and `/tmp`; views live under `$XDG_RUNTIME_DIR`. | By design. |
 
@@ -68,6 +69,7 @@ Status as of Oct 5, 2026: phase 2, after sub-phase 2.8.
 | `escrow diff` and `GetChangeSet` need a closed, undecided scope; an open scope has no diff yet, and a decided scope's diff lives only in the caller's change set and outcome. | By design (2.5). |
 | `escrow run --on-exit` settles the default scope without building a diff. | By design (2.5): nothing reads it. |
 | A conflict under `conflict.verdict: return` reopens the scope on its old snapshot: a path that conflicted conflicts again while the scope still touches it (or, with `conflict.reads`, has read it). The agent drops that change or redoes the work in a new scope. | By design (2.7); rebase stays out of phase 2. |
+| `conflict.reads` is off by default: two concurrent scopes can each read a file the other changes and both commit (write skew). | By design, decided Oct 5, 2026: sessions that wait (phase 3) serialize one agent's scopes; hosts that need serializable scopes turn it on. |
 | `conflict.reads` checks files read through the scope's view; reads not yet written to the store when the daemon was killed drop out of the check, as they drop out of the change set. | By design (2.7, 2.3). |
 | One daemon per `escrow run`; nested scopes are not supported. | Carried. |
 | A `deny` rule lets lookups pass: a denied file's name, size and times are visible to `stat`, its contents and listings are not. | By design, decided Oct 5, 2026 (listed paths inside a denied directory must stay reachable). |
