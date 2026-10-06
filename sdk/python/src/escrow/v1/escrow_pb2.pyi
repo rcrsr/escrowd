@@ -126,14 +126,34 @@ class CloseScopeRequest(_message.Message):
     def __init__(self, scope_id: _Optional[str] = ..., token: _Optional[str] = ...) -> None: ...
 
 class Change(_message.Message):
-    __slots__ = ("kind", "path", "from_path")
+    __slots__ = ("kind", "path", "from_path", "writers")
     KIND_FIELD_NUMBER: _ClassVar[int]
     PATH_FIELD_NUMBER: _ClassVar[int]
     FROM_PATH_FIELD_NUMBER: _ClassVar[int]
+    WRITERS_FIELD_NUMBER: _ClassVar[int]
     kind: ChangeKind
     path: str
     from_path: str
-    def __init__(self, kind: _Optional[_Union[ChangeKind, str]] = ..., path: _Optional[str] = ..., from_path: _Optional[str] = ...) -> None: ...
+    writers: _containers.RepeatedScalarFieldContainer[int]
+    def __init__(self, kind: _Optional[_Union[ChangeKind, str]] = ..., path: _Optional[str] = ..., from_path: _Optional[str] = ..., writers: _Optional[_Iterable[int]] = ...) -> None: ...
+
+class Process(_message.Message):
+    __slots__ = ("id", "pid", "program", "dev", "ino", "args", "parent")
+    ID_FIELD_NUMBER: _ClassVar[int]
+    PID_FIELD_NUMBER: _ClassVar[int]
+    PROGRAM_FIELD_NUMBER: _ClassVar[int]
+    DEV_FIELD_NUMBER: _ClassVar[int]
+    INO_FIELD_NUMBER: _ClassVar[int]
+    ARGS_FIELD_NUMBER: _ClassVar[int]
+    PARENT_FIELD_NUMBER: _ClassVar[int]
+    id: int
+    pid: int
+    program: str
+    dev: int
+    ino: int
+    args: _containers.RepeatedScalarFieldContainer[str]
+    parent: int
+    def __init__(self, id: _Optional[int] = ..., pid: _Optional[int] = ..., program: _Optional[str] = ..., dev: _Optional[int] = ..., ino: _Optional[int] = ..., args: _Optional[_Iterable[str]] = ..., parent: _Optional[int] = ...) -> None: ...
 
 class Read(_message.Message):
     __slots__ = ("path", "decision")
@@ -144,7 +164,7 @@ class Read(_message.Message):
     def __init__(self, path: _Optional[str] = ..., decision: _Optional[_Union[ReadDecision, str]] = ...) -> None: ...
 
 class ChangeSet(_message.Message):
-    __slots__ = ("scope_id", "changes", "reads", "labels", "diff", "unscoped_ops", "review")
+    __slots__ = ("scope_id", "changes", "reads", "labels", "diff", "unscoped_ops", "review", "processes")
     class LabelsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -159,6 +179,7 @@ class ChangeSet(_message.Message):
     DIFF_FIELD_NUMBER: _ClassVar[int]
     UNSCOPED_OPS_FIELD_NUMBER: _ClassVar[int]
     REVIEW_FIELD_NUMBER: _ClassVar[int]
+    PROCESSES_FIELD_NUMBER: _ClassVar[int]
     scope_id: str
     changes: _containers.RepeatedCompositeFieldContainer[Change]
     reads: _containers.RepeatedCompositeFieldContainer[Read]
@@ -166,7 +187,8 @@ class ChangeSet(_message.Message):
     diff: str
     unscoped_ops: int
     review: Review
-    def __init__(self, scope_id: _Optional[str] = ..., changes: _Optional[_Iterable[_Union[Change, _Mapping]]] = ..., reads: _Optional[_Iterable[_Union[Read, _Mapping]]] = ..., labels: _Optional[_Mapping[str, str]] = ..., diff: _Optional[str] = ..., unscoped_ops: _Optional[int] = ..., review: _Optional[_Union[Review, _Mapping]] = ...) -> None: ...
+    processes: _containers.RepeatedCompositeFieldContainer[Process]
+    def __init__(self, scope_id: _Optional[str] = ..., changes: _Optional[_Iterable[_Union[Change, _Mapping]]] = ..., reads: _Optional[_Iterable[_Union[Read, _Mapping]]] = ..., labels: _Optional[_Mapping[str, str]] = ..., diff: _Optional[str] = ..., unscoped_ops: _Optional[int] = ..., review: _Optional[_Union[Review, _Mapping]] = ..., processes: _Optional[_Iterable[_Union[Process, _Mapping]]] = ...) -> None: ...
 
 class Review(_message.Message):
     __slots__ = ("verdict", "reasons", "tiers", "wait_required")

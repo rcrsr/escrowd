@@ -2,7 +2,7 @@
 
 Every known limit of escrowd as built, in one place. Each entry says where it is tracked. Update this file when a limit is found or lifted; the plans keep the detail.
 
-Status as of Oct 6, 2026: phase 3, after sub-phase 3.2.
+Status as of Oct 6, 2026: phase 3, after sub-phase 3.3.
 
 ## Capture
 
@@ -21,6 +21,17 @@ Status as of Oct 6, 2026: phase 3, after sub-phase 3.2.
 | The SDK rewrites absolute paths under a served root (`os.path.expanduser` gives one); a literal `~/x` passed to `open` is a relative path, as in Python. | By design. |
 | No network capture; `--unshare-net` blocks the network. | Phase 9. |
 
+## Attribution
+
+| Limit | Status |
+| --- | --- |
+| A process's arguments are what it says about itself: any process can rewrite its own `argv`. A script reports its interpreter as its program (`/usr/bin/dash`, not the script). | By design (3.3); `write.only_by` matches the binary's device and inode, which the kernel set. |
+| A write through a file descriptor counts toward the process that opened the file: a descriptor inherited or passed, an `mmap` write and the kernel's writeback all name the opener. | By design, decided Oct 6, 2026: no per-write cost, and the writeback cache keeps its speed. |
+| In-process SDK IO names the host process: two tool calls in one host differ only by their scopes' labels. | By design (3.3). |
+| Reads, lookups and listings name no process; only changes do (create, open for writing, mkdir, symlink, link, rename, unlink, rmdir, setattr). | By design (3.3): attribution costs one `/proc` read per change, none per read. |
+| The parent chain stops before the daemon, after a session leader or after 16 parents. A program's path is as its own mount namespace shows it (a sandboxed binary in the project: its project path). | By design (3.3). |
+| Command lines can hold secrets (`curl -H "Authorization: …"`): the change set carries them whole, the ledger up to 4 KiB. | By design, decided Oct 6, 2026 (redacting by policy pattern was the alternative). |
+
 ## Filesystem semantics
 
 | Limit | Status |
@@ -36,7 +47,7 @@ Status as of Oct 6, 2026: phase 3, after sub-phase 3.2.
 | Limit | Status |
 | --- | --- |
 | Tested against process kills only, not power loss; the fsync audit covers what kills cannot. | Carried (phase 2). |
-| A daemon killed mid-run renumbers new upper-only entries and drops first reads not yet written from the change set; renames of base files and change versions are always written. | By design since 2.3; no process sees both numbers, since the old mount is dead. |
+| A daemon killed mid-run renumbers new upper-only entries and drops first reads and writers not yet written from the change set; renames of base files and change versions are always written. A change without a writer breaks any `write.only_by` rule on its path. | By design since 2.3 (writers since 3.3); no process sees both numbers, since the old mount is dead. |
 | A daemon restart leaves sandboxes' bind mounts stale (ENOTCONN). | Carried since phase 0. |
 
 ## Performance

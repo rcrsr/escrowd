@@ -7,29 +7,32 @@
 //! - pinned inode numbers: entries whose inode cannot be derived from the base
 //!   path they now sit at (upper-only files, renamed files), so inode numbers
 //!   survive a daemon restart,
+//! - the processes that changed each path (`writers`) and what each process was
+//!   (`procs`: program, binary identity, arguments, parent),
 //! - scope name, labels, index, lifecycle state, the base generation it opened at
 //!   (its snapshot), the upper-only inode counter and the SHA-256 of the scope's
 //!   token (project views only; the token itself is never stored).
 //!
 //! Hot lookups (hidden, pinned inode) hit in-memory copies; every change is
 //! written through to SQLite before the FUSE reply, except pins of upper-only
-//! numbers, the upper-only counter and first reads: they are written with the
+//! numbers, the upper-only counter, first reads and writers: they are written with the
 //! next change to a base-derived pin (a rename of a base entry), every
 //! `PIN_BATCH` changes, on close and at shutdown, each time as one consistent
 //! snapshot. A daemon killed in between gives those entries new numbers after its
 //! restart (no process sees both, since a restart leaves the old mount dead) and
-//! drops those reads from the change set; the versions of changed paths, which
+//! drops those reads and writers from the change set; the versions of changed paths, which
 //! the conflict check uses, are always written.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::policy::Tier;
+use crate::proc::{Info, Proc};
 use crate::sys::{self, Version};
 use crate::views::UPPER_BIT;
 
@@ -89,6 +92,14 @@ pub struct ScopeStore {
     /// The session that orders the scope among its agent's scopes ("": none).
     pub session: String,
     hold: Option<Hold>,
+    /// Path -> the processes that changed it (ids in `procs`).
+    writers: HashMap<PathBuf, BTreeSet<u64>>,
+    procs: HashMap<u64, Info>,
+    /// Writers added and not written yet; paths whose writers moved or went (their
+    /// current set, or its absence, is written); processes not written yet.
+    added_writers: Vec<(PathBuf, u64)>,
+    unwritten_writers: HashSet<PathBuf>,
+    unwritten_procs: Vec<u64>,
 }
 
 const PIN_BATCH: usize = 4096;
@@ -114,6 +125,20 @@ CREATE TABLE IF NOT EXISTS versions (
     size INTEGER NOT NULL,
     mtime_ns INTEGER NOT NULL,
     ctime_ns INTEGER NOT NULL
+) STRICT;
+CREATE TABLE IF NOT EXISTS writers (
+    path BLOB NOT NULL,
+    proc INTEGER NOT NULL,
+    PRIMARY KEY (path, proc)
+) STRICT, WITHOUT ROWID;
+CREATE TABLE IF NOT EXISTS procs (
+    id INTEGER PRIMARY KEY,
+    pid INTEGER NOT NULL,
+    program BLOB NOT NULL,
+    dev INTEGER NOT NULL,
+    ino INTEGER NOT NULL,
+    args BLOB NOT NULL,
+    parent INTEGER NOT NULL
 ) STRICT;
 ";
 
@@ -294,6 +319,44 @@ impl ScopeStore {
                 .map_err(sql)?;
             rows.collect::<Result<HashMap<_, _>, _>>().map_err(sql)?
         };
+        let mut writers: HashMap<PathBuf, BTreeSet<u64>> = HashMap::new();
+        {
+            let mut st = db.prepare("SELECT path, proc FROM writers").map_err(sql)?;
+            let rows = st
+                .query_map([], |r| Ok((sys::path_from(r.get(0)?), r.get::<_, i64>(1)? as u64)))
+                .map_err(sql)?;
+            for row in rows {
+                let (p, id) = row.map_err(sql)?;
+                writers.entry(p).or_default().insert(id);
+            }
+        }
+        let procs = {
+            let mut st = db
+                .prepare("SELECT id, pid, program, dev, ino, args, parent FROM procs")
+                .map_err(sql)?;
+            let rows = st
+                .query_map([], |r| {
+                    let args: Vec<u8> = r.get(5)?;
+                    let info = Info {
+                        id: r.get::<_, i64>(0)? as u64,
+                        pid: r.get(1)?,
+                        program: sys::path_from(r.get(2)?),
+                        dev: r.get::<_, i64>(3)? as u64,
+                        ino: r.get::<_, i64>(4)? as u64,
+                        args: if args.is_empty() {
+                            Vec::new()
+                        } else {
+                            args.split(|b| *b == 0)
+                                .map(|a| String::from_utf8_lossy(a).into_owned())
+                                .collect()
+                        },
+                        parent: r.get::<_, i64>(6)? as u64,
+                    };
+                    Ok((info.id, info))
+                })
+                .map_err(sql)?;
+            rows.collect::<Result<HashMap<_, _>, _>>().map_err(sql)?
+        };
         Ok(ScopeStore {
             id: id.to_string(),
             name,
@@ -315,6 +378,11 @@ impl ScopeStore {
             state,
             session,
             hold,
+            writers,
+            procs,
+            added_writers: Vec::new(),
+            unwritten_writers: HashSet::new(),
+            unwritten_procs: Vec::new(),
         })
     }
 
@@ -510,7 +578,13 @@ impl ScopeStore {
 
     /// Write the pins changed since the last flush, and the counter, in one transaction.
     pub fn flush(&mut self) -> io::Result<()> {
-        if self.unwritten_pins.is_empty() && !self.unwritten_counter && self.unwritten_reads.is_empty() {
+        if self.unwritten_pins.is_empty()
+            && !self.unwritten_counter
+            && self.unwritten_reads.is_empty()
+            && self.added_writers.is_empty()
+            && self.unwritten_writers.is_empty()
+            && self.unwritten_procs.is_empty()
+        {
             return Ok(());
         }
         let tx = self.db.get_mut().unwrap().savepoint().map_err(sql)?;
@@ -542,10 +616,45 @@ impl ScopeStore {
                 *v,
             )?;
         }
+        for id in &self.unwritten_procs {
+            let p = &self.procs[id];
+            exec(
+                &tx,
+                "INSERT OR IGNORE INTO procs VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    p.id as i64,
+                    p.pid,
+                    sys::path_bytes(&p.program),
+                    p.dev as i64,
+                    p.ino as i64,
+                    p.args.join("\0").into_bytes(),
+                    p.parent as i64
+                ],
+            )?;
+        }
+        for (path, id) in &self.added_writers {
+            if !self.unwritten_writers.contains(path) {
+                exec(
+                    &tx,
+                    "INSERT OR IGNORE INTO writers VALUES (?1, ?2)",
+                    params![sys::path_bytes(path), *id as i64],
+                )?;
+            }
+        }
+        for path in &self.unwritten_writers {
+            let bytes = sys::path_bytes(path);
+            exec(&tx, "DELETE FROM writers WHERE path = ?1", [bytes])?;
+            for id in self.writers.get(path).into_iter().flatten() {
+                exec(&tx, "INSERT INTO writers VALUES (?1, ?2)", params![bytes, *id as i64])?;
+            }
+        }
         tx.commit().map_err(sql)?;
         self.unwritten_pins.clear();
         self.unwritten_counter = false;
         self.unwritten_reads.clear();
+        self.added_writers.clear();
+        self.unwritten_writers.clear();
+        self.unwritten_procs.clear();
         Ok(())
     }
 
@@ -557,7 +666,11 @@ impl ScopeStore {
     }
 
     fn maybe_flush(&mut self, now: bool) -> io::Result<()> {
-        if now || self.unwritten_pins.len() + self.unwritten_reads.len() >= PIN_BATCH {
+        let unwritten = self.unwritten_pins.len()
+            + self.unwritten_reads.len()
+            + self.added_writers.len()
+            + self.unwritten_writers.len();
+        if now || unwritten >= PIN_BATCH {
             self.flush()
         } else {
             Ok(())
@@ -667,5 +780,63 @@ impl ScopeStore {
         // A change keeps the version of a first read not written yet.
         let first = self.unwritten_reads.remove(rel).unwrap_or(v);
         write_version(self.db.get_mut().unwrap(), rel, seen, first)
+    }
+
+    /// Whether `proc` is already a writer of `rel` (a shared lock suffices to check).
+    pub fn has_writer(&self, rel: &Path, proc: u64) -> bool {
+        self.writers.get(rel).is_some_and(|w| w.contains(&proc))
+    }
+
+    /// `p` changed `rel`; it and its ancestors are recorded once. Written behind.
+    pub fn add_writer(&mut self, rel: &Path, p: &Arc<Proc>) -> io::Result<()> {
+        for a in p.chain() {
+            if self.procs.contains_key(&a.info.id) {
+                break; // and so are its ancestors
+            }
+            self.procs.insert(a.info.id, a.info.clone());
+            self.unwritten_procs.push(a.info.id);
+        }
+        if self.writers.entry(rel.to_path_buf()).or_default().insert(p.info.id) {
+            self.added_writers.push((rel.to_path_buf(), p.info.id));
+        }
+        self.maybe_flush(false)
+    }
+
+    /// The writers at `from` (and under it, a directory) move to `to`, joining any there.
+    pub fn move_writers(&mut self, from: &Path, to: &Path, dir: bool) -> io::Result<()> {
+        let moving: Vec<PathBuf> = if dir {
+            self.writers.keys().filter(|p| p.starts_with(from)).cloned().collect()
+        } else {
+            self.writers
+                .contains_key(from)
+                .then(|| from.to_path_buf())
+                .into_iter()
+                .collect()
+        };
+        for old in moving {
+            let ids = self.writers.remove(&old).expect("listed");
+            let new = moved(&old, from, to).expect("filtered on prefix");
+            self.writers.entry(new.clone()).or_default().extend(ids);
+            self.unwritten_writers.insert(old);
+            self.unwritten_writers.insert(new);
+        }
+        self.maybe_flush(false)
+    }
+
+    /// Forget the writers of `rel` (an entry the scope made, now removed).
+    pub fn drop_writers(&mut self, rel: &Path) -> io::Result<()> {
+        if self.writers.remove(rel).is_some() {
+            self.unwritten_writers.insert(rel.to_path_buf());
+        }
+        self.maybe_flush(false)
+    }
+
+    /// The processes that changed `rel`.
+    pub fn writers(&self, rel: &Path) -> Option<&BTreeSet<u64>> {
+        self.writers.get(rel)
+    }
+
+    pub fn proc(&self, id: u64) -> Option<&Info> {
+        self.procs.get(&id)
     }
 }

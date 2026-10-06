@@ -38,6 +38,7 @@ use crate::diff;
 use crate::gate::Gate;
 use crate::ledger::Ledger;
 use crate::policy::{ConflictRules, ConflictVerdict, Tier};
+use crate::proc::{Proc, Procs};
 use crate::review;
 use crate::roots::{self, Access, PROJECT, Rules};
 use crate::snapshot::Base;
@@ -54,6 +55,8 @@ const SCOPE_SHIFT: u32 = 48;
 pub const UPPER_BIT: u64 = 1 << 47;
 
 pub type R<T> = Result<T, Errno>;
+/// The process that asked for an operation, if known.
+type By<'a> = Option<&'a Arc<Proc>>;
 
 /// A scope just opened.
 pub struct Opened {
@@ -318,6 +321,7 @@ pub struct Views {
     unscoped: Unscoped,
     conflict: ConflictRules,
     review: review::Rules,
+    procs: Procs,
     notifier: std::sync::OnceLock<fuser::Notifier>,
     scopes: RwLock<HashMap<String, Arc<ScopeHandle>>>,
     next_idx: Mutex<u64>,
@@ -380,6 +384,7 @@ impl Views {
             unscoped,
             conflict,
             review,
+            procs: Procs::default(),
             notifier: std::sync::OnceLock::new(),
             scopes: RwLock::new(HashMap::new()),
             next_idx: Mutex::new(0),
@@ -621,6 +626,7 @@ impl Views {
             changes: Vec::new(),
             reads: Vec::new(),
             labels: HashMap::new(),
+            procs: BTreeMap::new(),
             unscoped: 0,
             review: None,
         };
@@ -630,6 +636,7 @@ impl Views {
                 out.labels = cs.labels;
             }
             out.changes.extend(cs.changes);
+            out.procs.extend(cs.procs);
             out.reads.extend(
                 cs.reads
                     .into_iter()
@@ -661,11 +668,17 @@ impl Views {
         for c in &cs.changes {
             let path = self.shown(c.root, &c.path);
             let from = c.from.as_deref().map(|f| self.shown(c.root, f));
+            let writers = c.writers.iter().filter_map(|id| cs.procs.get(id));
             if let Some(p) = std::iter::once(&path).chain(&from).find(|p| self.review.denied(p)) {
                 hits.push(review::Hit {
                     path: p.clone(),
-                    content: None,
+                    rule: review::Broken::Deny,
                 });
+            } else if let Some((p, rule)) = std::iter::once(&path)
+                .chain(&from)
+                .find_map(|p| Some((p, self.review.only_by(p, writers.clone())?)))
+            {
+                hits.push(review::Hit { path: p.clone(), rule });
             } else if c.kind != Kind::Delete
                 && self.review.checks_content()
                 && let Some(h) = hs.iter().find(|h| h.root == c.root)
@@ -674,7 +687,7 @@ impl Views {
             {
                 hits.push(review::Hit {
                     path: path.clone(),
-                    content: Some(found.to_string()),
+                    rule: review::Broken::Content(found.to_string()),
                 });
             }
             shown.push(path);
@@ -682,12 +695,7 @@ impl Views {
         }
         if log {
             for hit in &hits {
-                let op = if hit.content.is_some() {
-                    "write-content"
-                } else {
-                    "write-deny"
-                };
-                self.ledger.append(id, op, &hit.path, None, "deny");
+                self.ledger.append(id, hit.op(), &hit.path, None, "deny");
             }
         }
         Ok(self.review.review(shown.iter().map(PathBuf::as_path), hits))
@@ -1130,23 +1138,48 @@ impl Views {
     // ---- operations, in FUSE order ----
 
     pub fn log(&self, h: &ScopeHandle, op: &str, rel: &Path, decision: &str) {
+        self.log_by(h, op, rel, None, decision)
+    }
+
+    /// A ledger line naming the process `by` that asked for it.
+    fn log_by(&self, h: &ScopeHandle, op: &str, rel: &Path, by: By, decision: &str) {
+        let proc = by.map(|p| p.info.id);
         self.ledger
-            .append(&h.group, op, &self.shown(h.root, rel), None, decision);
+            .append_by(&h.group, op, &self.shown(h.root, rel), None, proc, decision);
+    }
+
+    /// The process behind the FUSE request of thread `tid`; the first time, its
+    /// `proc` line and its ancestors' go to the ledger.
+    fn caller(&self, tid: u32) -> Option<Arc<Proc>> {
+        let (p, fresh) = self.procs.of(tid)?;
+        for f in &fresh {
+            self.ledger.proc(f);
+        }
+        Some(p)
+    }
+
+    /// `by` changed `rel`: it goes into the change set's writers.
+    fn wrote(&self, h: &ScopeHandle, rel: &Path, by: By) -> R<()> {
+        let Some(p) = by else { return Ok(()) };
+        if h.store_read().has_writer(rel, p.info.id) {
+            return Ok(());
+        }
+        h.store().add_writer(rel, p).map_err(errno)
     }
 
     /// `rel` may change: the scope is open, the rules capture it (or keep it
     /// ephemeral), and the scope is writable (ephemeral paths always are). A change
     /// to a captured path of the unscoped scope counts in `unscoped_changes`.
-    fn may_change(&self, h: &ScopeHandle, op: &str, rel: &Path) -> R<()> {
-        self.check_change(h, op, rel, true)
+    fn may_change(&self, h: &ScopeHandle, op: &str, rel: &Path, by: By) -> R<()> {
+        self.check_change(h, op, rel, by, true)
     }
 
     /// The second path of a rename or a link: checked, not counted again.
-    fn may_change_too(&self, h: &ScopeHandle, op: &str, rel: &Path) -> R<()> {
-        self.check_change(h, op, rel, false)
+    fn may_change_too(&self, h: &ScopeHandle, op: &str, rel: &Path, by: By) -> R<()> {
+        self.check_change(h, op, rel, by, false)
     }
 
-    fn check_change(&self, h: &ScopeHandle, op: &str, rel: &Path, count: bool) -> R<()> {
+    fn check_change(&self, h: &ScopeHandle, op: &str, rel: &Path, by: By, count: bool) -> R<()> {
         h.check_open()?;
         let access = h.access(rel);
         if count && access == Access::Capture && h.group == UNSCOPED {
@@ -1156,7 +1189,7 @@ impl Views {
             Access::Capture if h.readonly => Err(Errno::EROFS),
             Access::Capture | Access::Ephemeral => Ok(()),
             Access::Deny | Access::Stub => {
-                self.log(h, op, rel, "deny");
+                self.log_by(h, op, rel, by, "deny");
                 Err(Errno::EACCES)
             }
             Access::Hidden => Err(Errno::ENOENT),
@@ -1171,19 +1204,23 @@ impl Views {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn setattr(
         &self,
         h: &ScopeHandle,
+        tid: u32,
         rel: &Path,
         mode: Option<u32>,
         owner: (Option<u32>, Option<u32>),
         size: Option<u64>,
         times: Option<(rustix::fs::Timespec, rustix::fs::Timespec)>,
     ) -> R<Stat> {
-        self.may_change(h, "setattr", rel)?;
+        let by = self.caller(tid);
+        let by = by.as_ref();
+        self.may_change(h, "setattr", rel, by)?;
         self.copy_up(h, rel)?;
         let up = h.upper.as_fd();
-        self.log(h, "setattr", rel, "allow");
+        self.log_by(h, "setattr", rel, by, "allow");
         if let Some(mode) = mode {
             sys::chmod(up, rel, mode).map_err(errno)?;
         }
@@ -1198,6 +1235,7 @@ impl Views {
         if let Some((atime, mtime)) = times {
             sys::set_times(up, rel, atime, mtime).map_err(errno)?;
         }
+        self.wrote(h, rel, by)?;
         sys::lstat(up, rel).map_err(errno)
     }
 
@@ -1214,20 +1252,26 @@ impl Views {
         .map_err(errno)
     }
 
-    pub fn mkdir(&self, h: &ScopeHandle, rel: &Path, mode: u32) -> R<()> {
-        self.may_change(h, "mkdir", rel)?;
+    pub fn mkdir(&self, h: &ScopeHandle, tid: u32, rel: &Path, mode: u32) -> R<()> {
+        let by = self.caller(tid);
+        let by = by.as_ref();
+        self.may_change(h, "mkdir", rel, by)?;
         if self.locate(h, rel).is_ok() {
             return Err(Errno::EEXIST);
         }
         self.ensure_upper_dir(h, parent(rel))?;
         sys::mkdir(h.upper.as_fd(), rel, mode).map_err(errno)?;
         self.unwhiteout(h, rel, true)?;
-        self.log(h, "mkdir", rel, "allow");
+        self.wrote(h, rel, by)?;
+        self.log_by(h, "mkdir", rel, by, "allow");
         Ok(())
     }
 
-    pub fn unlink(&self, h: &ScopeHandle, rel: &Path, dir: bool) -> R<()> {
-        self.may_change(h, if dir { "rmdir" } else { "unlink" }, rel)?;
+    pub fn unlink(&self, h: &ScopeHandle, tid: u32, rel: &Path, dir: bool) -> R<()> {
+        let by = self.caller(tid);
+        let by = by.as_ref();
+        let op = if dir { "rmdir" } else { "unlink" };
+        self.may_change(h, op, rel, by)?;
         let (loc, st) = self.locate(h, rel)?;
         if dir != sys::is_dir(&st) {
             return Err(if dir { Errno::ENOTDIR } else { Errno::EISDIR });
@@ -1252,27 +1296,39 @@ impl Views {
             }
             // Only this name: other hard links keep their own pins.
             store.unpin_below(rel, dir).map_err(errno)?;
+            match (&lower, by) {
+                // A base entry's delete is a change: its writers include the deleter.
+                (Some(_), Some(p)) => store.add_writer(rel, p).map_err(errno)?,
+                (Some(_), None) => {}
+                // An entry the scope made is gone without a trace in the change set.
+                (None, _) => store.drop_writers(rel).map_err(errno)?,
+            }
         }
         self.t().forget_path(&h.id, rel, st.st_nlink > 1);
-        self.log(h, if dir { "rmdir" } else { "unlink" }, rel, "allow");
+        self.log_by(h, op, rel, by, "allow");
         Ok(())
     }
 
-    pub fn symlink(&self, h: &ScopeHandle, rel: &Path, target: &Path) -> R<()> {
-        self.may_change(h, "symlink", rel)?;
+    pub fn symlink(&self, h: &ScopeHandle, tid: u32, rel: &Path, target: &Path) -> R<()> {
+        let by = self.caller(tid);
+        let by = by.as_ref();
+        self.may_change(h, "symlink", rel, by)?;
         if self.locate(h, rel).is_ok() {
             return Err(Errno::EEXIST);
         }
         self.ensure_upper_dir(h, parent(rel))?;
         sys::symlink(target, h.upper.as_fd(), rel).map_err(errno)?;
         self.unwhiteout(h, rel, false)?;
-        self.log(h, "symlink", rel, "allow");
+        self.wrote(h, rel, by)?;
+        self.log_by(h, "symlink", rel, by, "allow");
         Ok(())
     }
 
-    pub fn rename(&self, h: &ScopeHandle, from: &Path, to: &Path, flags: u32) -> R<()> {
-        self.may_change(h, "rename", from)?;
-        self.may_change_too(h, "rename", to)?;
+    pub fn rename(&self, h: &ScopeHandle, tid: u32, from: &Path, to: &Path, flags: u32) -> R<()> {
+        let by = self.caller(tid);
+        let by = by.as_ref();
+        self.may_change(h, "rename", from, by)?;
+        self.may_change_too(h, "rename", to, by)?;
         if flags & libc::RENAME_EXCHANGE != 0 {
             return Err(Errno::EINVAL);
         }
@@ -1313,22 +1369,35 @@ impl Views {
                 }
                 store.move_pins(from, to, from_dir, to_dir)?;
                 // Entries looked up in this run keep their numbers, derived or pinned.
-                store.set_pins(&moved_entries)
+                store.set_pins(&moved_entries)?;
+                // The writers move with the entry; the renamer changed the destination
+                // and, for a base entry, the source (a rename or a delete there).
+                store.move_writers(from, to, from_dir)?;
+                if let Some(p) = by {
+                    store.add_writer(to, p)?;
+                    if from_lower {
+                        store.add_writer(from, p)?;
+                    }
+                }
+                Ok(())
             })
             .map_err(errno)?;
-        self.ledger.append(
+        self.ledger.append_by(
             &h.group,
             "rename",
             &self.shown(h.root, to),
             Some(&self.shown(h.root, from)),
+            by.map(|p| p.info.id),
             "allow",
         );
         Ok(())
     }
 
-    pub fn link(&self, h: &ScopeHandle, ino: u64, src: &Path, dst: &Path) -> R<()> {
-        self.may_change(h, "link", src)?;
-        self.may_change_too(h, "link", dst)?;
+    pub fn link(&self, h: &ScopeHandle, tid: u32, ino: u64, src: &Path, dst: &Path) -> R<()> {
+        let by = self.caller(tid);
+        let by = by.as_ref();
+        self.may_change(h, "link", src, by)?;
+        self.may_change_too(h, "link", dst, by)?;
         if self.locate(h, dst).is_ok() {
             return Err(Errno::EEXIST);
         }
@@ -1344,7 +1413,8 @@ impl Views {
         let mut t = self.t();
         t.inos.insert((h.id.clone(), dst.to_path_buf()), ino);
         drop(t);
-        self.log(h, "link", dst, "allow");
+        self.wrote(h, dst, by)?;
+        self.log_by(h, "link", dst, by, "allow");
         Ok(())
     }
 
@@ -1361,10 +1431,13 @@ impl Views {
     }
 
     /// Open `rel` (inode `ino`); also returns what the kernel may do with its cached pages.
-    pub fn open(&self, h: &ScopeHandle, ino: u64, rel: &Path, flags: i32) -> R<(File, Pages)> {
+    /// Reads name no process: only opens for writing resolve the caller (thread `tid`).
+    pub fn open(&self, h: &ScopeHandle, tid: u32, ino: u64, rel: &Path, flags: i32) -> R<(File, Pages)> {
         let acc = flags & libc::O_ACCMODE;
         let writes = acc != libc::O_RDONLY || flags & libc::O_TRUNC != 0;
         h.check_open()?;
+        let by = if writes { self.caller(tid) } else { None };
+        let by = by.as_ref();
         // The root's rules first, then the gate's read rules (project paths).
         let denied = match h.access(rel) {
             Access::Deny | Access::Stub => Some(if writes { "open-write" } else { "read" }),
@@ -1374,17 +1447,18 @@ impl Views {
         };
         if let Some(op) = denied {
             h.store().record_denied(rel).map_err(errno)?;
-            self.log(h, op, rel, "deny");
+            self.log_by(h, op, rel, by, "deny");
             return Err(Errno::EACCES);
         }
         if writes {
-            self.may_change(h, "open-write", rel)?;
+            self.may_change(h, "open-write", rel, by)?;
         }
-        self.log(h, if writes { "open-write" } else { "read" }, rel, "allow");
+        self.log_by(h, if writes { "open-write" } else { "read" }, rel, by, "allow");
         let oflags = Self::open_flags(flags);
         let (loc, st) = self.locate(h, rel)?;
         let f = if writes {
             self.copy_up(h, rel)?;
+            self.wrote(h, rel, by)?;
             sys::open(h.upper.as_fd(), rel, oflags, 0)
         } else {
             match loc {
@@ -1410,8 +1484,10 @@ impl Views {
             .is_some_and(|n| n.store(fuser::INodeNo(ino), 0, data).is_ok())
     }
 
-    pub fn create(&self, h: &ScopeHandle, rel: &Path, mode: u32, flags: i32) -> R<File> {
-        self.may_change(h, "create", rel)?;
+    pub fn create(&self, h: &ScopeHandle, tid: u32, rel: &Path, mode: u32, flags: i32) -> R<File> {
+        let by = self.caller(tid);
+        let by = by.as_ref();
+        self.may_change(h, "create", rel, by)?;
         let exists = self.locate(h, rel).is_ok();
         if exists && flags & libc::O_EXCL != 0 {
             return Err(Errno::EEXIST);
@@ -1421,10 +1497,11 @@ impl Views {
         } else {
             self.ensure_upper_dir(h, parent(rel))?;
         }
-        self.log(h, "create", rel, "allow");
+        self.log_by(h, "create", rel, by, "allow");
         let oflags = Self::open_flags(flags) | OFlags::CREATE;
         let f = sys::open(h.upper.as_fd(), rel, oflags, mode).map_err(errno)?;
         self.unwhiteout(h, rel, false)?;
+        self.wrote(h, rel, by)?;
         Ok(f)
     }
 

@@ -13,6 +13,10 @@
 //!   of the file that had that inode, is a rename.
 //! - Paths under an `ephemeral` rule are never in it: a rename out of one is a
 //!   create, a rename into one a delete.
+//!
+//! Each change lists its writers: the processes recorded at its path and, for a
+//! rename, its source. A change with none recorded (a base entry deleted with its
+//! directory) takes those of its nearest ancestor that has some.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::io::{self, Read};
@@ -22,6 +26,7 @@ use std::path::{Path, PathBuf};
 use fuser::FileType;
 use rustix::fs::{OFlags, Stat};
 
+use crate::proc::Info;
 use crate::review::Review;
 use crate::roots::Access;
 use crate::snapshot::Base;
@@ -45,6 +50,8 @@ pub struct Change {
     pub path: PathBuf,
     /// Rename source.
     pub from: Option<PathBuf>,
+    /// Ids of the processes that made the change (in `ChangeSet::procs`), sorted.
+    pub writers: Vec<u64>,
 }
 
 pub struct ChangeSet {
@@ -52,6 +59,8 @@ pub struct ChangeSet {
     /// (path, allowed): base reads the gate allowed, and reads it denied.
     pub reads: Vec<(PathBuf, bool)>,
     pub labels: HashMap<String, String>,
+    /// The writers of every change and their recorded ancestors, by id.
+    pub procs: BTreeMap<u64, Info>,
     /// Changes the unscoped mode saw while the scope was open (set by close).
     pub unscoped: u64,
     /// The close-time review (set by close and by `closed_change_set`).
@@ -65,6 +74,7 @@ pub fn build(base: &Base, h: &ScopeHandle) -> io::Result<ChangeSet> {
             changes: Vec::new(),
             reads: store.reads(),
             labels: store.labels()?,
+            procs: BTreeMap::new(),
             unscoped: 0,
             review: None,
         });
@@ -90,7 +100,7 @@ pub fn build(base: &Base, h: &ScopeHandle) -> io::Result<ChangeSet> {
         kinds.insert(d, Kind::Delete);
     }
     let ephemeral = |p: &Path| h.access(p) == Access::Ephemeral;
-    let changes = pair_renames(base, &store, kinds)
+    let changes: Vec<Change> = pair_renames(base, &store, kinds)
         .into_iter()
         .filter_map(|mut c| {
             let from_ephemeral = c.from.as_deref().map(ephemeral);
@@ -107,16 +117,38 @@ pub fn build(base: &Base, h: &ScopeHandle) -> io::Result<ChangeSet> {
                 _ => {}
             }
             c.root = h.root;
+            c.writers = writers(&store, &c);
             Some(c)
         })
         .collect();
+    let mut procs = BTreeMap::new();
+    for id in changes.iter().flat_map(|c| &c.writers) {
+        let mut next = *id;
+        while next != 0 && !procs.contains_key(&next) {
+            let Some(p) = store.proc(next) else { break };
+            procs.insert(next, p.clone());
+            next = p.parent;
+        }
+    }
     Ok(ChangeSet {
         changes,
         reads: store.reads(),
         labels: store.labels()?,
+        procs,
         unscoped: 0,
         review: None,
     })
+}
+
+/// The processes recorded at the change's paths, or at its nearest ancestor that has some.
+fn writers(store: &ScopeStore, c: &Change) -> Vec<u64> {
+    let mut out = BTreeSet::new();
+    for p in std::iter::once(&c.path).chain(&c.from) {
+        if let Some(w) = p.ancestors().find_map(|a| store.writers(a)) {
+            out.extend(w);
+        }
+    }
+    out.into_iter().collect()
 }
 
 /// Creates and modifies, pre-order, for every entry in the upper tree.
@@ -241,12 +273,14 @@ fn pair_renames(base: &Base, store: &ScopeStore, kinds: BTreeMap<PathBuf, Kind>)
                 root: 0,
                 path: p.clone(),
                 from: Some(from.clone()),
+                writers: Vec::new(),
             },
             None => Change {
                 kind: *k,
                 root: 0,
                 path: p.clone(),
                 from: None,
+                writers: Vec::new(),
             },
         })
         .collect()

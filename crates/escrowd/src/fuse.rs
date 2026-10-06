@@ -182,7 +182,7 @@ impl Filesystem for FuseView {
 
     fn setattr(
         &self,
-        _req: &Request,
+        req: &Request,
         ino: INodeNo,
         mode: Option<u32>,
         uid: Option<u32>,
@@ -205,7 +205,7 @@ impl Filesystem for FuseView {
         };
         let times = (atime.is_some() || mtime.is_some()).then(|| (ts(atime), ts(mtime)));
         let r = self.0.key(ino.0).and_then(|(h, rel)| {
-            let st = self.0.setattr(&h, &rel, mode, (uid, gid), size, times)?;
+            let st = self.0.setattr(&h, req.pid(), &rel, mode, (uid, gid), size, times)?;
             Ok((ttl(&h), st))
         });
         match r {
@@ -221,41 +221,41 @@ impl Filesystem for FuseView {
         }
     }
 
-    fn mkdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, mode: u32, umask: u32, reply: ReplyEntry) {
+    fn mkdir(&self, req: &Request, parent: INodeNo, name: &OsStr, mode: u32, umask: u32, reply: ReplyEntry) {
         // Scopes are created over RPC, never by mkdir in the mount root.
         match self
             .0
             .child(parent.0, name)
-            .and_then(|(h, rel)| self.0.mkdir(&h, &rel, mode & !umask).map(|()| (h, rel)))
+            .and_then(|(h, rel)| self.0.mkdir(&h, req.pid(), &rel, mode & !umask).map(|()| (h, rel)))
         {
             Ok((h, rel)) => reply_entry(&self.0, &h, &rel, reply),
             Err(e) => reply.error(e),
         }
     }
 
-    fn unlink(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+    fn unlink(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
         reply_empty(
             self.0
                 .child(parent.0, name)
-                .and_then(|(h, rel)| self.0.unlink(&h, &rel, false)),
+                .and_then(|(h, rel)| self.0.unlink(&h, req.pid(), &rel, false)),
             reply,
         )
     }
 
-    fn rmdir(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
+    fn rmdir(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
         reply_empty(
             self.0
                 .child(parent.0, name)
-                .and_then(|(h, rel)| self.0.unlink(&h, &rel, true)),
+                .and_then(|(h, rel)| self.0.unlink(&h, req.pid(), &rel, true)),
             reply,
         )
     }
 
-    fn symlink(&self, _req: &Request, parent: INodeNo, link_name: &OsStr, target: &Path, reply: ReplyEntry) {
+    fn symlink(&self, req: &Request, parent: INodeNo, link_name: &OsStr, target: &Path, reply: ReplyEntry) {
         match self
             .0
             .child(parent.0, link_name)
-            .and_then(|(h, rel)| self.0.symlink(&h, &rel, target).map(|()| (h, rel)))
+            .and_then(|(h, rel)| self.0.symlink(&h, req.pid(), &rel, target).map(|()| (h, rel)))
         {
             Ok((h, rel)) => reply_entry(&self.0, &h, &rel, reply),
             Err(e) => reply.error(e),
@@ -264,7 +264,7 @@ impl Filesystem for FuseView {
 
     fn rename(
         &self,
-        _req: &Request,
+        req: &Request,
         parent: INodeNo,
         name: &OsStr,
         newparent: INodeNo,
@@ -278,19 +278,19 @@ impl Filesystem for FuseView {
             if h.id != h2.id {
                 return Err(Errno::EXDEV); // scopes never share entries
             }
-            self.0.rename(&h, &from, &to, flags.bits())
+            self.0.rename(&h, req.pid(), &from, &to, flags.bits())
         })();
         reply_empty(r, reply)
     }
 
-    fn link(&self, _req: &Request, ino: INodeNo, newparent: INodeNo, newname: &OsStr, reply: ReplyEntry) {
+    fn link(&self, req: &Request, ino: INodeNo, newparent: INodeNo, newname: &OsStr, reply: ReplyEntry) {
         let r = (|| {
             let (h, src) = self.0.key(ino.0)?;
             let (h2, dst) = self.0.child(newparent.0, newname)?;
             if h.id != h2.id {
                 return Err(Errno::EXDEV);
             }
-            self.0.link(&h, ino.0, &src, &dst)?;
+            self.0.link(&h, req.pid(), ino.0, &src, &dst)?;
             Ok((h, dst))
         })();
         match r {
@@ -303,7 +303,7 @@ impl Filesystem for FuseView {
         match self
             .0
             .key(ino.0)
-            .and_then(|(h, rel)| Ok((self.0.open(&h, ino.0, &rel, flags.0)?, h)))
+            .and_then(|(h, rel)| Ok((self.0.open(&h, req.pid(), ino.0, &rel, flags.0)?, h)))
         {
             Ok(((f, pages), h)) => {
                 let keep = match pages {
@@ -475,7 +475,7 @@ impl Filesystem for FuseView {
         let v = &self.0;
         let r = (|| {
             let (h, rel) = v.child(parent.0, name)?;
-            let f = v.create(&h, &rel, mode & !umask, flags)?;
+            let f = v.create(&h, req.pid(), &rel, mode & !umask, flags)?;
             let st = rustix::fs::fstat(&f).map_err(|e| errno(e.into()))?;
             let attr = sys::attr(v.ino_for(&h, &rel)?, &st);
             Ok((attr, f, h))

@@ -3,25 +3,31 @@
 //!
 //! A change set that breaks a write rule is discarded: the software tier's verdict
 //! is final at close, and a client's commit or return turns into a discard (verdicts
-//! only tighten). Otherwise each path gets the tier of the first `review:` rule it
+//! only tighten). `write.only_by` names the programs allowed to change a path: a
+//! change whose writers include another binary, or that has no recorded writer,
+//! breaks it. Otherwise each path gets the tier of the first `review:` rule it
 //! matches (software if none), and the change set needs every tier from the cheapest
 //! above software up to the highest any of its paths needs; a rename counts both its
 //! paths. Without `review:` rules nothing needs more than software.
 
 use std::io::{self, Read};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use anyhow::bail;
+use anyhow::{Context, bail};
 use memchr::memmem::Finder;
 
 use crate::gate::Globs;
 use crate::policy::{ReviewRule, Tier, Wait, WriteRules};
+use crate::proc::Info;
 
 pub struct Rules {
     review: Vec<(Globs, Tier, Wait)>,
     deny: Globs,
     /// Each forbidden byte string, with its pattern for the reason.
     deny_content: Vec<(String, Finder<'static>)>,
+    /// Paths, and the (device, inode) of the binaries allowed to change them.
+    only_by: Vec<(Globs, Vec<(u64, u64)>)>,
 }
 
 /// The software tier's verdict on a change set.
@@ -36,15 +42,36 @@ pub enum Verdict {
 pub struct Hit {
     /// As the change set shows it.
     pub path: PathBuf,
-    /// The forbidden byte string, for `write.deny_content`; None for `write.deny`.
-    pub content: Option<String>,
+    pub rule: Broken,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Broken {
+    /// `write.deny`.
+    Deny,
+    /// `write.deny_content`: the forbidden byte string.
+    Content(String),
+    /// `write.only_by`: the program of a writer not allowed, None if no writer is recorded.
+    OnlyBy(Option<PathBuf>),
 }
 
 impl Hit {
     pub fn reason(&self) -> String {
-        match &self.content {
-            None => format!("write.deny: {}", self.path.display()),
-            Some(c) => format!("write.deny_content: {} contains {c:?}", self.path.display()),
+        let p = self.path.display();
+        match &self.rule {
+            Broken::Deny => format!("write.deny: {p}"),
+            Broken::Content(c) => format!("write.deny_content: {p} contains {c:?}"),
+            Broken::OnlyBy(Some(prog)) => format!("write.only_by: {p} changed by {}", prog.display()),
+            Broken::OnlyBy(None) => format!("write.only_by: {p} changed by an unknown process"),
+        }
+    }
+
+    /// The ledger's op for the rule.
+    pub fn op(&self) -> &'static str {
+        match self.rule {
+            Broken::Deny => "write-deny",
+            Broken::Content(_) => "write-content",
+            Broken::OnlyBy(_) => "write-only-by",
         }
     }
 }
@@ -82,16 +109,49 @@ impl Rules {
             }
             deny_content.push((c.clone(), Finder::new(c.as_bytes()).into_owned()));
         }
+        let mut only_by = Vec::new();
+        for (i, o) in write.only_by.iter().enumerate() {
+            if o.paths.is_empty() {
+                bail!("write.only_by[{i}]: no paths");
+            }
+            let mut bins = Vec::new();
+            for p in o.program_paths()? {
+                let m = std::fs::metadata(&p).with_context(|| format!("write.only_by[{i}]: {}", p.display()))?;
+                bins.push((m.dev(), m.ino()));
+            }
+            only_by.push((Globs::new(&o.paths)?, bins));
+        }
         Ok(Rules {
             review: rules,
             deny: Globs::new(&write.deny)?,
             deny_content,
+            only_by,
         })
     }
 
     /// Whether any rule could change a change set's verdict or tiers.
     pub fn is_empty(&self) -> bool {
-        self.review.is_empty() && self.deny.is_empty() && self.deny_content.is_empty()
+        self.review.is_empty() && self.deny.is_empty() && self.deny_content.is_empty() && self.only_by.is_empty()
+    }
+
+    /// The `write.only_by` rule `path`, changed by `writers`, breaks, if any.
+    pub fn only_by<'a>(&self, path: &Path, writers: impl IntoIterator<Item = &'a Info> + Clone) -> Option<Broken> {
+        for (paths, bins) in &self.only_by {
+            if !paths.is_match(path) {
+                continue;
+            }
+            let mut any = false;
+            for w in writers.clone() {
+                any = true;
+                if !bins.contains(&(w.dev, w.ino)) {
+                    return Some(Broken::OnlyBy(Some(w.program.clone())));
+                }
+            }
+            if !any {
+                return Some(Broken::OnlyBy(None));
+            }
+        }
+        None
     }
 
     /// The tier `path` needs and whether its rule requires waiting.
@@ -195,7 +255,7 @@ mod tests {
         assert!(r.denied(Path::new("keys/a.pem")) && !r.denied(Path::new("a.pem.txt")));
         let hit = Hit {
             path: "keys/a.pem".into(),
-            content: None,
+            rule: Broken::Deny,
         };
         let v = r.review(paths(&["keys/a.pem"]), vec![hit]);
         assert_eq!((v.verdict, v.tiers.len()), (Verdict::Discard, 0));
@@ -214,11 +274,39 @@ mod tests {
             Rules::new(
                 &[],
                 &WriteRules {
-                    deny: vec![],
                     deny_content: vec![String::new()],
+                    ..Default::default()
                 }
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn only_by_matches_the_binary_not_its_name() {
+        let sh = std::fs::canonicalize("/bin/sh").unwrap();
+        let r = rules("[]", "{only_by: [{paths: ['.git/**'], programs: ['/bin/sh']}]}");
+        let m = std::fs::metadata(&sh).unwrap();
+        let info = |program: &str, dev, ino| Info {
+            id: 1,
+            pid: 1,
+            program: program.into(),
+            dev,
+            ino,
+            args: vec![],
+            parent: 0,
+        };
+        let ok = info("/elsewhere/sh", m.dev(), m.ino());
+        let fake = info("/bin/sh", m.dev(), m.ino() + 1);
+        assert_eq!(r.only_by(Path::new(".git/HEAD"), [&ok]), None);
+        assert_eq!(r.only_by(Path::new("README"), [&fake]), None);
+        assert_eq!(
+            r.only_by(Path::new(".git/HEAD"), [&ok, &fake]),
+            Some(Broken::OnlyBy(Some("/bin/sh".into())))
+        );
+        assert_eq!(r.only_by(Path::new(".git/HEAD"), []), Some(Broken::OnlyBy(None)));
+        let p = crate::policy::Policy::parse("version: 1\nwrite: {only_by: [{paths: [a], programs: [/no/such]}]}\n")
+            .unwrap();
+        assert!(Rules::new(&[], &p.write).is_err());
     }
 }
