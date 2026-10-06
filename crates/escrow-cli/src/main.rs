@@ -10,7 +10,12 @@ use escrowd::commit::Outcome;
 use escrowd::daemon::{Config, default_runtime_dir};
 use escrowd::exec::{ExecConn, TOKEN_ENV, exec_socket};
 use escrowd::proto::escrow_client::EscrowClient;
-use escrowd::proto::{GetChangeSetRequest, SpawnRequest};
+use escrowd::proto::reviewer_client::ReviewerClient;
+use escrowd::proto::{
+    GetChangeSetRequest, GetHeldRequest, HeldScope, ListHeldRequest, OutcomeStatus, ReviewRequest, SpawnRequest, Tier,
+    Verdict,
+};
+use escrowd::rpc::review_socket;
 use escrowd::sandbox::Mount;
 use escrowd::views::{UNSCOPED, Unscoped};
 use tokio::signal::unix::{SignalKind, signal};
@@ -120,6 +125,18 @@ enum Command {
         /// Scope id (`unscoped` for the implicit default scope).
         scope: String,
     },
+    /// Review held scopes: list them, show one, give a tier's verdict (the human tier
+    /// by default). Talks to the daemon's review socket (`<socket>.review`).
+    Review {
+        /// Daemon socket [default: the socket of `escrow run --project`].
+        #[arg(long, env = "ESCROW_SOCKET")]
+        socket: Option<PathBuf>,
+        /// Project directory (locates the socket of `escrow run`).
+        #[arg(long)]
+        project: Option<PathBuf>,
+        #[command(subcommand)]
+        action: ReviewAction,
+    },
     /// Print the ledger, optionally for one scope.
     Log {
         /// Project directory (locates the default state directory).
@@ -133,14 +150,53 @@ enum Command {
     },
 }
 
-async fn diff(socket: Option<PathBuf>, project: Option<PathBuf>, scope: String) -> anyhow::Result<()> {
-    let socket = match (socket, project) {
+#[derive(Subcommand)]
+enum ReviewAction {
+    /// The held scopes, oldest hold first.
+    List,
+    /// A held scope: its tiers, verdicts so far, changes with their writers, session
+    /// history and diff.
+    Show { scope: String },
+    /// Commit the scope, as far as this tier goes.
+    Commit(VerdictArgs),
+    /// Discard the scope.
+    Discard(VerdictArgs),
+    /// Return the scope to its agent with the reasons.
+    Return(VerdictArgs),
+}
+
+#[derive(clap::Args)]
+struct VerdictArgs {
+    scope: String,
+    /// The tier giving the verdict; a human's also stands for the cheaper tiers pending.
+    #[arg(long, value_enum, default_value = "human")]
+    tier: ReviewTier,
+    /// A reason for the verdict (repeatable); a return sends them to the agent.
+    #[arg(long = "reason")]
+    reasons: Vec<String>,
+    /// Loosen the verdict so far (human tier only; the ledger records it).
+    #[arg(long = "override")]
+    over: bool,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum ReviewTier {
+    Llm,
+    Human,
+}
+
+/// The socket of `--socket`, or of `escrow run --project`.
+fn socket_of(socket: Option<PathBuf>, project: Option<PathBuf>) -> anyhow::Result<PathBuf> {
+    Ok(match (socket, project) {
         (Some(s), _) => s,
         (None, Some(p)) => default_runtime_dir(&p.canonicalize()?)?.join("escrow.sock"),
         (None, None) => anyhow::bail!("pass --socket (or ESCROW_SOCKET) or --project"),
-    };
-    let path = socket.clone();
-    let channel = tonic::transport::Endpoint::from_static("http://localhost")
+    })
+}
+
+async fn channel(socket: &Path) -> anyhow::Result<tonic::transport::Channel> {
+    let path = socket.to_path_buf();
+    tonic::transport::Endpoint::from_static("http://localhost")
         .connect_with_connector(tower::service_fn(move |_| {
             let path = path.clone();
             async move {
@@ -150,8 +206,173 @@ async fn diff(socket: Option<PathBuf>, project: Option<PathBuf>, scope: String) 
             }
         }))
         .await
-        .with_context(|| format!("connecting to {}", socket.display()))?;
-    let cs = EscrowClient::new(channel)
+        .with_context(|| format!("connecting to {}", socket.display()))
+}
+
+/// A protocol enum's name without its prefix, lower case: `OUTCOME_STATUS_HELD` -> `held`.
+fn name(full: &str, prefix: &str) -> String {
+    full.strip_prefix(prefix).unwrap_or(full).to_lowercase()
+}
+
+fn tiers(ts: &[i32]) -> String {
+    let names: Vec<String> = ts
+        .iter()
+        .map(|t| name(Tier::try_from(*t).unwrap_or_default().as_str_name(), "TIER_"))
+        .collect();
+    names.join(",")
+}
+
+fn verdict_name(v: i32) -> String {
+    name(Verdict::try_from(v).unwrap_or_default().as_str_name(), "VERDICT_")
+}
+
+fn status_name(s: i32) -> String {
+    name(
+        OutcomeStatus::try_from(s).unwrap_or_default().as_str_name(),
+        "OUTCOME_STATUS_",
+    )
+}
+
+fn held_line(h: &HeldScope, now_ms: u64) -> String {
+    let age = now_ms.saturating_sub(h.held_at_ms) / 1000;
+    let or_dash = |s: &str| if s.is_empty() { "-".to_string() } else { s.to_string() };
+    format!(
+        "{} tiers={}{} verdict={} session={} held={age}s name={}",
+        h.scope_id,
+        tiers(&h.tiers),
+        if h.wait { " wait" } else { "" },
+        verdict_name(h.verdict),
+        or_dash(&h.session),
+        or_dash(&h.name),
+    )
+}
+
+async fn review(socket: Option<PathBuf>, project: Option<PathBuf>, action: ReviewAction) -> anyhow::Result<()> {
+    let socket = review_socket(&socket_of(socket, project)?);
+    let mut client = ReviewerClient::new(channel(&socket).await?).max_decoding_message_size(usize::MAX);
+    let err = |s: tonic::Status| anyhow::anyhow!("{}", s.message());
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
+    let mut out = std::io::stdout().lock();
+    let (args, verdict) = match action {
+        ReviewAction::List => {
+            let held = client.list_held(ListHeldRequest {}).await.map_err(err)?.into_inner();
+            for h in &held.scopes {
+                writeln!(out, "{}", held_line(h, now_ms))?;
+            }
+            return Ok(());
+        }
+        ReviewAction::Show { scope } => {
+            let got = client
+                .get_held(GetHeldRequest { scope_id: scope })
+                .await
+                .map_err(err)?
+                .into_inner();
+            let (h, cs) = (got.held.unwrap_or_default(), got.change_set.unwrap_or_default());
+            writeln!(out, "{}", held_line(&h, now_ms))?;
+            for (k, v) in &h.labels {
+                writeln!(out, "label {k}={v}")?;
+            }
+            for r in &h.reviews {
+                writeln!(
+                    out,
+                    "review {}: {}{}",
+                    tiers(&[r.tier]),
+                    verdict_name(r.verdict),
+                    if r.r#override { " (override)" } else { "" }
+                )?;
+                for reason in &r.reasons {
+                    writeln!(out, "  {reason}")?;
+                }
+            }
+            let review = cs.review.unwrap_or_default();
+            for reason in &review.reasons {
+                writeln!(out, "software: {reason}")?;
+            }
+            let procs: std::collections::HashMap<u64, &escrowd::proto::Process> =
+                cs.processes.iter().map(|p| (p.id, p)).collect();
+            writeln!(out, "changes:")?;
+            for c in &cs.changes {
+                let kind = name(c.kind().as_str_name(), "CHANGE_KIND_");
+                let from = if c.from_path.is_empty() {
+                    String::new()
+                } else {
+                    format!(" from {}", c.from_path)
+                };
+                writeln!(out, "  {kind} {}{from}", c.path)?;
+                for w in &c.writers {
+                    // The writer, then its parents.
+                    let mut next = procs.get(w).copied();
+                    let mut by = "by";
+                    while let Some(p) = next {
+                        writeln!(out, "    {by} {} pid={} {}", p.program, p.pid, p.args.join(" "))?;
+                        next = procs.get(&p.parent).copied();
+                        by = "  from";
+                    }
+                }
+            }
+            if !got.history.is_empty() {
+                writeln!(out, "session {} earlier:", h.session)?;
+            }
+            for d in &got.history {
+                let o = d.outcome.clone().unwrap_or_default();
+                let n = d.change_set.as_ref().map_or(0, |c| c.changes.len());
+                writeln!(
+                    out,
+                    "  {} {} {} changes name={}",
+                    d.scope_id,
+                    status_name(o.status),
+                    n,
+                    d.name
+                )?;
+                for r in &d.reviews {
+                    writeln!(out, "    review {}: {}", tiers(&[r.tier]), verdict_name(r.verdict))?;
+                }
+                for reason in &o.reasons {
+                    writeln!(out, "    {reason}")?;
+                }
+            }
+            writeln!(out, "diff:")?;
+            out.write_all(cs.diff.as_bytes())?;
+            return Ok(());
+        }
+        ReviewAction::Commit(a) => (a, Verdict::Commit),
+        ReviewAction::Discard(a) => (a, Verdict::Discard),
+        ReviewAction::Return(a) => (a, Verdict::Return),
+    };
+    let tier = match args.tier {
+        ReviewTier::Llm => Tier::Llm,
+        ReviewTier::Human => Tier::Human,
+    };
+    let o = client
+        .review(ReviewRequest {
+            scope_id: args.scope,
+            tier: tier.into(),
+            verdict: verdict.into(),
+            reasons: args.reasons,
+            r#override: args.over,
+        })
+        .await
+        .map_err(err)?
+        .into_inner();
+    if o.status() == OutcomeStatus::Held {
+        writeln!(out, "{} held for {}", o.scope_id, tiers(&o.tiers))?;
+    } else {
+        writeln!(out, "{} {}", o.scope_id, status_name(o.status))?;
+    }
+    for p in &o.paths {
+        writeln!(out, "  {p}")?;
+    }
+    for r in &o.reasons {
+        writeln!(out, "  {r}")?;
+    }
+    Ok(())
+}
+
+async fn diff(socket: Option<PathBuf>, project: Option<PathBuf>, scope: String) -> anyhow::Result<()> {
+    let socket = socket_of(socket, project)?;
+    let cs = EscrowClient::new(channel(&socket).await?)
         .max_decoding_message_size(usize::MAX)
         .get_change_set(GetChangeSetRequest { scope_id: scope })
         .await
@@ -459,6 +680,11 @@ async fn main() -> anyhow::Result<()> {
             escrowd::daemon::run(config, shutdown).await
         }
         Command::Diff { socket, project, scope } => diff(socket, project, scope).await,
+        Command::Review {
+            socket,
+            project,
+            action,
+        } => review(socket, project, action).await,
         Command::Log { project, state, scope } => log(project, state, scope),
     }
 }

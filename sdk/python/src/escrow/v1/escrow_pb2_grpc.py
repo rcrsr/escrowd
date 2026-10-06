@@ -64,6 +64,11 @@ class EscrowStub:
                 request_serializer=escrow_dot_v1_dot_escrow__pb2.GetChangeSetRequest.SerializeToString,
                 response_deserializer=escrow_dot_v1_dot_escrow__pb2.ChangeSet.FromString,
                 _registered_method=True)
+        self.AwaitDecision = channel.unary_stream(
+                '/escrow.v1.Escrow/AwaitDecision',
+                request_serializer=escrow_dot_v1_dot_escrow__pb2.AwaitDecisionRequest.SerializeToString,
+                response_deserializer=escrow_dot_v1_dot_escrow__pb2.Outcome.FromString,
+                _registered_method=True)
 
 
 class EscrowServicer:
@@ -125,6 +130,17 @@ class EscrowServicer:
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def AwaitDecision(self, request, context):
+        """Follow a held scope (Decide returned OUTCOME_STATUS_HELD) to its verdict: an
+        OUTCOME_STATUS_HELD outcome now and after each tier's review (`tiers` the ones
+        still to review), then the final outcome, and the stream ends. A scope decided
+        already gets its last outcome; one that is not held fails with
+        FAILED_PRECONDITION. Needs the scope's token, like Decide.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
 
 def add_EscrowServicer_to_server(servicer, server):
     rpc_method_handlers = {
@@ -157,6 +173,11 @@ def add_EscrowServicer_to_server(servicer, server):
                     servicer.GetChangeSet,
                     request_deserializer=escrow_dot_v1_dot_escrow__pb2.GetChangeSetRequest.FromString,
                     response_serializer=escrow_dot_v1_dot_escrow__pb2.ChangeSet.SerializeToString,
+            ),
+            'AwaitDecision': grpc.unary_stream_rpc_method_handler(
+                    servicer.AwaitDecision,
+                    request_deserializer=escrow_dot_v1_dot_escrow__pb2.AwaitDecisionRequest.FromString,
+                    response_serializer=escrow_dot_v1_dot_escrow__pb2.Outcome.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -321,6 +342,204 @@ class Escrow:
             '/escrow.v1.Escrow/GetChangeSet',
             escrow_dot_v1_dot_escrow__pb2.GetChangeSetRequest.SerializeToString,
             escrow_dot_v1_dot_escrow__pb2.ChangeSet.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def AwaitDecision(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_stream(
+            request,
+            target,
+            '/escrow.v1.Escrow/AwaitDecision',
+            escrow_dot_v1_dot_escrow__pb2.AwaitDecisionRequest.SerializeToString,
+            escrow_dot_v1_dot_escrow__pb2.Outcome.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+
+class ReviewerStub:
+    """Served on `<ESCROW_SOCKET>.review` only.
+    """
+
+    def __init__(self, channel):
+        """Constructor.
+
+        Args:
+            channel: A grpc.Channel.
+        """
+        self.ListHeld = channel.unary_unary(
+                '/escrow.v1.Reviewer/ListHeld',
+                request_serializer=escrow_dot_v1_dot_escrow__pb2.ListHeldRequest.SerializeToString,
+                response_deserializer=escrow_dot_v1_dot_escrow__pb2.ListHeldResponse.FromString,
+                _registered_method=True)
+        self.GetHeld = channel.unary_unary(
+                '/escrow.v1.Reviewer/GetHeld',
+                request_serializer=escrow_dot_v1_dot_escrow__pb2.GetHeldRequest.SerializeToString,
+                response_deserializer=escrow_dot_v1_dot_escrow__pb2.GetHeldResponse.FromString,
+                _registered_method=True)
+        self.Review = channel.unary_unary(
+                '/escrow.v1.Reviewer/Review',
+                request_serializer=escrow_dot_v1_dot_escrow__pb2.ReviewRequest.SerializeToString,
+                response_deserializer=escrow_dot_v1_dot_escrow__pb2.Outcome.FromString,
+                _registered_method=True)
+
+
+class ReviewerServicer:
+    """Served on `<ESCROW_SOCKET>.review` only.
+    """
+
+    def ListHeld(self, request, context):
+        """The held scopes, oldest hold first.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def GetHeld(self, request, context):
+        """A held scope: its change set with writers and diff, its tiers' verdicts so far
+        and its session's earlier decisions.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def Review(self, request, context):
+        """A tier's verdict on a held scope. The tier must be one the scope still waits
+        for; a human's verdict also stands for the cheaper tiers still pending. Verdicts
+        only tighten (commit < return < discard): a looser verdict than the one so far
+        fails with PERMISSION_DENIED unless the tier is human and `override` is set,
+        which the ledger records. After the last pending tier the scope is decided with
+        the verdict so far, as Decide would (a commit can conflict); before it, the
+        outcome is OUTCOME_STATUS_HELD with the tiers left.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+
+def add_ReviewerServicer_to_server(servicer, server):
+    rpc_method_handlers = {
+            'ListHeld': grpc.unary_unary_rpc_method_handler(
+                    servicer.ListHeld,
+                    request_deserializer=escrow_dot_v1_dot_escrow__pb2.ListHeldRequest.FromString,
+                    response_serializer=escrow_dot_v1_dot_escrow__pb2.ListHeldResponse.SerializeToString,
+            ),
+            'GetHeld': grpc.unary_unary_rpc_method_handler(
+                    servicer.GetHeld,
+                    request_deserializer=escrow_dot_v1_dot_escrow__pb2.GetHeldRequest.FromString,
+                    response_serializer=escrow_dot_v1_dot_escrow__pb2.GetHeldResponse.SerializeToString,
+            ),
+            'Review': grpc.unary_unary_rpc_method_handler(
+                    servicer.Review,
+                    request_deserializer=escrow_dot_v1_dot_escrow__pb2.ReviewRequest.FromString,
+                    response_serializer=escrow_dot_v1_dot_escrow__pb2.Outcome.SerializeToString,
+            ),
+    }
+    generic_handler = grpc.method_handlers_generic_handler(
+            'escrow.v1.Reviewer', rpc_method_handlers)
+    server.add_generic_rpc_handlers((generic_handler,))
+    server.add_registered_method_handlers('escrow.v1.Reviewer', rpc_method_handlers)
+
+
+ # This class is part of an EXPERIMENTAL API.
+class Reviewer:
+    """Served on `<ESCROW_SOCKET>.review` only.
+    """
+
+    @staticmethod
+    def ListHeld(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/escrow.v1.Reviewer/ListHeld',
+            escrow_dot_v1_dot_escrow__pb2.ListHeldRequest.SerializeToString,
+            escrow_dot_v1_dot_escrow__pb2.ListHeldResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def GetHeld(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/escrow.v1.Reviewer/GetHeld',
+            escrow_dot_v1_dot_escrow__pb2.GetHeldRequest.SerializeToString,
+            escrow_dot_v1_dot_escrow__pb2.GetHeldResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def Review(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/escrow.v1.Reviewer/Review',
+            escrow_dot_v1_dot_escrow__pb2.ReviewRequest.SerializeToString,
+            escrow_dot_v1_dot_escrow__pb2.Outcome.FromString,
             options,
             channel_credentials,
             insecure,

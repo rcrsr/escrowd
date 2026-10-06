@@ -11,7 +11,7 @@ print(s.outcome.status, s.outcome.paths)
 ```
 """
 
-from escrow._client import Client, connect
+from escrow._client import Client, Reviewer, connect, connect_reviewer
 from escrow._sdk import (
     Change,
     ChangeSet,
@@ -47,9 +47,11 @@ __all__ = [
     "Process",
     "Read",
     "Review",
+    "Reviewer",
     "Scope",
     "commit",
     "connect",
+    "connect_reviewer",
     "current",
     "discard",
     "init",

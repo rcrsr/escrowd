@@ -3,10 +3,24 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 
 import grpc
 
 from escrow.v1 import escrow_pb2, escrow_pb2_grpc
+
+
+def _channel(socket: str) -> grpc.Channel:
+    # grpcio sends the socket path as :authority, which tonic's HTTP/2 stack rejects
+    # (RST_STREAM PROTOCOL_ERROR); any valid host name works. A change set's diff
+    # can pass grpcio's 4 MiB receive limit (policy diff.max_bytes): no limit.
+    return grpc.insecure_channel(
+        f"unix:{socket}",
+        options=[
+            ("grpc.default_authority", "localhost"),
+            ("grpc.max_receive_message_length", -1),
+        ],
+    )
 
 
 class Client:
@@ -17,16 +31,7 @@ class Client:
     def __init__(self, socket: str):
         self.socket = socket
         self.tokens: dict[str, str] = {}
-        # grpcio sends the socket path as :authority, which tonic's HTTP/2 stack rejects
-        # (RST_STREAM PROTOCOL_ERROR); any valid host name works. A change set's diff
-        # can pass grpcio's 4 MiB receive limit (policy diff.max_bytes): no limit.
-        self._channel = grpc.insecure_channel(
-            f"unix:{socket}",
-            options=[
-                ("grpc.default_authority", "localhost"),
-                ("grpc.max_receive_message_length", -1),
-            ],
-        )
+        self._channel = _channel(socket)
         self._stub = escrow_pb2_grpc.EscrowStub(self._channel)
 
     def ping(self, timeout: float = 5.0) -> escrow_pb2.PingResponse:
@@ -101,6 +106,14 @@ class Client:
     ) -> escrow_pb2.Outcome:
         return self.decide(scope_id, escrow_pb2.VERDICT_DISCARD, token=token, timeout=timeout)
 
+    def await_decision(
+        self, scope_id: str, token: str | None = None, timeout: float | None = None
+    ) -> Iterator[escrow_pb2.Outcome]:
+        """Follow a held scope: OUTCOME_STATUS_HELD after each tier's review, then the
+        final outcome. A scope decided already yields its last outcome."""
+        req = escrow_pb2.AwaitDecisionRequest(scope_id=scope_id, token=self._token(scope_id, token))
+        return self._stub.AwaitDecision(req, timeout=timeout)
+
     def close(self) -> None:
         self._channel.close()
 
@@ -109,6 +122,57 @@ class Client:
 
     def __exit__(self, *exc) -> None:
         self.close()
+
+
+class Reviewer:
+    """A reviewer's connection, on the daemon's review socket (`<socket>.review`)."""
+
+    def __init__(self, socket: str):
+        self.socket = socket
+        self._channel = _channel(socket)
+        self._stub = escrow_pb2_grpc.ReviewerStub(self._channel)
+
+    def list_held(self, timeout: float = 5.0) -> list[escrow_pb2.HeldScope]:
+        return list(self._stub.ListHeld(escrow_pb2.ListHeldRequest(), timeout=timeout).scopes)
+
+    def get_held(self, scope_id: str, timeout: float = 30.0) -> escrow_pb2.GetHeldResponse:
+        return self._stub.GetHeld(escrow_pb2.GetHeldRequest(scope_id=scope_id), timeout=timeout)
+
+    def review(
+        self,
+        scope_id: str,
+        tier: escrow_pb2.Tier,
+        verdict: escrow_pb2.Verdict,
+        reasons: list[str] | None = None,
+        override: bool = False,
+        timeout: float = 60.0,
+    ) -> escrow_pb2.Outcome:
+        """`tier`'s verdict; after the last pending tier the scope is decided."""
+        req = escrow_pb2.ReviewRequest(
+            scope_id=scope_id,
+            tier=tier,
+            verdict=verdict,
+            reasons=reasons or [],
+            override=override,
+        )
+        return self._stub.Review(req, timeout=timeout)
+
+    def close(self) -> None:
+        self._channel.close()
+
+    def __enter__(self) -> Reviewer:
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+def connect_reviewer(socket: str | None = None) -> Reviewer:
+    """Connect to the review socket of the daemon at `socket`, or at $ESCROW_SOCKET."""
+    path = socket or os.environ.get("ESCROW_SOCKET")
+    if not path:
+        raise RuntimeError("no escrowd socket: pass one or set ESCROW_SOCKET")
+    return Reviewer(path + ".review")
 
 
 def connect(socket: str | None = None) -> Client:

@@ -1,27 +1,58 @@
-//! gRPC service over a Unix socket.
+//! gRPC services over Unix sockets: `Escrow` for clients, `Reviewer` on the review
+//! socket (`<socket>.review`, mode 0600) for reviewers of held scopes.
 
 use std::io;
-use std::path::Path;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::Context;
+use prost::Message;
 use tokio::net::UnixListener;
-use tokio_stream::wrappers::UnixListenerStream;
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::{ReceiverStream, UnixListenerStream};
 use tonic::{Request, Response, Status};
 
 use crate::exec::Children;
 use crate::policy::ConflictVerdict;
 use crate::proto::escrow_server::{Escrow, EscrowServer};
+use crate::proto::reviewer_server::{Reviewer, ReviewerServer};
 use crate::proto::*;
-use crate::views::{UNSCOPED, Unscoped, Views};
-use crate::{changeset, commit, diff, policy, review};
+use crate::review::{self as rules, Decision};
+use crate::store::Hold;
+use crate::views::{self, Identity, Reviewed, UNSCOPED, Unscoped, Views};
+use crate::{changeset, commit, diff, policy};
 
-pub struct Service {
+/// The session's earlier decisions a reviewer gets.
+const HISTORY: usize = 20;
+
+/// Served on the protocol socket (`Escrow`) and the review socket (`Reviewer`).
+#[derive(Clone)]
+pub struct Service(Arc<Shared>);
+
+pub struct Shared {
     views: Arc<Views>,
     children: Arc<Children>,
     diff: diff::Caps,
-    /// Woken after every decision: an open waiting behind a held scope checks again.
-    decided: tokio::sync::Notify,
+    /// Bumped after every decision and review: an open waiting behind a held scope,
+    /// and the clients following one (AwaitDecision), check again.
+    changed: tokio::sync::watch::Sender<u64>,
+    /// Reviews, and an opener's withdrawal of a held scope, one at a time.
+    reviewing: tokio::sync::Mutex<()>,
+}
+
+impl std::ops::Deref for Service {
+    type Target = Shared;
+    fn deref(&self) -> &Shared {
+        &self.0
+    }
+}
+
+/// The review socket beside the protocol socket.
+pub fn review_socket(socket: &Path) -> PathBuf {
+    let mut s = socket.as_os_str().to_owned();
+    s.push(".review");
+    PathBuf::from(s)
 }
 
 /// When the caller stops waiting (`grpc-timeout`), less a margin for the reply to
@@ -122,11 +153,73 @@ fn tier_proto(t: policy::Tier) -> Tier {
     }
 }
 
-fn review_proto(r: review::Review) -> Review {
+/// The tiers a reviewer can give a verdict for.
+fn tier_from(t: i32) -> Option<policy::Tier> {
+    match Tier::try_from(t).ok()? {
+        Tier::Llm => Some(policy::Tier::Llm),
+        Tier::Human => Some(policy::Tier::Human),
+        Tier::Software | Tier::Unspecified => None,
+    }
+}
+
+fn verdict_proto(d: Decision) -> Verdict {
+    match d {
+        Decision::Commit => Verdict::Commit,
+        Decision::Return => Verdict::Return,
+        Decision::Discard => Verdict::Discard,
+    }
+}
+
+fn tier_reviews(rs: &[rules::TierReview]) -> Vec<TierReview> {
+    rs.iter()
+        .map(|r| TierReview {
+            tier: tier_proto(r.tier).into(),
+            verdict: verdict_proto(r.verdict).into(),
+            reasons: r.reasons.clone(),
+            r#override: r.over,
+        })
+        .collect()
+}
+
+fn held_proto(i: Identity) -> HeldScope {
+    let (tiers, wait, verdict, reviews, at) = match &i.hold {
+        Some(h) => (h.tiers.as_slice(), h.wait, h.verdict, h.reviews.as_slice(), h.at_ms),
+        None => (&[][..], false, Decision::Commit, &[][..], 0),
+    };
+    HeldScope {
+        tiers: tiers.iter().map(|t| tier_proto(*t).into()).collect(),
+        wait,
+        verdict: verdict_proto(verdict).into(),
+        reviews: tier_reviews(reviews),
+        held_at_ms: at,
+        scope_id: i.id,
+        name: i.name,
+        labels: i.labels,
+        session: i.session,
+    }
+}
+
+fn held_outcome(id: String, hold: &Hold) -> Outcome {
+    Outcome {
+        scope_id: id,
+        status: OutcomeStatus::Held.into(),
+        tiers: hold.tiers.iter().map(|t| tier_proto(*t).into()).collect(),
+        wait: hold.wait,
+        ..Default::default()
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+fn review_proto(r: rules::Review) -> Review {
     Review {
         verdict: match r.verdict {
-            review::Verdict::Commit => Verdict::Commit,
-            review::Verdict::Discard => Verdict::Discard,
+            rules::Verdict::Commit => Verdict::Commit,
+            rules::Verdict::Discard => Verdict::Discard,
         }
         .into(),
         reasons: r.reasons(),
@@ -137,12 +230,17 @@ fn review_proto(r: review::Review) -> Review {
 
 impl Service {
     pub fn new(views: Arc<Views>, children: Arc<Children>, diff: diff::Caps) -> Self {
-        Service {
+        Service(Arc::new(Shared {
             views,
             children,
             diff,
-            decided: tokio::sync::Notify::new(),
-        }
+            changed: tokio::sync::watch::Sender::new(0),
+            reviewing: tokio::sync::Mutex::new(()),
+        }))
+    }
+
+    fn notify(&self) {
+        self.changed.send_modify(|n| *n = n.wrapping_add(1));
     }
 
     /// Stop the scope's children (their last writes flush on exit), then freeze it.
@@ -161,14 +259,54 @@ impl Service {
         Ok(to_proto(&self.views, id, cs, diff))
     }
 
-    /// Commit applies a closed scope's change set (or reports the conflicting paths and
-    /// drops or reopens the scope, per the policy's conflict.verdict) or holds it for
-    /// reviewers; discard drops the scope (open or closed); return reopens a closed scope.
-    async fn decide_scope(&self, req: DecideRequest) -> Result<Response<Outcome>, Status> {
-        let (id, token) = (req.scope_id.clone(), req.token.clone());
-        self.blocking(move |v| v.check_token(&id, &token)).await?;
+    /// A closed scope's change set and diff; None if it is open.
+    async fn closed_proto(&self, id: &str) -> Result<Option<ChangeSet>, Status> {
+        let (id2, caps) = (id.to_string(), self.diff);
+        let got = self
+            .blocking(move |v| match v.closed_change_set(&id2) {
+                Ok(cs) => {
+                    let diff = v.diff(&id2, &cs, caps)?;
+                    Ok(Some((cs, diff)))
+                }
+                Err(e) if e.kind() == io::ErrorKind::InvalidInput => Ok(None),
+                Err(e) => Err(e),
+            })
+            .await?;
+        Ok(got.map(|(cs, diff)| to_proto(&self.views, id.to_string(), cs, diff)))
+    }
+
+    /// Keep a decision of a scope that has a session or was held, for its session's
+    /// reviewers and AwaitDecision. The decision is applied already: a failure to
+    /// keep it is logged, not returned.
+    async fn record(
+        &self,
+        who: Identity,
+        change_set: Option<ChangeSet>,
+        outcome: &Outcome,
+        reviews: &[rules::TierReview],
+    ) {
+        let entry = Decided {
+            scope_id: who.id.clone(),
+            name: who.name,
+            change_set,
+            outcome: Some(outcome.clone()),
+            reviews: tier_reviews(reviews),
+            decided_at_ms: now_ms(),
+        }
+        .encode_to_vec();
+        let (id, session, token) = (who.id, who.session, who.token_sha256);
+        let kept = self
+            .blocking(move |v| v.history.record(&id, &session, token.as_deref(), &entry))
+            .await;
+        if let Err(e) = kept {
+            eprintln!("escrowd: history: {}", e.message());
+        }
+    }
+
+    /// The opener's decision: a commit runs the review and may hold the scope; a held
+    /// scope can only be withdrawn (discarded).
+    async fn decide_scope(&self, req: DecideRequest) -> Result<Outcome, Status> {
         let (id, mut reasons) = (req.scope_id.clone(), req.reasons);
-        let (mut paths, mut reopened) = (vec![], false);
         let mut verdict = Verdict::try_from(req.verdict).unwrap_or(Verdict::Unspecified);
         let wait = req.wait;
         // A held scope is its reviewers': the opener can only withdraw it.
@@ -188,41 +326,50 @@ impl Service {
             let scope = id.clone();
             let cs = self.blocking(move |v| v.closed_change_set(&scope)).await?;
             let r = cs.review.as_ref().expect("a closed change set has a review");
-            if r.verdict == review::Verdict::Discard {
+            if r.verdict == rules::Verdict::Discard {
                 verdict = Verdict::Discard;
                 reasons = r.reasons();
             } else if verdict == Verdict::Commit && !r.tiers.is_empty() {
                 let (scope, tiers, wait) = (id.clone(), r.tiers.clone(), r.wait || wait);
                 let hold = self.blocking(move |v| v.hold_scope(&scope, tiers, wait)).await?;
-                return Ok(Response::new(Outcome {
-                    scope_id: id,
-                    status: OutcomeStatus::Held.into(),
-                    tiers: hold.tiers.into_iter().map(|t| tier_proto(t).into()).collect(),
-                    wait: hold.wait,
-                    ..Default::default()
-                }));
+                return Ok(held_outcome(id, &hold));
             }
             closed = Some(cs);
         }
+        self.apply(id, verdict, reasons, closed).await
+    }
+
+    /// Apply a verdict: discard drops the scope (open or closed); return reopens a
+    /// closed scope; commit applies a closed scope's change set (`closed`, if the
+    /// caller built it), or reports the conflicting paths and drops or reopens the
+    /// scope, per the policy's conflict.verdict.
+    async fn apply(
+        &self,
+        id: String,
+        verdict: Verdict,
+        mut reasons: Vec<String>,
+        closed: Option<changeset::ChangeSet>,
+    ) -> Result<Outcome, Status> {
+        let (mut paths, mut reopened) = (vec![], false);
+        let scope = id.clone();
+        let children = self.children.clone();
         let status = match verdict {
             Verdict::Discard => {
-                let children = self.children.clone();
                 self.blocking(move |v| {
-                    v.scope(&req.scope_id)
-                        .map_err(|_| io::Error::new(io::ErrorKind::NotFound, format!("no scope {}", req.scope_id)))?;
-                    children.stop(&req.scope_id);
-                    let r = v.drop_scope(&req.scope_id);
-                    children.release(&req.scope_id);
+                    v.scope(&scope)
+                        .map_err(|_| io::Error::new(io::ErrorKind::NotFound, format!("no scope {scope}")))?;
+                    children.stop(&scope);
+                    let r = v.drop_scope(&scope);
+                    children.release(&scope);
                     r
                 })
                 .await?;
                 OutcomeStatus::Discarded
             }
             Verdict::Return => {
-                let children = self.children.clone();
                 self.blocking(move |v| {
-                    v.reopen_scope(&req.scope_id)?;
-                    children.release(&req.scope_id);
+                    v.reopen_scope(&scope)?;
+                    children.release(&scope);
                     Ok(())
                 })
                 .await?;
@@ -230,8 +377,6 @@ impl Service {
                 OutcomeStatus::Returned
             }
             Verdict::Commit => {
-                let scope = req.scope_id;
-                let children = self.children.clone();
                 let outcome = self
                     .blocking(move |v| {
                         match closed
@@ -266,14 +411,64 @@ impl Service {
             }
             Verdict::Unspecified => return Err(Status::invalid_argument("verdict must be set")),
         };
-        Ok(Response::new(Outcome {
+        Ok(Outcome {
             scope_id: id,
             status: status.into(),
             paths,
             reasons,
             reopened,
             ..Default::default()
-        }))
+        })
+    }
+
+    /// Send a client following scope `id` its hold's updates, then its first kept
+    /// decision after `after` (history sequence), and stop.
+    async fn follow(&self, id: String, after: u64, tx: mpsc::Sender<Result<Outcome, Status>>) {
+        let mut changed = self.changed.subscribe();
+        let mut sent: Option<Vec<policy::Tier>> = None;
+        loop {
+            changed.borrow_and_update();
+            let id2 = id.clone();
+            let state = self
+                .blocking(move |v| {
+                    let held = match v.held(&id2) {
+                        Ok(h) => h,
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                        Err(e) => return Err(e),
+                    };
+                    let decided = match held {
+                        Some(_) => None,
+                        None => v.history.latest(&id2)?.filter(|l| l.seq > after),
+                    };
+                    Ok((held, decided))
+                })
+                .await;
+            match state {
+                Err(e) => {
+                    let _ = tx.send(Err(e)).await;
+                    return;
+                }
+                Ok((Some(hold), _)) if sent.as_ref() != Some(&hold.tiers) => {
+                    sent = Some(hold.tiers.clone());
+                    if tx.send(Ok(held_outcome(id.clone(), &hold))).await.is_err() {
+                        return;
+                    }
+                }
+                Ok((_, Some(l))) => {
+                    let out = Decided::decode(&l.entry[..]).ok().and_then(|d| d.outcome);
+                    let _ = tx
+                        .send(out.ok_or_else(|| Status::internal(format!("scope {id}: unreadable history entry"))))
+                        .await;
+                    return;
+                }
+                // Not held and no new decision yet: the decider keeps it next.
+                Ok(_) => {}
+            }
+            tokio::select! {
+                r = changed.changed() => if r.is_err() { return },
+                _ = tx.closed() => return,
+            }
+        }
     }
 
     /// Filesystem work runs off the async executor.
@@ -302,19 +497,18 @@ impl Escrow for Service {
     async fn open_scope(&self, req: Request<OpenScopeRequest>) -> Result<Response<OpenScopeResponse>, Status> {
         let until = deadline(req.metadata());
         let req = req.into_inner();
+        let mut changed = self.changed.subscribe();
         loop {
-            let decided = self.decided.notified();
-            tokio::pin!(decided);
-            decided.as_mut().enable();
+            changed.borrow_and_update();
             let Some(held) = self.views.blocking_hold(&req.session) else {
                 break;
             };
             let Some(until) = until else {
-                decided.await;
+                let _ = changed.changed().await;
                 continue;
             };
             tokio::select! {
-                _ = decided => {}
+                _ = changed.changed() => {}
                 _ = tokio::time::sleep_until(until) => {
                     return Err(Status::failed_precondition(format!(
                         "session {}: scope {held} is held for review; the next scope opens after its verdict",
@@ -350,13 +544,34 @@ impl Escrow for Service {
         Ok(Response::new(self.close(req.scope_id, req.token).await?))
     }
 
-    /// Decide, then wake the opens waiting behind a held scope.
+    /// Decide; keep the decision of a scope in a session, or held; then wake the opens
+    /// waiting behind a held scope and the clients following it.
     async fn decide(&self, req: Request<DecideRequest>) -> Result<Response<Outcome>, Status> {
-        let out = self.decide_scope(req.into_inner()).await;
-        if out.as_ref().is_ok_and(|o| o.get_ref().status() != OutcomeStatus::Held) {
-            self.decided.notify_waiters();
+        let req = req.into_inner();
+        let (id, token) = (req.scope_id.clone(), req.token.clone());
+        let who = self
+            .blocking(move |v| {
+                v.check_token(&id, &token)?;
+                v.identity(&id)
+            })
+            .await?;
+        let _withdrawing = match who.hold {
+            Some(_) => Some(self.reviewing.lock().await),
+            None => None,
+        };
+        let kept = match !who.session.is_empty() || who.hold.is_some() {
+            true => Some(self.closed_proto(&who.id).await?),
+            false => None,
+        };
+        let out = self.decide_scope(req).await?;
+        if out.status() != OutcomeStatus::Held {
+            if let Some(cs) = kept {
+                let reviews = who.hold.as_ref().map(|h| h.reviews.clone()).unwrap_or_default();
+                self.record(who, cs, &out, &reviews).await;
+            }
+            self.notify();
         }
-        out
+        Ok(Response::new(out))
     }
 
     /// Close the implicit default scope and return its change set; decide it as scope `unscoped`.
@@ -379,6 +594,129 @@ impl Escrow for Service {
             .await?;
         Ok(Response::new(to_proto(&self.views, id, cs, diff)))
     }
+
+    type AwaitDecisionStream = ReceiverStream<Result<Outcome, Status>>;
+
+    /// A held scope's updates until its verdict; a decided scope's last outcome.
+    async fn await_decision(
+        &self,
+        req: Request<AwaitDecisionRequest>,
+    ) -> Result<Response<Self::AwaitDecisionStream>, Status> {
+        let AwaitDecisionRequest { scope_id: id, token } = req.into_inner();
+        let id2 = id.clone();
+        let (live, latest) = self
+            .blocking(move |v| {
+                // The last kept decision first: a hold seen after it is decided later,
+                // and kept with a newer sequence.
+                let latest = v.history.latest(&id2)?;
+                let live = match v.identity(&id2) {
+                    Ok(who) => {
+                        v.check_token(&id2, &token)?;
+                        Some(who)
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                    Err(e) => return Err(e),
+                };
+                // Gone: decided, maybe since the first read.
+                let latest = match live {
+                    Some(_) => latest,
+                    None => v.history.latest(&id2)?,
+                };
+                if live.is_none()
+                    && let Some(l) = &latest
+                    && l.token_sha256
+                        .as_ref()
+                        .is_some_and(|t| *t != views::token_sha256(&token))
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::PermissionDenied,
+                        format!("scope {id2}: missing or wrong token"),
+                    ));
+                }
+                Ok((live, latest.map(|l| l.seq)))
+            })
+            .await?;
+        let after = match (&live, latest) {
+            // Held: follow it to a decision newer than the last kept.
+            (Some(who), seq) if who.hold.is_some() => seq.unwrap_or(0),
+            // Decided (gone, or reopened by a return): its last decision.
+            (_, Some(seq)) => seq - 1,
+            (Some(_), None) => return Err(Status::failed_precondition(format!("scope {id} is not held"))),
+            (None, None) => return Err(Status::not_found(format!("no scope {id}"))),
+        };
+        let (tx, rx) = mpsc::channel(4);
+        let service = self.clone();
+        tokio::spawn(async move { service.follow(id, after, tx).await });
+        Ok(Response::new(ReceiverStream::new(rx)))
+    }
+}
+
+#[tonic::async_trait]
+impl Reviewer for Service {
+    async fn list_held(&self, _req: Request<ListHeldRequest>) -> Result<Response<ListHeldResponse>, Status> {
+        let held = self.blocking(|v| v.held_scopes()).await?;
+        Ok(Response::new(ListHeldResponse {
+            scopes: held.into_iter().map(held_proto).collect(),
+        }))
+    }
+
+    async fn get_held(&self, req: Request<GetHeldRequest>) -> Result<Response<GetHeldResponse>, Status> {
+        let id = req.into_inner().scope_id;
+        let id2 = id.clone();
+        let (who, history) = self
+            .blocking(move |v| {
+                let who = v.identity(&id2)?;
+                let history = v.history.session(&who.session, HISTORY)?;
+                Ok((who, history))
+            })
+            .await?;
+        if who.hold.is_none() {
+            return Err(Status::failed_precondition(format!("scope {id} is not held")));
+        }
+        let change_set = self.closed_proto(&id).await?;
+        Ok(Response::new(GetHeldResponse {
+            held: Some(held_proto(who)),
+            change_set,
+            history: history.iter().filter_map(|e| Decided::decode(&e[..]).ok()).collect(),
+        }))
+    }
+
+    /// A tier's verdict; after the last pending tier, the scope is decided.
+    async fn review(&self, req: Request<ReviewRequest>) -> Result<Response<Outcome>, Status> {
+        let req = req.into_inner();
+        let tier = tier_from(req.tier).ok_or_else(|| Status::invalid_argument("tier must be llm or human"))?;
+        let verdict = match Verdict::try_from(req.verdict).unwrap_or(Verdict::Unspecified) {
+            Verdict::Commit => Decision::Commit,
+            Verdict::Return => Decision::Return,
+            Verdict::Discard => Decision::Discard,
+            Verdict::Unspecified => return Err(Status::invalid_argument("verdict must be set")),
+        };
+        let _one = self.reviewing.lock().await;
+        let id = req.scope_id.clone();
+        let who = self.blocking(move |v| v.identity(&id)).await?;
+        let id = req.scope_id.clone();
+        let (reasons, over) = (req.reasons, req.r#override);
+        let reviewed = self
+            .blocking(move |v| v.review_scope(&id, tier, verdict, reasons, over))
+            .await?;
+        let id = req.scope_id;
+        let out = match reviewed {
+            Reviewed::Held(hold) => held_outcome(id, &hold),
+            Reviewed::Final(hold) => {
+                let change_set = self.closed_proto(&id).await?;
+                let reasons = hold
+                    .reviews
+                    .iter()
+                    .flat_map(|r| r.reasons.iter().map(move |s| format!("{}: {s}", r.tier.as_str())))
+                    .collect();
+                let out = self.apply(id, verdict_proto(hold.verdict), reasons, None).await?;
+                self.record(who, change_set, &out, &hold.reviews).await;
+                out
+            }
+        };
+        self.notify();
+        Ok(Response::new(out))
+    }
 }
 
 /// Bind a Unix socket, replacing a stale socket file left by a previous daemon.
@@ -389,13 +727,41 @@ pub fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
     UnixListener::bind(socket).with_context(|| format!("binding {}", socket.display()))
 }
 
-/// Serve on `socket` until `shutdown` resolves; the socket is removed on exit.
+/// Bind `socket` with mode 0600: bound under a temporary name, then renamed, so no
+/// other user can connect in between.
+fn bind_private(socket: &Path) -> anyhow::Result<UnixListener> {
+    let mut tmp = socket.as_os_str().to_owned();
+    tmp.push(format!(".{}", std::process::id()));
+    let tmp = PathBuf::from(tmp);
+    let listener = bind(&tmp)?;
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600))
+        .with_context(|| format!("chmod {}", tmp.display()))?;
+    std::fs::rename(&tmp, socket).with_context(|| format!("renaming {} to {}", tmp.display(), socket.display()))?;
+    Ok(listener)
+}
+
+/// Serve clients on `socket` and reviewers on its review socket until `shutdown`
+/// resolves; the sockets are removed on exit.
 pub async fn serve(socket: &Path, service: Service, shutdown: impl Future<Output = ()>) -> anyhow::Result<()> {
+    let review_path = review_socket(socket);
+    let review_listener = bind_private(&review_path)?;
     let listener = bind(socket)?;
+    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+    let reviewers = tokio::spawn(
+        tonic::transport::Server::builder()
+            .add_service(ReviewerServer::new(service.clone()))
+            .serve_with_incoming_shutdown(UnixListenerStream::new(review_listener), async {
+                let _ = stopped.await;
+            }),
+    );
     let result = tonic::transport::Server::builder()
         .add_service(EscrowServer::new(service))
         .serve_with_incoming_shutdown(UnixListenerStream::new(listener), shutdown)
         .await;
+    let _ = stop.send(());
+    let reviewed = reviewers.await;
     let _ = std::fs::remove_file(socket);
-    Ok(result?)
+    let _ = std::fs::remove_file(&review_path);
+    result?;
+    Ok(reviewed??)
 }

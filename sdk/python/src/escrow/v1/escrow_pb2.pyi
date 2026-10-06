@@ -280,3 +280,108 @@ class SpawnSignal(_message.Message):
 class SettleUnscopedRequest(_message.Message):
     __slots__ = ()
     def __init__(self) -> None: ...
+
+class AwaitDecisionRequest(_message.Message):
+    __slots__ = ("scope_id", "token")
+    SCOPE_ID_FIELD_NUMBER: _ClassVar[int]
+    TOKEN_FIELD_NUMBER: _ClassVar[int]
+    scope_id: str
+    token: str
+    def __init__(self, scope_id: _Optional[str] = ..., token: _Optional[str] = ...) -> None: ...
+
+class TierReview(_message.Message):
+    __slots__ = ("tier", "verdict", "reasons", "override")
+    TIER_FIELD_NUMBER: _ClassVar[int]
+    VERDICT_FIELD_NUMBER: _ClassVar[int]
+    REASONS_FIELD_NUMBER: _ClassVar[int]
+    OVERRIDE_FIELD_NUMBER: _ClassVar[int]
+    tier: Tier
+    verdict: Verdict
+    reasons: _containers.RepeatedScalarFieldContainer[str]
+    override: bool
+    def __init__(self, tier: _Optional[_Union[Tier, str]] = ..., verdict: _Optional[_Union[Verdict, str]] = ..., reasons: _Optional[_Iterable[str]] = ..., override: _Optional[bool] = ...) -> None: ...
+
+class HeldScope(_message.Message):
+    __slots__ = ("scope_id", "name", "labels", "session", "tiers", "wait", "verdict", "reviews", "held_at_ms")
+    class LabelsEntry(_message.Message):
+        __slots__ = ("key", "value")
+        KEY_FIELD_NUMBER: _ClassVar[int]
+        VALUE_FIELD_NUMBER: _ClassVar[int]
+        key: str
+        value: str
+        def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
+    SCOPE_ID_FIELD_NUMBER: _ClassVar[int]
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    LABELS_FIELD_NUMBER: _ClassVar[int]
+    SESSION_FIELD_NUMBER: _ClassVar[int]
+    TIERS_FIELD_NUMBER: _ClassVar[int]
+    WAIT_FIELD_NUMBER: _ClassVar[int]
+    VERDICT_FIELD_NUMBER: _ClassVar[int]
+    REVIEWS_FIELD_NUMBER: _ClassVar[int]
+    HELD_AT_MS_FIELD_NUMBER: _ClassVar[int]
+    scope_id: str
+    name: str
+    labels: _containers.ScalarMap[str, str]
+    session: str
+    tiers: _containers.RepeatedScalarFieldContainer[Tier]
+    wait: bool
+    verdict: Verdict
+    reviews: _containers.RepeatedCompositeFieldContainer[TierReview]
+    held_at_ms: int
+    def __init__(self, scope_id: _Optional[str] = ..., name: _Optional[str] = ..., labels: _Optional[_Mapping[str, str]] = ..., session: _Optional[str] = ..., tiers: _Optional[_Iterable[_Union[Tier, str]]] = ..., wait: _Optional[bool] = ..., verdict: _Optional[_Union[Verdict, str]] = ..., reviews: _Optional[_Iterable[_Union[TierReview, _Mapping]]] = ..., held_at_ms: _Optional[int] = ...) -> None: ...
+
+class ListHeldRequest(_message.Message):
+    __slots__ = ()
+    def __init__(self) -> None: ...
+
+class ListHeldResponse(_message.Message):
+    __slots__ = ("scopes",)
+    SCOPES_FIELD_NUMBER: _ClassVar[int]
+    scopes: _containers.RepeatedCompositeFieldContainer[HeldScope]
+    def __init__(self, scopes: _Optional[_Iterable[_Union[HeldScope, _Mapping]]] = ...) -> None: ...
+
+class GetHeldRequest(_message.Message):
+    __slots__ = ("scope_id",)
+    SCOPE_ID_FIELD_NUMBER: _ClassVar[int]
+    scope_id: str
+    def __init__(self, scope_id: _Optional[str] = ...) -> None: ...
+
+class GetHeldResponse(_message.Message):
+    __slots__ = ("held", "change_set", "history")
+    HELD_FIELD_NUMBER: _ClassVar[int]
+    CHANGE_SET_FIELD_NUMBER: _ClassVar[int]
+    HISTORY_FIELD_NUMBER: _ClassVar[int]
+    held: HeldScope
+    change_set: ChangeSet
+    history: _containers.RepeatedCompositeFieldContainer[Decided]
+    def __init__(self, held: _Optional[_Union[HeldScope, _Mapping]] = ..., change_set: _Optional[_Union[ChangeSet, _Mapping]] = ..., history: _Optional[_Iterable[_Union[Decided, _Mapping]]] = ...) -> None: ...
+
+class Decided(_message.Message):
+    __slots__ = ("scope_id", "name", "change_set", "outcome", "reviews", "decided_at_ms")
+    SCOPE_ID_FIELD_NUMBER: _ClassVar[int]
+    NAME_FIELD_NUMBER: _ClassVar[int]
+    CHANGE_SET_FIELD_NUMBER: _ClassVar[int]
+    OUTCOME_FIELD_NUMBER: _ClassVar[int]
+    REVIEWS_FIELD_NUMBER: _ClassVar[int]
+    DECIDED_AT_MS_FIELD_NUMBER: _ClassVar[int]
+    scope_id: str
+    name: str
+    change_set: ChangeSet
+    outcome: Outcome
+    reviews: _containers.RepeatedCompositeFieldContainer[TierReview]
+    decided_at_ms: int
+    def __init__(self, scope_id: _Optional[str] = ..., name: _Optional[str] = ..., change_set: _Optional[_Union[ChangeSet, _Mapping]] = ..., outcome: _Optional[_Union[Outcome, _Mapping]] = ..., reviews: _Optional[_Iterable[_Union[TierReview, _Mapping]]] = ..., decided_at_ms: _Optional[int] = ...) -> None: ...
+
+class ReviewRequest(_message.Message):
+    __slots__ = ("scope_id", "tier", "verdict", "reasons", "override")
+    SCOPE_ID_FIELD_NUMBER: _ClassVar[int]
+    TIER_FIELD_NUMBER: _ClassVar[int]
+    VERDICT_FIELD_NUMBER: _ClassVar[int]
+    REASONS_FIELD_NUMBER: _ClassVar[int]
+    OVERRIDE_FIELD_NUMBER: _ClassVar[int]
+    scope_id: str
+    tier: Tier
+    verdict: Verdict
+    reasons: _containers.RepeatedScalarFieldContainer[str]
+    override: bool
+    def __init__(self, scope_id: _Optional[str] = ..., tier: _Optional[_Union[Tier, str]] = ..., verdict: _Optional[_Union[Verdict, str]] = ..., reasons: _Optional[_Iterable[str]] = ..., override: _Optional[bool] = ...) -> None: ...

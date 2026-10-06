@@ -37,6 +37,40 @@ pub enum Verdict {
     Discard,
 }
 
+/// A tier's verdict on a held scope, loosest first: verdicts only tighten.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Decision {
+    Commit,
+    Return,
+    Discard,
+}
+
+impl Decision {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Decision::Commit => "commit",
+            Decision::Return => "return",
+            Decision::Discard => "discard",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Decision> {
+        [Decision::Commit, Decision::Return, Decision::Discard]
+            .into_iter()
+            .find(|d| d.as_str() == s)
+    }
+}
+
+/// One tier's verdict on a held scope.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TierReview {
+    pub tier: Tier,
+    pub verdict: Decision,
+    pub reasons: Vec<String>,
+    /// A human loosened the verdict so far.
+    pub over: bool,
+}
+
 /// A write rule a change broke.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hit {

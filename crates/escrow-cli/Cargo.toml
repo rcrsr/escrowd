@@ -1,6 +1,6 @@
 [package]
 name = "escrow-cli"
-description = "The escrow command: run, daemon, exec, log, diff"
+description = "The escrow command: run, daemon, exec, log, diff, review"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

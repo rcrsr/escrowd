@@ -14,6 +14,7 @@ pub mod exec;
 pub mod fault;
 pub mod fuse;
 pub mod gate;
+pub mod history;
 pub mod journal;
 pub mod ledger;
 pub mod policy;
