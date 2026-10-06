@@ -2,7 +2,7 @@
 
 Oct 5, 2026 · Andre Bremer · Draft
 
-**Status, Oct 6, 2026: 3.1 built**; 3.2 next. Phase 2 is done ([plan](phase-2-hardening.md), exit runs in [PR #25](https://github.com/rcrsr/escrowd/pull/25)).
+**Status, Oct 6, 2026: 3.1 and 3.2 built**; 3.3 next. Phase 2 is done ([plan](phase-2-hardening.md), exit runs in [PR #25](https://github.com/rcrsr/escrowd/pull/25)).
 
 Today an agent host blocks on a *pre*-approval: a permission prompt before a tool runs, judged on a description of the effect. Phase 3 makes escrow's decision a *post*-approval: the work runs in a scope, and independent reviewers judge the staged change set, with the client and escrowd negotiating whether the agent waits. The design is in the proposal ([Held decisions](escrowd-proposal.md#held-decisions)); a runnable model plays it ([`examples/held-decisions/model.py`](../examples/held-decisions/model.py)). Phase 3 builds it into escrowd and the Python SDK, attributes every change to the process that made it so reviewers can judge who changed what (added Oct 6, 2026), then freezes the protocol, so phase 4's TypeScript SDK and phase 7's reviewers build on a fixed v1.
 
@@ -76,6 +76,17 @@ The first matching rule gives a path its top tier; a change set goes through eve
 - **Sessions.** `OpenScopeRequest.session` orders an agent's scopes. A required hold blocks the session's next `OpenScope` until the verdict (the call waits, up to the client's deadline, then fails with `FAILED_PRECONDITION` naming the held scope; the held scope stays held). A reviewer's `return` reopens the scope and unblocks the session. Scopes without a session are unordered, as today.
 - **The unscoped scope.** `SettleUnscoped` runs the same review rules, so IO outside scopes in `implicit` mode meets the same reviewers.
 - **Durability.** The held state, the pending tiers, each tier's verdict and the session go into the scope's store; recovery at start keeps them.
+
+**As built (Oct 6, 2026).**
+
+- **The proposal goes on `Decide`, not `CloseScope`.** This differs from the design above. A decide callback needs the change set before it can propose, so close stays as it was. `Decide`'s verdict is the proposal, and `DecideRequest.wait` says whether the client waits.
+- **Holding.** A commit of a change set that needs a tier above software returns `OUTCOME_STATUS_HELD`, with `Outcome.tiers` (still to review) and `Outcome.wait`. `wait` is set when a rule requires waiting or the client asked to wait. A discard or a return the software tier does not tighten is applied at once, as in 3.1.
+- **Independence.** A held scope's opener gets `PERMISSION_DENIED` on a commit or a return. It can discard (withdraw) the scope, as in the model.
+- **Sessions.** `OpenScopeRequest.session` (field 3) is kept in the scope's store. An open in a session that has a scope held with a wait blocks until a decision wakes it. At the client's `grpc-timeout`, less 100 ms, it fails with `FAILED_PRECONDITION` naming the held scope, which stays held.
+- **Durability.** The hold (`hold_tiers`, `hold_wait`) and the session are in the scope's `meta` table, written at once. A restarted daemon keeps the hold, the block and the opener's token. Each tier's verdict comes with the reviewers (3.4).
+- **Ledger.** A hold writes `op=hold decision=<tiers>[,wait]`.
+- **Checks.** `tests/conformance/test_held.py` has 8 tests: rules 1.1 and 1.2 (opener side), the restart, the unscoped scope and optional waits. Rule 1.4, a conflict after continuing, needs a reviewer's commit, so its check comes with 3.4. The crash soak with held scopes runs in 3.7.
+- **Python client.** `open_scope(session=)` and `decide(wait=)`. The SDK's `escrow.scope` is unchanged until 3.5, apart from the `held` status.
 
 ### 3.3 Process attribution
 

@@ -71,6 +71,22 @@ pub enum Tier {
     Human,
 }
 
+impl Tier {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Tier::Software => "software",
+            Tier::Llm => "llm",
+            Tier::Human => "human",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Tier> {
+        [Tier::Software, Tier::Llm, Tier::Human]
+            .into_iter()
+            .find(|t| t.as_str() == s)
+    }
+}
+
 /// Whether the agent waits for a tier's verdict.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]

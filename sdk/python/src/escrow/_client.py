@@ -33,9 +33,15 @@ class Client:
         return self._stub.Ping(escrow_pb2.PingRequest(), timeout=timeout)
 
     def open_scope(
-        self, name: str = "", labels: dict[str, str] | None = None, timeout: float = 5.0
+        self,
+        name: str = "",
+        labels: dict[str, str] | None = None,
+        timeout: float = 5.0,
+        session: str = "",
     ) -> escrow_pb2.OpenScopeResponse:
-        req = escrow_pb2.OpenScopeRequest(name=name, labels=labels or {})
+        """In a `session` with a scope held with a wait, the call waits for its verdict
+        up to `timeout`, then fails with FAILED_PRECONDITION."""
+        req = escrow_pb2.OpenScopeRequest(name=name, labels=labels or {}, session=session)
         resp = self._stub.OpenScope(req, timeout=timeout)
         self.tokens[resp.scope_id] = resp.token
         return resp
@@ -57,21 +63,28 @@ class Client:
         reasons: list[str] | None = None,
         token: str | None = None,
         timeout: float = 30.0,
+        wait: bool = False,
     ) -> escrow_pb2.Outcome:
+        """A commit that needs reviewers returns OUTCOME_STATUS_HELD; `wait`: the
+        session's next scope waits for the verdict."""
         req = escrow_pb2.DecideRequest(
             scope_id=scope_id,
             verdict=verdict,
             reasons=reasons or [],
             token=self._token(scope_id, token),
+            wait=wait,
         )
         return self._stub.Decide(req, timeout=timeout)
 
     def commit(
-        self, scope_id: str, token: str | None = None, timeout: float = 60.0
+        self, scope_id: str, token: str | None = None, timeout: float = 60.0, wait: bool = False
     ) -> escrow_pb2.Outcome:
         """Apply a closed scope's change set, all or nothing. A conflict drops the scope,
-        or reopens it under the policy's `conflict.verdict: return`."""
-        return self.decide(scope_id, escrow_pb2.VERDICT_COMMIT, token=token, timeout=timeout)
+        or reopens it under the policy's `conflict.verdict: return`; a change set that
+        needs reviewers is held."""
+        return self.decide(
+            scope_id, escrow_pb2.VERDICT_COMMIT, token=token, timeout=timeout, wait=wait
+        )
 
     def settle_unscoped(self, timeout: float = 30.0) -> escrow_pb2.ChangeSet:
         """Close the implicit default scope and return its change set (scope id "unscoped")."""

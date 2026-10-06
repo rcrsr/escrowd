@@ -17,7 +17,10 @@ service Escrow {
   // Liveness and version handshake.
   rpc Ping(PingRequest) returns (PingResponse);
 
-  // Open a scope: snapshot at open, a virtual root under /escrow/<scope_id>/.
+  // Open a scope: snapshot at open, a virtual root under /escrow/<scope_id>/. In a
+  // session that has a scope held with a wait (Outcome.wait), the call waits for that
+  // scope's verdict; at the client's deadline it fails with FAILED_PRECONDITION naming
+  // the held scope, which stays held.
   rpc OpenScope(OpenScopeRequest) returns (OpenScopeResponse);
 
   // Close a scope: the caller has fsynced its open files; the daemon stops the
@@ -26,10 +29,12 @@ service Escrow {
   // token fails with PERMISSION_DENIED. The unscoped scope has no token.
   rpc CloseScope(CloseScopeRequest) returns (ChangeSet);
 
-  // Apply the close-time decision: commit, discard or return to agent. The verdict
-  // only tightens the review's (ChangeSet.review): a commit or a return of a change
-  // set the software tier discarded is a discard, and a commit of one that needs a
-  // tier above software fails with FAILED_PRECONDITION.
+  // Apply the close-time decision: commit, discard or return to agent. The verdict is
+  // the opener's proposal and only tightens the review's (ChangeSet.review): a commit
+  // or a return of a change set the software tier discarded is a discard, and a commit
+  // of one that needs a tier above software holds the scope for those reviewers
+  // (OUTCOME_STATUS_HELD). A held scope is the reviewers' to decide: its opener can
+  // only discard (withdraw) it; a commit or a return fails with PERMISSION_DENIED.
   rpc Decide(DecideRequest) returns (Outcome);
 
   // Close the implicit default scope (unscoped = implicit) and return its change
@@ -52,6 +57,9 @@ message PingResponse {
 message OpenScopeRequest {
   string name = 1;
   map<string, string> labels = 2;
+  // Orders an agent's scopes: the scope does not open while another scope of the
+  // session is held with a wait. Empty: no session, never waits.
+  string session = 3;
 }
 
 message OpenScopeResponse {
@@ -147,7 +155,7 @@ message Review {
   repeated string reasons = 2;
   // The tiers above software the change set needs, cheapest first: each tier from
   // TIER_LLM up to the highest its paths need (policy `review:`, first match per path).
-  // Decide refuses to commit a change set that needs any (FAILED_PRECONDITION).
+  // Decide holds a committed change set that needs any (OUTCOME_STATUS_HELD).
   repeated Tier tiers = 3;
   // A `review:` rule of a path that needs a tier above software requires the agent to wait.
   bool wait_required = 4;
@@ -170,6 +178,9 @@ message DecideRequest {
   Verdict verdict = 2;
   repeated string reasons = 3;
   string token = 4;
+  // The client waits for a held verdict: like a `review:` rule's `wait: required`,
+  // the session's next scope does not open until it.
+  bool wait = 5;
 }
 
 enum OutcomeStatus {
@@ -181,6 +192,8 @@ enum OutcomeStatus {
   // read) changed on disk since the scope's snapshot. The policy's conflict.verdict
   // drops the scope (discard, the default) or reopens it (return; see `reopened`).
   OUTCOME_STATUS_CONFLICT = 4;
+  // Not decided yet: held for the reviewers in `tiers`. Nothing reached the project.
+  OUTCOME_STATUS_HELD = 5;
 }
 
 message Outcome {
@@ -191,6 +204,11 @@ message Outcome {
   // The scope is open again with its changes: verdict return, or a conflict under
   // conflict.verdict return.
   bool reopened = 5;
+  // OUTCOME_STATUS_HELD: the tiers still to review, cheapest first.
+  repeated Tier tiers = 6;
+  // OUTCOME_STATUS_HELD: the session's next scope waits for the verdict (a review rule
+  // requires it, or the client asked to wait).
+  bool wait = 7;
 }
 
 // Exec socket: start argv in the scope's sandbox, with the scope's view over the project.

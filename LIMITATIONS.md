@@ -2,7 +2,7 @@
 
 Every known limit of escrowd as built, in one place. Each entry says where it is tracked. Update this file when a limit is found or lifted; the plans keep the detail.
 
-Status as of Oct 5, 2026: phase 2, after sub-phase 2.8.
+Status as of Oct 6, 2026: phase 3, after sub-phase 3.2.
 
 ## Capture
 
@@ -72,6 +72,9 @@ Status as of Oct 5, 2026: phase 2, after sub-phase 2.8.
 | `conflict.reads` is off by default: two concurrent scopes can each read a file the other changes and both commit (write skew). | By design, decided Oct 5, 2026: sessions that wait (phase 3) serialize one agent's scopes; hosts that need serializable scopes turn it on. |
 | `conflict.reads` checks files read through the scope's view; reads not yet written to the store when the daemon was killed drop out of the check, as they drop out of the change set. | By design (2.7, 2.3). |
 | One daemon per `escrow run`; nested scopes are not supported. | Carried. |
+| Until reviewers can connect (3.4), a held scope is decided only by its opener's withdrawal (discard): no tier gives a verdict yet. | Phase 3.4 (reviewer role, `escrow review`). |
+| While the unscoped scope (`implicit` mode) is held, IO outside scopes fails as on any closed scope, until its verdict. | By design (3.2): `SettleUnscoped` meets the same review rules, decided Oct 5, 2026. |
+| A session's next `OpenScope` waits behind a held scope only up to the client's deadline (`grpc-timeout`); a client without one waits until the verdict. | By design (3.2). |
 | A `deny` rule lets lookups pass: a denied file's name, size and times are visible to `stat`, its contents and listings are not. | By design, decided Oct 5, 2026 (listed paths inside a denied directory must stay reachable). |
 | A scope's view of a root the policy stops serving is dropped (with its changes) at the next daemon start. | By design (2.4). |
 | `escrow exec` passes argv, cwd and environment as UTF-8 (lossy). | Carried since 1.5. |

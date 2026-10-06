@@ -77,7 +77,10 @@ class EscrowServicer:
         raise NotImplementedError('Method not implemented!')
 
     def OpenScope(self, request, context):
-        """Open a scope: snapshot at open, a virtual root under /escrow/<scope_id>/.
+        """Open a scope: snapshot at open, a virtual root under /escrow/<scope_id>/. In a
+        session that has a scope held with a wait (Outcome.wait), the call waits for that
+        scope's verdict; at the client's deadline it fails with FAILED_PRECONDITION naming
+        the held scope, which stays held.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -94,10 +97,12 @@ class EscrowServicer:
         raise NotImplementedError('Method not implemented!')
 
     def Decide(self, request, context):
-        """Apply the close-time decision: commit, discard or return to agent. The verdict
-        only tightens the review's (ChangeSet.review): a commit or a return of a change
-        set the software tier discarded is a discard, and a commit of one that needs a
-        tier above software fails with FAILED_PRECONDITION.
+        """Apply the close-time decision: commit, discard or return to agent. The verdict is
+        the opener's proposal and only tightens the review's (ChangeSet.review): a commit
+        or a return of a change set the software tier discarded is a discard, and a commit
+        of one that needs a tier above software holds the scope for those reviewers
+        (OUTCOME_STATUS_HELD). A held scope is the reviewers' to decide: its opener can
+        only discard (withdraw) it; a commit or a return fails with PERMISSION_DENIED.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')

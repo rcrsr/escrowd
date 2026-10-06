@@ -20,6 +20,27 @@ pub struct Service {
     views: Arc<Views>,
     children: Arc<Children>,
     diff: diff::Caps,
+    /// Woken after every decision: an open waiting behind a held scope checks again.
+    decided: tokio::sync::Notify,
+}
+
+/// When the caller stops waiting (`grpc-timeout`), less a margin for the reply to
+/// reach it; None: no deadline.
+fn deadline(md: &tonic::metadata::MetadataMap) -> Option<tokio::time::Instant> {
+    use std::time::Duration;
+    let v = md.get("grpc-timeout")?.to_str().ok()?;
+    let (n, unit) = v.split_at(v.len().checked_sub(1)?);
+    let n: u64 = n.parse().ok()?;
+    let d = match unit {
+        "H" => Duration::from_secs(n.saturating_mul(3600)),
+        "M" => Duration::from_secs(n.saturating_mul(60)),
+        "S" => Duration::from_secs(n),
+        "m" => Duration::from_millis(n),
+        "u" => Duration::from_micros(n),
+        "n" => Duration::from_nanos(n),
+        _ => return None,
+    };
+    Some(tokio::time::Instant::now() + d.saturating_sub(Duration::from_millis(100)))
 }
 
 fn io_status(e: std::io::Error) -> Status {
@@ -102,7 +123,12 @@ fn review_proto(r: review::Review) -> Review {
 
 impl Service {
     pub fn new(views: Arc<Views>, children: Arc<Children>, diff: diff::Caps) -> Self {
-        Service { views, children, diff }
+        Service {
+            views,
+            children,
+            diff,
+            decided: tokio::sync::Notify::new(),
+        }
     }
 
     /// Stop the scope's children (their last writes flush on exit), then freeze it.
@@ -121,69 +147,28 @@ impl Service {
         Ok(to_proto(&self.views, id, cs, diff))
     }
 
-    /// Filesystem work runs off the async executor.
-    async fn blocking<T: Send + 'static>(
-        &self,
-        f: impl FnOnce(&Views) -> std::io::Result<T> + Send + 'static,
-    ) -> Result<T, Status> {
-        let views = self.views.clone();
-        tokio::task::spawn_blocking(move || f(&views))
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?
-            .map_err(io_status)
-    }
-}
-
-#[tonic::async_trait]
-impl Escrow for Service {
-    async fn ping(&self, _req: Request<PingRequest>) -> Result<Response<PingResponse>, Status> {
-        Ok(Response::new(PingResponse {
-            daemon_version: env!("CARGO_PKG_VERSION").into(),
-            protocol_version: crate::PROTOCOL_VERSION,
-        }))
-    }
-
-    async fn open_scope(&self, req: Request<OpenScopeRequest>) -> Result<Response<OpenScopeResponse>, Status> {
-        let req = req.into_inner();
-        let (opened, roots) = self
-            .blocking(move |v| {
-                let opened = v.open_scope(&req.name, &req.labels)?;
-                let roots = v.root_views(&opened.id);
-                Ok((opened, roots))
-            })
-            .await?;
-        Ok(Response::new(OpenScopeResponse {
-            scope_id: opened.id,
-            root: path_str(&opened.root),
-            token: opened.token,
-            roots: roots
-                .into_iter()
-                .map(|r| ScopeRoot {
-                    path: path_str(&r.host),
-                    view: path_str(&r.view),
-                    direct: r.direct.iter().map(|p| path_str(p)).collect(),
-                })
-                .collect(),
-        }))
-    }
-
-    async fn close_scope(&self, req: Request<CloseScopeRequest>) -> Result<Response<ChangeSet>, Status> {
-        let req = req.into_inner();
-        Ok(Response::new(self.close(req.scope_id, req.token).await?))
-    }
-
     /// Commit applies a closed scope's change set (or reports the conflicting paths and
-    /// drops or reopens the scope, per the policy's conflict.verdict); discard drops the
-    /// scope (open or closed); return reopens a closed scope.
-    async fn decide(&self, req: Request<DecideRequest>) -> Result<Response<Outcome>, Status> {
-        let req = req.into_inner();
+    /// drops or reopens the scope, per the policy's conflict.verdict) or holds it for
+    /// reviewers; discard drops the scope (open or closed); return reopens a closed scope.
+    async fn decide_scope(&self, req: DecideRequest) -> Result<Response<Outcome>, Status> {
         let (id, token) = (req.scope_id.clone(), req.token.clone());
         self.blocking(move |v| v.check_token(&id, &token)).await?;
         let (id, mut reasons) = (req.scope_id.clone(), req.reasons);
         let (mut paths, mut reopened) = (vec![], false);
         let mut verdict = Verdict::try_from(req.verdict).unwrap_or(Verdict::Unspecified);
+        let wait = req.wait;
+        // A held scope is its reviewers': the opener can only withdraw it.
+        if verdict != Verdict::Discard {
+            let scope = id.clone();
+            if let Some(hold) = self.blocking(move |v| v.held(&scope)).await? {
+                return Err(Status::permission_denied(format!(
+                    "scope {id} is held for {}: only its reviewers commit or return it; its opener can discard it",
+                    hold.tiers[0].as_str()
+                )));
+            }
+        }
         // The review's verdict only tightens: a discard by the software tier wins, and
-        // a change set that needs a tier above software is not the opener's to commit.
+        // a commit of a change set that needs a tier above software holds it.
         let mut closed = None;
         if matches!(verdict, Verdict::Commit | Verdict::Return) && self.views.reviews() {
             let scope = id.clone();
@@ -193,11 +178,15 @@ impl Escrow for Service {
                 verdict = Verdict::Discard;
                 reasons = r.reasons();
             } else if verdict == Verdict::Commit && !r.tiers.is_empty() {
-                let tiers: Vec<String> = r.tiers.iter().map(|t| format!("{t:?}").to_lowercase()).collect();
-                return Err(Status::failed_precondition(format!(
-                    "scope {id} needs review by {}; only a discard or a return can decide it",
-                    tiers.join(", ")
-                )));
+                let (scope, tiers, wait) = (id.clone(), r.tiers.clone(), r.wait || wait);
+                let hold = self.blocking(move |v| v.hold_scope(&scope, tiers, wait)).await?;
+                return Ok(Response::new(Outcome {
+                    scope_id: id,
+                    status: OutcomeStatus::Held.into(),
+                    tiers: hold.tiers.into_iter().map(|t| tier_proto(t).into()).collect(),
+                    wait: hold.wait,
+                    ..Default::default()
+                }));
             }
             closed = Some(cs);
         }
@@ -269,7 +258,91 @@ impl Escrow for Service {
             paths,
             reasons,
             reopened,
+            ..Default::default()
         }))
+    }
+
+    /// Filesystem work runs off the async executor.
+    async fn blocking<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&Views) -> std::io::Result<T> + Send + 'static,
+    ) -> Result<T, Status> {
+        let views = self.views.clone();
+        tokio::task::spawn_blocking(move || f(&views))
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?
+            .map_err(io_status)
+    }
+}
+
+#[tonic::async_trait]
+impl Escrow for Service {
+    async fn ping(&self, _req: Request<PingRequest>) -> Result<Response<PingResponse>, Status> {
+        Ok(Response::new(PingResponse {
+            daemon_version: env!("CARGO_PKG_VERSION").into(),
+            protocol_version: crate::PROTOCOL_VERSION,
+        }))
+    }
+
+    /// In a session, wait while another of its scopes is held with a wait.
+    async fn open_scope(&self, req: Request<OpenScopeRequest>) -> Result<Response<OpenScopeResponse>, Status> {
+        let until = deadline(req.metadata());
+        let req = req.into_inner();
+        loop {
+            let decided = self.decided.notified();
+            tokio::pin!(decided);
+            decided.as_mut().enable();
+            let Some(held) = self.views.blocking_hold(&req.session) else {
+                break;
+            };
+            let Some(until) = until else {
+                decided.await;
+                continue;
+            };
+            tokio::select! {
+                _ = decided => {}
+                _ = tokio::time::sleep_until(until) => {
+                    return Err(Status::failed_precondition(format!(
+                        "session {}: scope {held} is held for review; the next scope opens after its verdict",
+                        req.session
+                    )));
+                }
+            }
+        }
+        let (opened, roots) = self
+            .blocking(move |v| {
+                let opened = v.open_scope(&req.name, &req.labels, &req.session)?;
+                let roots = v.root_views(&opened.id);
+                Ok((opened, roots))
+            })
+            .await?;
+        Ok(Response::new(OpenScopeResponse {
+            scope_id: opened.id,
+            root: path_str(&opened.root),
+            token: opened.token,
+            roots: roots
+                .into_iter()
+                .map(|r| ScopeRoot {
+                    path: path_str(&r.host),
+                    view: path_str(&r.view),
+                    direct: r.direct.iter().map(|p| path_str(p)).collect(),
+                })
+                .collect(),
+        }))
+    }
+
+    async fn close_scope(&self, req: Request<CloseScopeRequest>) -> Result<Response<ChangeSet>, Status> {
+        let req = req.into_inner();
+        Ok(Response::new(self.close(req.scope_id, req.token).await?))
+    }
+
+    /// Decide, then wake the opens waiting behind a held scope.
+    async fn decide(&self, req: Request<DecideRequest>) -> Result<Response<Outcome>, Status> {
+        let out = self.decide_scope(req.into_inner()).await;
+        if out.as_ref().is_ok_and(|o| o.get_ref().status() != OutcomeStatus::Held) {
+            self.decided.notify_waiters();
+        }
+        out
     }
 
     /// Close the implicit default scope and return its change set; decide it as scope `unscoped`.
