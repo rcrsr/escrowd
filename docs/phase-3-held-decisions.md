@@ -2,7 +2,7 @@
 
 Oct 5, 2026 · Andre Bremer · Draft
 
-**Status, Oct 6, 2026: 3.1 to 3.4 built**; 3.5 next. Phase 2 is done ([plan](phase-2-hardening.md), exit runs in [PR #25](https://github.com/rcrsr/escrowd/pull/25)).
+**Status, Oct 6, 2026: 3.1 to 3.5 built**; 3.6 next. Phase 2 is done ([plan](phase-2-hardening.md), exit runs in [PR #25](https://github.com/rcrsr/escrowd/pull/25)).
 
 Today an agent host blocks on a *pre*-approval: a permission prompt before a tool runs, judged on a description of the effect. Phase 3 makes escrow's decision a *post*-approval: the work runs in a scope, and independent reviewers judge the staged change set, with the client and escrowd negotiating whether the agent waits. The design is in the proposal ([Held decisions](escrowd-proposal.md#held-decisions)); a runnable model plays it ([`examples/held-decisions/model.py`](../examples/held-decisions/model.py)). Phase 3 builds it into escrowd and the Python SDK, attributes every change to the process that made it so reviewers can judge who changed what (added Oct 6, 2026), then freezes the protocol, so phase 4's TypeScript SDK and phase 7's reviewers build on a fixed v1.
 
@@ -143,6 +143,16 @@ FUSE gives every request the caller's process ID, in the daemon's PID namespace,
 ### 3.5 Python SDK
 
 `escrow.scope(name, decide=…, wait=True)`: at exit the decide callback's verdict becomes the proposal; with `wait=True` the scope's `__exit__` returns after the verdict, with `wait=False` it returns with `s.outcome.status == "held"` and `s.outcome` resolves later (`await s.decided()`). The test app gains checks for each of exit criterion 1's rules. `s.outcome.changes` carries each change's writers.
+
+**As built (Oct 6, 2026).**
+
+- **API.** `escrow.scope(name, decide=…, session=…, wait=True)`. The decide callback's verdict goes to `Decide` with `wait`, as the proposal. `resume=` keeps the session.
+- **Waiting.** A held outcome with `wait=True` follows `AwaitDecision` to the verdict before the exit returns. A sync scope blocks its thread; an async scope waits in a worker thread (`asyncio.to_thread`), so the event loop keeps running. With `wait=False`, `s.outcome` is `held`, and `s.wait_decided(timeout=None)` or `await s.decided(timeout=None)` replaces it with the verdict.
+- **Outcome.** `Outcome.tiers` (still to review) and `Outcome.wait` (the session waits; set by a required rule even when the scope did not ask). After a review, `reasons` carries each tier's reasons (`llm: …`). A reviewer's return gives `returned` with `reopened`, and the app fixes the change with `escrow.scope(resume=s)`. `s.outcome.changes.writers(change)` names each change's processes (3.3).
+- **Sessions.** An open in a session waits behind a held scope with no deadline: the SDK opens with no `grpc-timeout`.
+- **The unscoped scope.** `escrow.settle_unscoped(decide, wait=True)` waits for a held verdict too.
+- **Test app.** Two checks, `held` and `held-continue`, run under a policy that sends `h/` (and `h/auth/` to a human) and `n/` (wait optional) to reviewers. The suite plays the reviewers on the review socket while the app runs. `held` covers rules 1.1 (the session's next scope reads the committed file, so it opened after the verdict), 1.2 (the opener's own commit gets `PERMISSION_DENIED`) and 1.3 (an LLM discard, a human override, the ledgered `override` line). `held-continue` covers 1.4 (the second turn conflicts) and 1.5 (its reviewer sees the first turn's change set and verdict).
+- **Checks.** Those two in `tests/conformance/test_app.py`, and 5 in `tests/conformance/test_sdk_held.py`: waiting by default with writers in the outcome, `wait=False` with `wait_decided` and `decided`, an async scope waiting while its loop runs, a reviewer's return and the resumed fix, and `settle_unscoped`.
 
 ### 3.6 Protocol freeze and spec
 
