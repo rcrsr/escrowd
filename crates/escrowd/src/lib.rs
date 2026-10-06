@@ -17,6 +17,7 @@ pub mod gate;
 pub mod journal;
 pub mod ledger;
 pub mod policy;
+pub mod review;
 pub mod roots;
 pub mod rpc;
 pub mod sandbox;

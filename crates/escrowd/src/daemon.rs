@@ -15,7 +15,7 @@ use crate::policy::{Policy, RootRules, Rule};
 use crate::roots::{self, Rules};
 use crate::sandbox::{self, Mount, Sandbox};
 use crate::views::{RootSpec, Unscoped, Views};
-use crate::{fuse, rpc, sys};
+use crate::{fuse, review, rpc, sys};
 
 pub struct Config {
     pub socket: PathBuf,
@@ -269,8 +269,10 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
         });
     }
     let home = specs[roots::HOME].served.then(|| specs[roots::HOME].host.clone());
-    let views =
-        Arc::new(Views::new(specs, &state, &mount, gate, config.unscoped, policy.conflict).context("loading scopes")?);
+    let review = review::Rules::new(&policy.review, &policy.write).context("policy review: or write:")?;
+    let views = Arc::new(
+        Views::new(specs, &state, &mount, gate, config.unscoped, policy.conflict, review).context("loading scopes")?,
+    );
     let session = fuse::mount(views.clone(), &mount, config.threads)
         .with_context(|| format!("mounting views at {}", mount.display()))?;
     views.set_notifier(session.notifier());

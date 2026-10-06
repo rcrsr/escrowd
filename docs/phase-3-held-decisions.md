@@ -2,7 +2,7 @@
 
 Oct 5, 2026 · Andre Bremer · Draft
 
-**Status, Oct 5, 2026: drafted**; no sub-phase started. Phase 2 is done ([plan](phase-2-hardening.md), exit runs in [PR #25](https://github.com/rcrsr/escrowd/pull/25)).
+**Status, Oct 6, 2026: 3.1 built**; 3.2 next. Phase 2 is done ([plan](phase-2-hardening.md), exit runs in [PR #25](https://github.com/rcrsr/escrowd/pull/25)).
 
 Today an agent host blocks on a *pre*-approval: a permission prompt before a tool runs, judged on a description of the effect. Phase 3 makes escrow's decision a *post*-approval: the work runs in a scope, and independent reviewers judge the staged change set, with the client and escrowd negotiating whether the agent waits. The design is in the proposal ([Held decisions](escrowd-proposal.md#held-decisions)); a runnable model plays it ([`examples/held-decisions/model.py`](../examples/held-decisions/model.py)). Phase 3 builds it into escrowd and the Python SDK, attributes every change to the process that made it so reviewers can judge who changed what (added Oct 6, 2026), then freezes the protocol, so phase 4's TypeScript SDK and phase 7's reviewers build on a fixed v1.
 
@@ -58,6 +58,17 @@ write:
 ```
 
 The first matching rule gives a path its top tier; a change set goes through every tier from software up to the highest any path needs. Without a `review:` section nothing is held, as today: the host's decide callback still decides, which keeps phase 2's behavior for hosts that do not opt in.
+
+**As built (Oct 6, 2026).** `crates/escrowd/src/review.rs`; the policy keys are in `policy.rs`.
+
+- **When.** The daemon reviews at close. `ChangeSet.review` carries the software tier's verdict, its reasons, the tiers above software and `wait_required`. `GetChangeSet` and `SettleUnscoped` return it too.
+- **Write rules.** `write.deny` matches the path a change shows, and a rename's source. `write.deny_content` scans every regular file a change writes, in 64 KiB chunks. Each hit is a ledger line: `op=write-deny` or `op=write-content`, `decision=deny`.
+- **A hit discards.** The change set needs no tier then, as in the model. Decide turns a commit or a return into a discard and sends the rule reasons back.
+- **Tiers.** Patterns follow `read.deny`: no `/` matches the name at any depth. A path with no matching rule needs software only. `wait` defaults to `required`. It counts only for paths that need a tier above software.
+- **Until 3.2.** No scope is held yet. Decide refuses to commit a change set that needs a tier (`FAILED_PRECONDITION`, naming the tiers); a return or a discard still decides it. Without `review:` and `write:` rules, Decide skips the review, as in phase 2.
+- **Protocol.** `Review` and `Tier` are new messages, and `ChangeSet.review` is field 7. The change is additive, so `PROTOCOL_VERSION` stays 6 until the freeze.
+- **SDK.** The Python SDK exposes `ChangeSet.review` as `escrow.Review`, so a decide callback sees it. The rest of the SDK's side is 3.5.
+- **Checks.** `tests/conformance/test_review.py` has 8 tests, plus unit tests in `review.rs`, `gate.rs` and `policy.rs`.
 
 ### 3.2 Held scopes, sessions
 

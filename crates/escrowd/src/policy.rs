@@ -23,9 +23,16 @@
 //!   verdict: discard                # on a conflicting commit: discard the scope, or return
 //!                                   # (reopen it; the conflicting paths are the reasons)
 //!   reads: false                    # also conflict on files the scope only read
+//! review:                           # the tiers a change set needs, by path; first match wins
+//!   - {paths: ["src/auth/**"], tier: human, wait: required}
+//!   - {paths: ["docs/**"], tier: llm, wait: optional}
+//! write:                            # software tier: a change set that breaks one is discarded
+//!   deny: ["*.pem"]                 # paths it must not touch (created, changed, deleted, renamed)
+//!   deny_content: ["BEGIN PRIVATE KEY"] # bytes no file it writes may contain
 //! ```
 //!
-//! Close-time write rules come with the decision tiers.
+//! Paths in `review:` and `write:` are as the change set shows them: project-relative,
+//! `~/…` in `$HOME`, absolute elsewhere; a pattern without `/` matches the name at any depth.
 
 use std::path::{Path, PathBuf};
 
@@ -48,6 +55,54 @@ pub struct Policy {
     pub diff: DiffRules,
     #[serde(default)]
     pub conflict: ConflictRules,
+    #[serde(default)]
+    pub review: Vec<ReviewRule>,
+    #[serde(default)]
+    pub write: WriteRules,
+}
+
+/// The decision tiers, cheapest first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Tier {
+    /// The policy's rules, in the daemon.
+    Software,
+    Llm,
+    Human,
+}
+
+/// Whether the agent waits for a tier's verdict.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Wait {
+    /// The session's next scope does not open until the verdict.
+    #[default]
+    Required,
+    /// The client may continue.
+    Optional,
+}
+
+/// The tier the paths matching `paths` need; the first matching rule applies to a path.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewRule {
+    pub paths: Vec<String>,
+    pub tier: Tier,
+    /// [default: required]
+    #[serde(default)]
+    pub wait: Wait,
+}
+
+/// The software tier's close-time rules.
+#[derive(Debug, Default, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WriteRules {
+    /// Paths a change set must not touch.
+    #[serde(default)]
+    pub deny: Vec<String>,
+    /// Byte strings no file a change set writes may contain.
+    #[serde(default)]
+    pub deny_content: Vec<String>,
 }
 
 /// What a commit that conflicts with the project does.
@@ -335,6 +390,20 @@ mod tests {
             .conflict;
         assert_eq!((c.verdict, c.reads), (ConflictVerdict::Return, true));
         assert!(Policy::parse("version: 1\nconflict: {verdict: rebase}\n").is_err());
+    }
+
+    #[test]
+    fn review_and_write_rules_parse() {
+        let p = Policy::parse(
+            "version: 1\nreview:\n  - {paths: ['src/**'], tier: llm}\n  - {paths: [docs], tier: human, wait: optional}\nwrite: {deny: ['*.pem'], deny_content: ['KEY']}\n",
+        )
+        .unwrap();
+        assert_eq!((p.review[0].tier, p.review[0].wait), (Tier::Llm, Wait::Required));
+        assert_eq!((p.review[1].tier, p.review[1].wait), (Tier::Human, Wait::Optional));
+        assert_eq!((p.write.deny.len(), p.write.deny_content.len()), (1, 1));
+        assert!(Tier::Software < Tier::Llm && Tier::Llm < Tier::Human);
+        assert!(Policy::parse("version: 1\nreview: [{paths: [a], tier: robot}]\n").is_err());
+        assert!(Policy::parse("version: 1\nwrite: {only: [a]}\n").is_err());
     }
 
     #[test]

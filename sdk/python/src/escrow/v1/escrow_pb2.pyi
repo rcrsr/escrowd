@@ -21,6 +21,13 @@ class ReadDecision(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     READ_DECISION_ALLOW: _ClassVar[ReadDecision]
     READ_DECISION_DENY: _ClassVar[ReadDecision]
 
+class Tier(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    TIER_UNSPECIFIED: _ClassVar[Tier]
+    TIER_SOFTWARE: _ClassVar[Tier]
+    TIER_LLM: _ClassVar[Tier]
+    TIER_HUMAN: _ClassVar[Tier]
+
 class Verdict(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     __slots__ = ()
     VERDICT_UNSPECIFIED: _ClassVar[Verdict]
@@ -43,6 +50,10 @@ CHANGE_KIND_RENAME: ChangeKind
 READ_DECISION_UNSPECIFIED: ReadDecision
 READ_DECISION_ALLOW: ReadDecision
 READ_DECISION_DENY: ReadDecision
+TIER_UNSPECIFIED: Tier
+TIER_SOFTWARE: Tier
+TIER_LLM: Tier
+TIER_HUMAN: Tier
 VERDICT_UNSPECIFIED: Verdict
 VERDICT_COMMIT: Verdict
 VERDICT_DISCARD: Verdict
@@ -129,7 +140,7 @@ class Read(_message.Message):
     def __init__(self, path: _Optional[str] = ..., decision: _Optional[_Union[ReadDecision, str]] = ...) -> None: ...
 
 class ChangeSet(_message.Message):
-    __slots__ = ("scope_id", "changes", "reads", "labels", "diff", "unscoped_ops")
+    __slots__ = ("scope_id", "changes", "reads", "labels", "diff", "unscoped_ops", "review")
     class LabelsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -143,13 +154,27 @@ class ChangeSet(_message.Message):
     LABELS_FIELD_NUMBER: _ClassVar[int]
     DIFF_FIELD_NUMBER: _ClassVar[int]
     UNSCOPED_OPS_FIELD_NUMBER: _ClassVar[int]
+    REVIEW_FIELD_NUMBER: _ClassVar[int]
     scope_id: str
     changes: _containers.RepeatedCompositeFieldContainer[Change]
     reads: _containers.RepeatedCompositeFieldContainer[Read]
     labels: _containers.ScalarMap[str, str]
     diff: str
     unscoped_ops: int
-    def __init__(self, scope_id: _Optional[str] = ..., changes: _Optional[_Iterable[_Union[Change, _Mapping]]] = ..., reads: _Optional[_Iterable[_Union[Read, _Mapping]]] = ..., labels: _Optional[_Mapping[str, str]] = ..., diff: _Optional[str] = ..., unscoped_ops: _Optional[int] = ...) -> None: ...
+    review: Review
+    def __init__(self, scope_id: _Optional[str] = ..., changes: _Optional[_Iterable[_Union[Change, _Mapping]]] = ..., reads: _Optional[_Iterable[_Union[Read, _Mapping]]] = ..., labels: _Optional[_Mapping[str, str]] = ..., diff: _Optional[str] = ..., unscoped_ops: _Optional[int] = ..., review: _Optional[_Union[Review, _Mapping]] = ...) -> None: ...
+
+class Review(_message.Message):
+    __slots__ = ("verdict", "reasons", "tiers", "wait_required")
+    VERDICT_FIELD_NUMBER: _ClassVar[int]
+    REASONS_FIELD_NUMBER: _ClassVar[int]
+    TIERS_FIELD_NUMBER: _ClassVar[int]
+    WAIT_REQUIRED_FIELD_NUMBER: _ClassVar[int]
+    verdict: Verdict
+    reasons: _containers.RepeatedScalarFieldContainer[str]
+    tiers: _containers.RepeatedScalarFieldContainer[Tier]
+    wait_required: bool
+    def __init__(self, verdict: _Optional[_Union[Verdict, str]] = ..., reasons: _Optional[_Iterable[str]] = ..., tiers: _Optional[_Iterable[_Union[Tier, str]]] = ..., wait_required: _Optional[bool] = ...) -> None: ...
 
 class GetChangeSetRequest(_message.Message):
     __slots__ = ("scope_id",)

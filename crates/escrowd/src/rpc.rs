@@ -14,7 +14,7 @@ use crate::policy::ConflictVerdict;
 use crate::proto::escrow_server::{Escrow, EscrowServer};
 use crate::proto::*;
 use crate::views::{UNSCOPED, Unscoped, Views};
-use crate::{changeset, commit, diff};
+use crate::{changeset, commit, diff, policy, review};
 
 pub struct Service {
     views: Arc<Views>,
@@ -75,6 +75,28 @@ fn to_proto(views: &Views, scope_id: String, cs: changeset::ChangeSet, diff: Str
         labels: cs.labels,
         diff,
         unscoped_ops: cs.unscoped,
+        review: cs.review.map(review_proto),
+    }
+}
+
+fn tier_proto(t: policy::Tier) -> Tier {
+    match t {
+        policy::Tier::Software => Tier::Software,
+        policy::Tier::Llm => Tier::Llm,
+        policy::Tier::Human => Tier::Human,
+    }
+}
+
+fn review_proto(r: review::Review) -> Review {
+    Review {
+        verdict: match r.verdict {
+            review::Verdict::Commit => Verdict::Commit,
+            review::Verdict::Discard => Verdict::Discard,
+        }
+        .into(),
+        reasons: r.reasons(),
+        tiers: r.tiers.into_iter().map(|t| tier_proto(t).into()).collect(),
+        wait_required: r.wait,
     }
 }
 
@@ -159,8 +181,28 @@ impl Escrow for Service {
         self.blocking(move |v| v.check_token(&id, &token)).await?;
         let (id, mut reasons) = (req.scope_id.clone(), req.reasons);
         let (mut paths, mut reopened) = (vec![], false);
-        let status = match Verdict::try_from(req.verdict) {
-            Ok(Verdict::Discard) => {
+        let mut verdict = Verdict::try_from(req.verdict).unwrap_or(Verdict::Unspecified);
+        // The review's verdict only tightens: a discard by the software tier wins, and
+        // a change set that needs a tier above software is not the opener's to commit.
+        let mut closed = None;
+        if matches!(verdict, Verdict::Commit | Verdict::Return) && self.views.reviews() {
+            let scope = id.clone();
+            let cs = self.blocking(move |v| v.closed_change_set(&scope)).await?;
+            let r = cs.review.as_ref().expect("a closed change set has a review");
+            if r.verdict == review::Verdict::Discard {
+                verdict = Verdict::Discard;
+                reasons = r.reasons();
+            } else if verdict == Verdict::Commit && !r.tiers.is_empty() {
+                let tiers: Vec<String> = r.tiers.iter().map(|t| format!("{t:?}").to_lowercase()).collect();
+                return Err(Status::failed_precondition(format!(
+                    "scope {id} needs review by {}; only a discard or a return can decide it",
+                    tiers.join(", ")
+                )));
+            }
+            closed = Some(cs);
+        }
+        let status = match verdict {
+            Verdict::Discard => {
                 let children = self.children.clone();
                 self.blocking(move |v| {
                     v.scope(&req.scope_id)
@@ -173,7 +215,7 @@ impl Escrow for Service {
                 .await?;
                 OutcomeStatus::Discarded
             }
-            Ok(Verdict::Return) => {
+            Verdict::Return => {
                 let children = self.children.clone();
                 self.blocking(move |v| {
                     v.reopen_scope(&req.scope_id)?;
@@ -184,12 +226,15 @@ impl Escrow for Service {
                 reopened = true;
                 OutcomeStatus::Returned
             }
-            Ok(Verdict::Commit) => {
+            Verdict::Commit => {
                 let scope = req.scope_id;
                 let children = self.children.clone();
                 let outcome = self
-                    .blocking(
-                        move |v| match v.commit_scope(&scope).inspect(|_| children.release(&scope)) {
+                    .blocking(move |v| {
+                        match closed
+                            .map_or_else(|| v.commit_scope(&scope), |cs| v.commit_closed(&scope, &cs))
+                            .inspect(|_| children.release(&scope))
+                        {
                             Err(e) if !matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::InvalidInput) => {
                                 Err(io::Error::new(
                                     io::ErrorKind::Interrupted,
@@ -197,8 +242,8 @@ impl Escrow for Service {
                                 ))
                             }
                             r => r,
-                        },
-                    )
+                        }
+                    })
                     .await?;
                 match outcome {
                     commit::Outcome::Committed(_, changed) => {
@@ -216,7 +261,7 @@ impl Escrow for Service {
                     }
                 }
             }
-            _ => return Err(Status::invalid_argument("verdict must be set")),
+            Verdict::Unspecified => return Err(Status::invalid_argument("verdict must be set")),
         };
         Ok(Response::new(Outcome {
             scope_id: id,

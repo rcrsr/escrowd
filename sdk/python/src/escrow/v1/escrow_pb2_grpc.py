@@ -94,7 +94,10 @@ class EscrowServicer:
         raise NotImplementedError('Method not implemented!')
 
     def Decide(self, request, context):
-        """Apply the close-time decision: commit, discard or return to agent.
+        """Apply the close-time decision: commit, discard or return to agent. The verdict
+        only tightens the review's (ChangeSet.review): a commit or a return of a change
+        set the software tier discarded is a discard, and a commit of one that needs a
+        tier above software fails with FAILED_PRECONDITION.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')

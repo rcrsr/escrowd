@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 use fuser::FileType;
 use rustix::fs::{OFlags, Stat};
 
+use crate::review::Review;
 use crate::roots::Access;
 use crate::snapshot::Base;
 use crate::store::ScopeStore;
@@ -53,6 +54,8 @@ pub struct ChangeSet {
     pub labels: HashMap<String, String>,
     /// Changes the unscoped mode saw while the scope was open (set by close).
     pub unscoped: u64,
+    /// The close-time review (set by close and by `closed_change_set`).
+    pub review: Option<Review>,
 }
 
 pub fn build(base: &Base, h: &ScopeHandle) -> io::Result<ChangeSet> {
@@ -63,6 +66,7 @@ pub fn build(base: &Base, h: &ScopeHandle) -> io::Result<ChangeSet> {
             reads: store.reads(),
             labels: store.labels()?,
             unscoped: 0,
+            review: None,
         });
     }
     drop(store);
@@ -111,6 +115,7 @@ pub fn build(base: &Base, h: &ScopeHandle) -> io::Result<ChangeSet> {
         reads: store.reads(),
         labels: store.labels()?,
         unscoped: 0,
+        review: None,
     })
 }
 

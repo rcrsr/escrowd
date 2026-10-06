@@ -26,7 +26,10 @@ service Escrow {
   // token fails with PERMISSION_DENIED. The unscoped scope has no token.
   rpc CloseScope(CloseScopeRequest) returns (ChangeSet);
 
-  // Apply the close-time decision: commit, discard or return to agent.
+  // Apply the close-time decision: commit, discard or return to agent. The verdict
+  // only tightens the review's (ChangeSet.review): a commit or a return of a change
+  // set the software tier discarded is a discard, and a commit of one that needs a
+  // tier above software fails with FAILED_PRECONDITION.
   rpc Decide(DecideRequest) returns (Outcome);
 
   // Close the implicit default scope (unscoped = implicit) and return its change
@@ -121,6 +124,33 @@ message ChangeSet {
   // or ran beside it. Counted since the daemon started; 0 in passthrough mode, which
   // serves no unscoped scope.
   uint64 unscoped_ops = 6;
+  // The close-time review: the software tier's verdict and the tiers above it the
+  // change set needs (policy `write:` and `review:`).
+  Review review = 7;
+}
+
+// The decision tiers, cheapest first.
+enum Tier {
+  TIER_UNSPECIFIED = 0;
+  // The policy's rules, run by the daemon.
+  TIER_SOFTWARE = 1;
+  TIER_LLM = 2;
+  TIER_HUMAN = 3;
+}
+
+message Review {
+  // The software tier's verdict: VERDICT_DISCARD when the change set breaks a write
+  // rule (then Decide turns a commit or a return into a discard: verdicts only
+  // tighten), else VERDICT_COMMIT.
+  Verdict verdict = 1;
+  // One per broken rule: `write.deny: <path>` or `write.deny_content: <path> contains "<s>"`.
+  repeated string reasons = 2;
+  // The tiers above software the change set needs, cheapest first: each tier from
+  // TIER_LLM up to the highest its paths need (policy `review:`, first match per path).
+  // Decide refuses to commit a change set that needs any (FAILED_PRECONDITION).
+  repeated Tier tiers = 3;
+  // A `review:` rule of a path that needs a tier above software requires the agent to wait.
+  bool wait_required = 4;
 }
 
 message GetChangeSetRequest {
