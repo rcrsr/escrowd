@@ -616,6 +616,9 @@ impl EscrowService for Service {
     ) -> Result<Response<Self::AwaitDecisionStream>, Status> {
         let AwaitDecisionRequest { scope_id: id, token } = req.into_inner();
         let id2 = id.clone();
+        // A review or a withdrawal drops the scope before it records the decision: read
+        // between their steps, the scope would be neither live nor kept.
+        let settled = self.reviewing.lock().await;
         let (live, latest) = self
             .blocking(move |v| {
                 // The last kept decision first: a hold seen after it is decided later,
@@ -648,6 +651,7 @@ impl EscrowService for Service {
                 Ok((live, latest.map(|l| l.seq)))
             })
             .await?;
+        drop(settled);
         let after = match (&live, latest) {
             // Held: follow it to a decision newer than the last kept.
             (Some(who), seq) if who.hold.is_some() => seq.unwrap_or(0),
