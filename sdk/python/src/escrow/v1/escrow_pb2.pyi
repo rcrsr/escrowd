@@ -42,6 +42,7 @@ class OutcomeStatus(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
     OUTCOME_STATUS_DISCARDED: _ClassVar[OutcomeStatus]
     OUTCOME_STATUS_RETURNED: _ClassVar[OutcomeStatus]
     OUTCOME_STATUS_CONFLICT: _ClassVar[OutcomeStatus]
+    OUTCOME_STATUS_HELD: _ClassVar[OutcomeStatus]
 CHANGE_KIND_UNSPECIFIED: ChangeKind
 CHANGE_KIND_CREATE: ChangeKind
 CHANGE_KIND_MODIFY: ChangeKind
@@ -63,6 +64,7 @@ OUTCOME_STATUS_COMMITTED: OutcomeStatus
 OUTCOME_STATUS_DISCARDED: OutcomeStatus
 OUTCOME_STATUS_RETURNED: OutcomeStatus
 OUTCOME_STATUS_CONFLICT: OutcomeStatus
+OUTCOME_STATUS_HELD: OutcomeStatus
 
 class PingRequest(_message.Message):
     __slots__ = ()
@@ -77,7 +79,7 @@ class PingResponse(_message.Message):
     def __init__(self, daemon_version: _Optional[str] = ..., protocol_version: _Optional[int] = ...) -> None: ...
 
 class OpenScopeRequest(_message.Message):
-    __slots__ = ("name", "labels")
+    __slots__ = ("name", "labels", "session")
     class LabelsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -87,9 +89,11 @@ class OpenScopeRequest(_message.Message):
         def __init__(self, key: _Optional[str] = ..., value: _Optional[str] = ...) -> None: ...
     NAME_FIELD_NUMBER: _ClassVar[int]
     LABELS_FIELD_NUMBER: _ClassVar[int]
+    SESSION_FIELD_NUMBER: _ClassVar[int]
     name: str
     labels: _containers.ScalarMap[str, str]
-    def __init__(self, name: _Optional[str] = ..., labels: _Optional[_Mapping[str, str]] = ...) -> None: ...
+    session: str
+    def __init__(self, name: _Optional[str] = ..., labels: _Optional[_Mapping[str, str]] = ..., session: _Optional[str] = ...) -> None: ...
 
 class OpenScopeResponse(_message.Message):
     __slots__ = ("scope_id", "root", "roots", "token")
@@ -183,30 +187,36 @@ class GetChangeSetRequest(_message.Message):
     def __init__(self, scope_id: _Optional[str] = ...) -> None: ...
 
 class DecideRequest(_message.Message):
-    __slots__ = ("scope_id", "verdict", "reasons", "token")
+    __slots__ = ("scope_id", "verdict", "reasons", "token", "wait")
     SCOPE_ID_FIELD_NUMBER: _ClassVar[int]
     VERDICT_FIELD_NUMBER: _ClassVar[int]
     REASONS_FIELD_NUMBER: _ClassVar[int]
     TOKEN_FIELD_NUMBER: _ClassVar[int]
+    WAIT_FIELD_NUMBER: _ClassVar[int]
     scope_id: str
     verdict: Verdict
     reasons: _containers.RepeatedScalarFieldContainer[str]
     token: str
-    def __init__(self, scope_id: _Optional[str] = ..., verdict: _Optional[_Union[Verdict, str]] = ..., reasons: _Optional[_Iterable[str]] = ..., token: _Optional[str] = ...) -> None: ...
+    wait: bool
+    def __init__(self, scope_id: _Optional[str] = ..., verdict: _Optional[_Union[Verdict, str]] = ..., reasons: _Optional[_Iterable[str]] = ..., token: _Optional[str] = ..., wait: _Optional[bool] = ...) -> None: ...
 
 class Outcome(_message.Message):
-    __slots__ = ("scope_id", "status", "paths", "reasons", "reopened")
+    __slots__ = ("scope_id", "status", "paths", "reasons", "reopened", "tiers", "wait")
     SCOPE_ID_FIELD_NUMBER: _ClassVar[int]
     STATUS_FIELD_NUMBER: _ClassVar[int]
     PATHS_FIELD_NUMBER: _ClassVar[int]
     REASONS_FIELD_NUMBER: _ClassVar[int]
     REOPENED_FIELD_NUMBER: _ClassVar[int]
+    TIERS_FIELD_NUMBER: _ClassVar[int]
+    WAIT_FIELD_NUMBER: _ClassVar[int]
     scope_id: str
     status: OutcomeStatus
     paths: _containers.RepeatedScalarFieldContainer[str]
     reasons: _containers.RepeatedScalarFieldContainer[str]
     reopened: bool
-    def __init__(self, scope_id: _Optional[str] = ..., status: _Optional[_Union[OutcomeStatus, str]] = ..., paths: _Optional[_Iterable[str]] = ..., reasons: _Optional[_Iterable[str]] = ..., reopened: _Optional[bool] = ...) -> None: ...
+    tiers: _containers.RepeatedScalarFieldContainer[Tier]
+    wait: bool
+    def __init__(self, scope_id: _Optional[str] = ..., status: _Optional[_Union[OutcomeStatus, str]] = ..., paths: _Optional[_Iterable[str]] = ..., reasons: _Optional[_Iterable[str]] = ..., reopened: _Optional[bool] = ..., tiers: _Optional[_Iterable[_Union[Tier, str]]] = ..., wait: _Optional[bool] = ...) -> None: ...
 
 class SpawnRequest(_message.Message):
     __slots__ = ("scope_id", "argv", "cwd", "env", "token")

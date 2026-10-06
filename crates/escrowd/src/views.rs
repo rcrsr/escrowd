@@ -37,11 +37,11 @@ use crate::commit::{Commits, Lowers, Outcome};
 use crate::diff;
 use crate::gate::Gate;
 use crate::ledger::Ledger;
-use crate::policy::{ConflictRules, ConflictVerdict};
+use crate::policy::{ConflictRules, ConflictVerdict, Tier};
 use crate::review;
 use crate::roots::{self, Access, PROJECT, Rules};
 use crate::snapshot::Base;
-use crate::store::{ScopeState, ScopeStore, VersionKind, moved};
+use crate::store::{Hold, ScopeState, ScopeStore, VersionKind, moved};
 use crate::sys::{self, Version, parent};
 
 pub const ROOT: u64 = 1;
@@ -478,6 +478,7 @@ impl Views {
                 readonly,
                 &HashMap::new(),
                 None,
+                "",
             )?;
             self.attach(store)?;
         }
@@ -542,7 +543,7 @@ impl Views {
 
     /// Create a scope with a view per served root; returns its id, its project view in
     /// the mount and its token.
-    pub fn open_scope(&self, name: &str, labels: &HashMap<String, String>) -> io::Result<Opened> {
+    pub fn open_scope(&self, name: &str, labels: &HashMap<String, String>, session: &str) -> io::Result<Opened> {
         let since = self.commits.current();
         let mut bytes = [0u8; 32];
         sys::random(&mut bytes)?;
@@ -555,12 +556,12 @@ impl Views {
                 id = format!("s{idx}");
             }
             let view = roots::view_name(&id, root);
-            let (labels, token) = if root == PROJECT {
-                (labels, Some(hash.as_str()))
+            let (labels, token, session) = if root == PROJECT {
+                (labels, Some(hash.as_str()), session)
             } else {
-                (&HashMap::new(), None)
+                (&HashMap::new(), None, "")
             };
-            let store = ScopeStore::create(&self.scopes_dir, &view, name, idx, since, false, labels, token)?;
+            let store = ScopeStore::create(&self.scopes_dir, &view, name, idx, since, false, labels, token, session)?;
             self.attach(store)?;
         }
         self.ledger.append(&id, "open", Path::new(""), None, "allow");
@@ -752,10 +753,49 @@ impl Views {
         Ok(cs)
     }
 
+    /// The hold of scope `id`, if reviewers have it (NotFound if no such scope).
+    pub fn held(&self, id: &str) -> io::Result<Option<Hold>> {
+        Ok(self.handles(id)?[0].store_read().hold().cloned())
+    }
+
+    /// Hold closed scope `id` for the reviewers of `tiers` (cheapest first); `wait`: its
+    /// session's next scope does not open until the verdict.
+    pub fn hold_scope(&self, id: &str, tiers: Vec<Tier>, wait: bool) -> io::Result<Hold> {
+        let hs = self.closed_handles(id)?;
+        let names: Vec<&str> = tiers.iter().map(|t| t.as_str()).collect();
+        let decision = format!("{}{}", names.join(","), if wait { ",wait" } else { "" });
+        let hold = Hold { tiers, wait };
+        hs[0].store().set_hold(Some(hold.clone()))?;
+        self.ledger.append(id, "hold", Path::new(""), None, &decision);
+        Ok(hold)
+    }
+
+    /// The held scope of `session` its next scope waits for, if any.
+    pub fn blocking_hold(&self, session: &str) -> Option<String> {
+        if session.is_empty() {
+            return None;
+        }
+        let scopes = self.scopes.read().unwrap();
+        let mut ids: Vec<&String> = scopes
+            .values()
+            .filter(|h| h.root == PROJECT)
+            .filter(|h| {
+                let store = h.store_read();
+                store.session == session && store.hold().is_some_and(|hold| hold.wait)
+            })
+            .map(|h| &h.group)
+            .collect();
+        ids.sort();
+        ids.first().map(|id| id.to_string())
+    }
+
     /// Return to agent: the decision's reasons go back and the scope accepts IO again.
     pub fn reopen_scope(&self, id: &str) -> io::Result<()> {
         let hs = self.closed_handles(id)?;
         let now = self.unscoped_changes.load(Ordering::Relaxed);
+        if hs[0].store_read().hold().is_some() {
+            hs[0].store().set_hold(None)?;
+        }
         for h in &hs {
             h.store().set_state(ScopeState::Open)?;
             h.unscoped_at.store(now, Ordering::Relaxed);

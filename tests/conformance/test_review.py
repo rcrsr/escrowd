@@ -4,8 +4,8 @@ At close the daemon runs `write:` over the change set: a path under `write.deny`
 (created, changed, deleted or the source of a rename) or a written file holding a
 `write.deny_content` string discards it, and a commit or a return then turns into a
 discard (verdicts only tighten). `review:` gives each path a tier; the change set
-needs every tier from llm up to the highest its paths need, and until held decisions
-the daemon refuses to commit one that needs any.
+needs every tier from llm up to the highest its paths need (a commit of one that needs
+any is held: `test_held.py`).
 """
 
 import grpc
@@ -117,26 +117,6 @@ def test_tiers_go_up_to_the_highest_path_needs(start_daemon):
         assert (list(r.tiers), r.wait_required) == ([pb.TIER_LLM, pb.TIER_HUMAN], True)
         assert list(c.close_scope(plain).review.tiers) == []
         assert c.commit(plain).status == pb.OUTCOME_STATUS_COMMITTED
-
-
-def test_the_opener_cannot_commit_a_change_set_that_needs_review(start_daemon):
-    d = start_daemon(policy=RULES)
-    with client(d) as c:
-        s = c.open_scope().scope_id
-        (d.mount / s / "src").mkdir()
-        (d.mount / s / "src" / "util.py").write_text("u\n")
-        c.close_scope(s)
-        with pytest.raises(grpc.RpcError) as err:
-            c.commit(s)
-        assert err.value.code() == grpc.StatusCode.FAILED_PRECONDITION
-        assert "needs review by llm;" in err.value.details()
-        # Still closed and undecided: a return or a discard decides it.
-        assert c.get_change_set(s).changes[0].path == "src"
-        out = c.decide(s, pb.VERDICT_RETURN, reasons=["split it"])
-        assert (out.status, out.reopened) == (pb.OUTCOME_STATUS_RETURNED, True)
-        c.close_scope(s)
-        assert c.discard(s).status == pb.OUTCOME_STATUS_DISCARDED
-    assert not (d.project / "src").exists()
 
 
 def test_settling_the_unscoped_scope_runs_the_rules(start_daemon):

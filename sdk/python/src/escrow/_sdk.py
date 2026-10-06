@@ -100,6 +100,7 @@ _STATUS = {
     pb.OUTCOME_STATUS_DISCARDED: "discarded",
     pb.OUTCOME_STATUS_RETURNED: "returned",
     pb.OUTCOME_STATUS_CONFLICT: "conflict",
+    pb.OUTCOME_STATUS_HELD: "held",
 }
 
 
@@ -177,7 +178,7 @@ class ChangeSet:
 
 @dataclass(frozen=True)
 class Outcome:
-    status: str  # committed, discarded, returned, conflict
+    status: str  # committed, discarded, returned, conflict, held
     paths: list[str]  # changed paths, or the conflicting ones
     reasons: list[str]
     changes: ChangeSet

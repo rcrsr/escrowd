@@ -29,6 +29,7 @@ use std::sync::Mutex;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+use crate::policy::Tier;
 use crate::sys::{self, Version};
 use crate::views::UPPER_BIT;
 
@@ -43,6 +44,14 @@ pub enum VersionKind {
 pub enum ScopeState {
     Open,
     Closed,
+}
+
+/// A closed scope waiting for reviewers: the tiers still to review, cheapest first,
+/// and whether its session's next scope waits for the verdict.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Hold {
+    pub tiers: Vec<Tier>,
+    pub wait: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -77,6 +86,9 @@ pub struct ScopeStore {
     /// First reads not written yet, with the version read.
     unwritten_reads: HashMap<PathBuf, Version>,
     pub state: ScopeState,
+    /// The session that orders the scope among its agent's scopes ("": none).
+    pub session: String,
+    hold: Option<Hold>,
 }
 
 const PIN_BATCH: usize = 4096;
@@ -166,6 +178,7 @@ impl ScopeStore {
         readonly: bool,
         labels: &HashMap<String, String>,
         token_sha256: Option<&str>,
+        session: &str,
     ) -> io::Result<Self> {
         let dir = scopes_dir.join(id);
         fs::create_dir(&dir)?;
@@ -182,6 +195,10 @@ impl ScopeStore {
         .map_err(sql)?;
         if let Some(t) = token_sha256 {
             tx.execute("INSERT INTO meta VALUES ('token_sha256', ?1)", [t])
+                .map_err(sql)?;
+        }
+        if !session.is_empty() {
+            tx.execute("INSERT INTO meta VALUES ('session', ?1)", [session])
                 .map_err(sql)?;
         }
         for (k, v) in labels {
@@ -229,6 +246,22 @@ impl ScopeStore {
             .query_row("SELECT value FROM meta WHERE key = 'token_sha256'", [], |r| r.get(0))
             .optional()
             .map_err(sql)?;
+        let text = |k: &str| -> io::Result<Option<String>> {
+            db.query_row("SELECT value FROM meta WHERE key = ?1", [k], |r| r.get(0))
+                .optional()
+                .map_err(sql)
+        };
+        let session = text("session")?.unwrap_or_default();
+        let hold = match text("hold_tiers")? {
+            None => None,
+            Some(t) => Some(Hold {
+                tiers: t
+                    .split(',')
+                    .map(|t| Tier::parse(t).ok_or_else(|| io::Error::other(format!("bad held tier {t}"))))
+                    .collect::<io::Result<_>>()?,
+                wait: text("hold_wait")?.is_some_and(|w| w == "1"),
+            }),
+        };
         let state = match meta("state")? {
             rusqlite::types::Value::Text(t) if t == "closed" => ScopeState::Closed,
             _ => ScopeState::Open,
@@ -280,6 +313,8 @@ impl ScopeStore {
             unwritten_counter: false,
             unwritten_reads: HashMap::new(),
             state,
+            session,
+            hold,
         })
     }
 
@@ -344,6 +379,29 @@ impl ScopeStore {
             [v],
         )?;
         self.state = state;
+        Ok(())
+    }
+
+    pub fn hold(&self) -> Option<&Hold> {
+        self.hold.as_ref()
+    }
+
+    /// Hold the scope for reviewers, or (None) release it; written at once.
+    pub fn set_hold(&mut self, hold: Option<Hold>) -> io::Result<()> {
+        let db = self.db.get_mut().unwrap();
+        let tx = db.transaction().map_err(sql)?;
+        tx.execute("DELETE FROM meta WHERE key IN ('hold_tiers', 'hold_wait')", [])
+            .map_err(sql)?;
+        if let Some(h) = &hold {
+            let tiers: Vec<&str> = h.tiers.iter().map(|t| t.as_str()).collect();
+            tx.execute(
+                "INSERT INTO meta VALUES ('hold_tiers', ?1), ('hold_wait', ?2)",
+                params![tiers.join(","), if h.wait { "1" } else { "0" }],
+            )
+            .map_err(sql)?;
+        }
+        tx.commit().map_err(sql)?;
+        self.hold = hold;
         Ok(())
     }
 
