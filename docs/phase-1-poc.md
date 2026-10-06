@@ -158,7 +158,7 @@ Subprocesses need a second sandbox per scope, but `--disable-userns` stops the a
 
 In-process code shares the harness's process, and with it the socket. Only subprocesses can be kept from the socket. A tool that must not reach the decision runs as a subprocess.
 
-`--unshare-net` stays opt-in; network capture is phase 8.
+`--unshare-net` stays opt-in; network capture is phase 9 (phase 8 before the Oct 5 renumbering).
 
 As built (Oct 4, 2026):
 
@@ -218,13 +218,13 @@ Out of phase 1, by design:
 
 - Whole-file copy-up; block-level copy-up only if large files demand it.
 - Native code and `mmap` doing their own IO fall to the `unscoped` mode.
-- No network capture (`--unshare-net` blocks the network; the proxy is phase 8).
+- No network capture (`--unshare-net` blocks the network; the proxy is phase 9, renumbered Oct 5).
 - Nested scopes stay deferred.
 - One daemon per `escrow run`; a long-lived per-user daemon waits until a harness needs one.
 
 ## Open questions
 
-- [x] Protocol: gRPC over the Unix socket (tonic, grpcio), decided Oct 3, 2026. One schema generates every SDK in phases 3 and 5.
+- [x] Protocol: gRPC over the Unix socket (tonic, grpcio), decided Oct 3, 2026. One schema generates every SDK in phases 4 and 6 (3 and 5 before the Oct 5 renumbering).
 - [x] Per-scope metadata store: one SQLite file per scope (rusqlite), decided Oct 3, 2026 (proposal lesson 5: easy diffs, one file to discard, crash-safe for phase 2).
 - [x] Checks 8 (snapshot at open) and 9 (Lima host matrix) join the phase 1 exit criteria, decided Oct 3, 2026.
 - [x] Conflict check on reads: deferred, decided Oct 3, 2026. Phase 1 checks writes only and records each read's base version for a later decision.

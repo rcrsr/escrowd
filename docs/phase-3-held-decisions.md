@@ -1,0 +1,107 @@
+# Phase 3: Held Decisions and Protocol Freeze Plan
+
+Oct 5, 2026 · Andre Bremer · Draft
+
+**Status, Oct 5, 2026: drafted**; no sub-phase started. Phase 2 is done ([plan](phase-2-hardening.md), exit runs in [PR #25](https://github.com/rcrsr/escrowd/pull/25)).
+
+Today an agent host blocks on a *pre*-approval: a permission prompt before a tool runs, judged on a description of the effect. Phase 3 makes escrow's decision a *post*-approval: the work runs in a scope, and independent reviewers judge the staged change set, with the client and escrowd negotiating whether the agent waits. The design is in the proposal ([Held decisions](escrowd-proposal.md#held-decisions)); a runnable model plays it ([`examples/held-decisions/model.py`](../examples/held-decisions/model.py)). Phase 3 builds it into escrowd and the Python SDK, then freezes the protocol, so phase 4's TypeScript SDK and phase 7's reviewers build on a fixed v1.
+
+## Exit criteria
+
+1. **The model's rules hold in escrowd**, each a conformance check:
+   1. A wait the policy requires is enforced by the daemon: the session's next scope does not open until the held one is decided, whatever the client asked.
+   2. The opener's token cannot commit a held scope; the opener can withdraw it.
+   3. Verdicts only tighten across tiers; a human override of a lower tier's verdict is explicit and in the ledger.
+   4. A client that continues past a held scope gets a conflict on the same file, never a silent overwrite.
+   5. A reviewer gets the session's earlier change sets and verdicts.
+2. **A human can review.** `escrow review` lists held scopes, shows a change set with its diff and session history, and decides one; the software tier's write rules run in the daemon.
+3. **Holds are durable.** A held scope, its pending tiers and its verdict so far survive a daemon restart; the crash soak (100 runs on the dev host) kills the daemon while scopes are held and loses none.
+4. **Protocol frozen.** `proto/escrow/v1/escrow.proto`, the exec socket and the `escrow exec` interface are tagged `protocol-v1` (protocol 7), specified in `docs/protocol.md`, and guarded in CI by `buf breaking` against the tag.
+5. **No regression.** The suite passes 10 consecutive times on each CI runner (`ci:repeat`) and once on each Lima host; the Python SDK on 3.11 and 3.14.
+
+## Sub-phases
+
+```mermaid
+flowchart LR
+    S1["3.1 Review rules,<br/>software write rules"] --> S2["3.2 Held scopes,<br/>sessions"]
+    S2 --> S3["3.3 Reviewer role,<br/>escrow review"]
+    S2 --> S4["3.4 Python SDK"]
+    S3 --> S5["3.5 Protocol freeze<br/>and spec"]
+    S4 --> S5
+    S5 --> S6["3.6 Exit runs"]
+```
+
+| # | Sub-phase | Goal (done when…) | Checks |
+| --- | --- | --- | --- |
+| 3.1 | Review rules, software write rules | The policy's `review:` rules (path pattern, tier, wait required or optional) and write rules (paths or content a change set must not have) run at close; a change set that needs no tier above software is decided at once | 1.3, 2 |
+| 3.2 | Held scopes, sessions | `CloseScope` takes a proposed verdict and whether the client can wait; a `held` outcome; `OpenScope` takes a session and waits behind a required hold; held state durable across a restart | 1.1, 1.4, 3 |
+| 3.3 | Reviewer role, `escrow review` | A reviewer credential separate from scope tokens; calls to list held scopes, read one with its session history, and give a tier's verdict (monotonic, overrides ledgered); `AwaitDecision` streams a scope's status to its client; `escrow review` for a human | 1.2, 1.3, 1.5, 2 |
+| 3.4 | Python SDK | `escrow.scope(…, wait=…)` proposes the decide callback's verdict, waits or continues, and resolves `s.outcome` from the stream; a `held` status; the test app and SDK checks cover it | 1 |
+| 3.5 | Protocol freeze and spec | The protocol review below, `docs/protocol.md`, `buf lint` and `buf breaking` in CI, the tag, the `daemon-frozen` check phase 4 runs under | 4 |
+| 3.6 | Exit runs | Checks 1–5 on the final commit | All |
+
+## Design for each sub-phase
+
+### 3.1 Review rules, software write rules
+
+```yaml
+review:
+  - {paths: ["src/auth/**"], tier: human, wait: required}
+  - {paths: ["src/**"], tier: llm, wait: required}
+  - {paths: ["docs/**"], tier: llm, wait: optional}
+write:
+  deny: ["**/*.pem"]           # a change set touching these is discarded (software tier)
+  deny_content: ["BEGIN PRIVATE KEY"]
+```
+
+The first matching rule gives a path its top tier; a change set goes through every tier from software up to the highest any path needs. Without a `review:` section nothing is held, as today: the host's decide callback still decides, which keeps phase 2's behavior for hosts that do not opt in.
+
+### 3.2 Held scopes, sessions
+
+- **Close with a proposal.** The opener proposes a verdict (its decide callback's) and says whether it can wait. A proposed discard or return is applied at once (it only tightens); a proposed commit runs the software tier, then holds if a higher tier is needed.
+- **Sessions.** `OpenScopeRequest.session` orders an agent's scopes. A required hold blocks the session's next `OpenScope` until the verdict (the call waits, up to the client's deadline, then fails with `FAILED_PRECONDITION` naming the held scope; the held scope stays held). A reviewer's `return` reopens the scope and unblocks the session. Scopes without a session are unordered, as today.
+- **The unscoped scope.** `SettleUnscoped` runs the same review rules, so IO outside scopes in `implicit` mode meets the same reviewers.
+- **Durability.** The held state, the pending tiers, each tier's verdict and the session go into the scope's store; recovery at start keeps them.
+
+### 3.3 Reviewer role, `escrow review`
+
+- **Credential.** Reviewers connect to a third socket (`<socket>.review`), created mode 0600 and never bound into a sandbox; scope tokens give no access there, and the review socket gives no scope rights (decided Oct 5, 2026).
+- **Calls.** `ListHeld`, `GetHeld` (change set, diff, the session's earlier change sets and verdicts), `Review(scope, tier, verdict, reasons, override)`. Monotonic: a verdict looser than the one so far fails unless `override` and the tier is human; the ledger records each verdict and every override.
+- **`AwaitDecision(scope, token)`** streams `held(tier)` updates, then the outcome; the client's existing `Decide` stays for unheld scopes.
+- **`escrow review`**: `list`, `show <scope>` (diff plus history), `commit|discard|return <scope> [--reason …] [--override]`. It is the human tier until phase 7's review interface.
+
+### 3.4 Python SDK
+
+`escrow.scope(name, decide=…, wait=True)`: at exit the decide callback's verdict becomes the proposal; with `wait=True` the scope's `__exit__` returns after the verdict, with `wait=False` it returns with `s.outcome.status == "held"` and `s.outcome` resolves later (`await s.decided()`). The test app gains checks for each of exit criterion 1's rules.
+
+### 3.5 Protocol freeze and spec
+
+Phase 2 changed the protocol five times (versions 2 to 6) and 3.2–3.3 change it again. Before the freeze, review it once for what phases 4 to 9 will need, so later phases add fields instead of breaking them:
+
+- **Errors.** Status codes are chosen per call today (`NOT_FOUND`, `FAILED_PRECONDITION`, `PERMISSION_DENIED`, `ABORTED`). Fix one table in the spec, so every SDK maps them to the same typed errors.
+- **Statuses.** SDKs treat an unknown `OutcomeStatus` as "not decided yet", so phase 7 can add review states without a new version.
+- **Exec socket.** Frames are documented in the proto's header comment only. Move them to the spec with an example exchange; a TypeScript SDK runs the `escrow exec` binary as Python does (Node cannot pass file descriptors over a Unix socket), so the binary's interface (`--scope`, `--socket`, `ESCROW_SCOPE_TOKEN`, exit code 125 on an exec error) is part of the frozen surface too.
+- **Versioning.** `Ping.protocol_version` becomes 7 at the freeze and then changes only with a new package (`escrow.v2`). Additions (new fields, new calls) stay compatible under `buf breaking`'s wire rules.
+- **CI.** `buf lint` and `buf breaking --against '.git#tag=protocol-v1'` run in the Rust job; a `daemon-frozen` job fails a PR that changes `crates/escrowd/` or `proto/` while the `phase-4` label is on it.
+
+### 3.6 Exit runs
+
+Checks 1–5 on the final commit: the suite 10 consecutive times per CI runner (`ci:repeat`), once on each Lima host, the crash soak with held scopes, `buf breaking` against the tag. Logs go to `tests/conformance/results/` and `tests/soak/results/`; the status line gets the PR link.
+
+## Carried limits
+
+All known limits are in [LIMITATIONS.md](../LIMITATIONS.md). Out of phase 3, by design:
+
+- The LLM auditor and a review interface beyond the command line: phase 7. Phase 3's checks use stand-in reviewers, as the model does.
+- Stacking a scope on a held one (nested scopes, transitive release): not planned; waiting is the default.
+- The TypeScript SDK: phase 4.
+
+## Open questions
+
+- [x] Reviewer credential: a third socket, `<socket>.review`, mode 0600, never bound into a sandbox; the file mode is the gate and there is no secret to hand out. Decided Oct 5, 2026 (a reviewer token issued at daemon start was the alternative).
+- [x] Wait timeout: the scope stays held and the client gets `held` and keeps listening; a required wait still blocks the session's next scope. No timeout verdict in the policy. Decided Oct 5, 2026.
+- [x] A reviewer's `return`: reopens the scope for the agent with the reasons, as `VERDICT_RETURN` does today, and unblocks the session, so the agent fixes the change in the same scope. Decided Oct 5, 2026.
+- [x] The unscoped scope (`implicit` mode): `SettleUnscoped` runs the policy's review rules like any scope. Decided Oct 5, 2026.
+- [x] `escrow replay`: dropped from the daemon's roadmap, decided Oct 5, 2026. Deciding a held change set is `escrow review`; rerunning a decision is a client SDK feature that needs no daemon (an SDK can run its decide callback again on a change set it kept).
+- [x] `conflict.reads`: stays off by default; the write-skew risk is documented (proposal, `LIMITATIONS.md`). Sessions that wait serialize one agent's scopes, which removes most of it; hosts that need serializable scopes turn it on. Decided Oct 5, 2026.
+- [x] Absolute symlinks into the project, followed in the host process: carried (`LIMITATIONS.md`); subprocesses are unaffected. Revisit with the TypeScript SDK's path rewrite in phase 4. Decided Oct 5, 2026.
