@@ -99,7 +99,7 @@ The FUSE crate is [`fuser`](https://github.com/cberner/fuser) 0.18.0 (July 2026,
 | --- | --- | --- |
 | Dev | WSL2 (below) | Writing and first runs of every spike |
 | Target 1 | General Linux distributions | Every go/no-go must hold on native Linux, not only on WSL2 |
-| Target 2 | macOS | Out of phase 0 runs; capture and containment come in phase 7. Phase 0 records any choice that would block macOS |
+| Target 2 | macOS | Out of phase 0 runs; capture and containment come in phase 9 (renumbered Oct 5 and Oct 6, 2026). Phase 0 records any choice that would block macOS |
 
 General Linux widens 0.1: the host matrix covers the distributions users run, not one kernel. The minimum kernel is 6.8, Ubuntu 24.04's GA kernel. Plain FUSE needs nothing newer; the passthrough fallback needs 6.9 or later.
 

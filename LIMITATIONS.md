@@ -19,7 +19,7 @@ Status as of Oct 6, 2026: phase 3 complete (PR #34).
 | `passthrough` paths (package caches) are shared and unescrowed: one ledger line per bind at sandbox start, the IO itself unlogged. | By design (2.4, #11). |
 | In `passthrough` unscoped mode, the app's own `$HOME` and `/tmp` stay empty tmpfs even when the policy serves them; its scopes get their views. | By design, decided Oct 5, 2026: no unscoped scope exists to serve them. |
 | The SDK rewrites absolute paths under a served root (`os.path.expanduser` gives one); a literal `~/x` passed to `open` is a relative path, as in Python. | By design. |
-| No network capture; `--unshare-net` blocks the network. | Phase 9. |
+| No network capture; `--unshare-net` blocks the network. | Phase 10. |
 
 ## Attribution
 
@@ -62,7 +62,7 @@ Status as of Oct 6, 2026: phase 3 complete (PR #34).
 
 | Limit | Status |
 | --- | --- |
-| Linux only, kernel 6.8 or later. | macOS in phase 8. |
+| Linux only, kernel 6.8 or later. | macOS in phase 9. |
 | Ubuntu 24.04+ needs escrowd's own bwrap and AppArmor profile (`packaging/ubuntu/install.sh`); never set the userns sysctl to 0. | By design (0.1, 0.2). |
 | Ubuntu 26.04 confines `fusermount3` to mountpoints under `$HOME`, `/mnt`, `/run/user/<uid>`, `/media` and `/tmp`; views live under `$XDG_RUNTIME_DIR`. | By design. |
 
@@ -83,8 +83,11 @@ Status as of Oct 6, 2026: phase 3 complete (PR #34).
 | `conflict.reads` is off by default: two concurrent scopes can each read a file the other changes and both commit (write skew). | By design, decided Oct 5, 2026: sessions that wait (phase 3) serialize one agent's scopes; hosts that need serializable scopes turn it on. |
 | `conflict.reads` checks files read through the scope's view; reads not yet written to the store when the daemon was killed drop out of the check, as they drop out of the change set. | By design (2.7, 2.3). |
 | One daemon per `escrow run`; nested scopes are not supported. | Carried. |
-| No LLM reviewer exists yet: an LLM-tier hold waits for a stand-in on the review socket, or for a human, whose verdict also stands for a pending LLM tier. | Phase 7 (LLM auditor). |
-| Anyone who can open the review socket (the daemon's user, mode 0600) reviews as any tier: the socket does not tell an LLM from a human, and `--tier` is the caller's word. | By design, decided Oct 5, 2026: the file mode is the credential; per-tier credentials come with phase 7's reviewers. |
+| One daemon per state directory (`<state>/lock`, `flock`). Two daemons on one project with different `--state` directories are not detected; each commits on its own snapshot and conflict check. | Found Oct 6, 2026 (punchlist P0-2); the default state dir is per project. |
+| A held unscoped scope blocks the next `escrow run` (implicit or deny) until its reviewers decide it, which needs `escrow daemon` on the project: `escrow run` does not wait for a verdict. | Found Oct 6, 2026 (punchlist P0-1). |
+| At shutdown, calls still running after 10 s are abandoned so the daemon can unmount; a second SIGTERM or SIGINT exits at once and leaves the mount stale (ENOTCONN). | By design, Oct 6, 2026 (punchlist P0-4). |
+| No LLM reviewer exists yet: an LLM-tier hold waits for a stand-in on the review socket, or for a human, whose verdict also stands for a pending LLM tier. | Phase 4 (a reviewer program declared in the policy); phase 8 (LLM auditor). |
+| Anyone who can open the review socket (the daemon's user, mode 0600) reviews as any tier: the socket does not tell an LLM from a human, and `--tier` is the caller's word. | By design, decided Oct 5, 2026: the file mode is the credential; phase 4's reviewers get their own credentials (a reviewer the daemon runs, or a single-use token for a delegated one). |
 | The history keeps the newest 100 decisions per session (and 100 of scopes without one); a reviewer sees the last 20. `AwaitDecision` on a scope whose decision dropped out fails with `NOT_FOUND`. | By design (3.4). |
 | A scope's history entry holds its diff (up to `diff.max_bytes`), so `history.sqlite` grows with the diffs of up to 100 decisions per session. | By design (3.4); decisions of scopes without a session that were never held are not kept. |
 | A daemon killed while a commit of a kept decision found a conflict keeps it as a conflict without its paths. | By design (3.7): the next start knows the conflict from the scope reopened or gone, not which paths caused it. |
