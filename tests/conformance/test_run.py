@@ -31,12 +31,13 @@ class App:
         sandbox_read=(),
         env=None,
         roots="",
+        policy="",
     ):
         self.work = work
         self.project = work / "proj"
         self.project.mkdir(exist_ok=True)
         self.state, self.mount, self.socket = work / "state", work / "mnt", work / "s.sock"
-        policy = write_policy(work, deny_read, sandbox_read, roots=roots)
+        policy = write_policy(work, deny_read, sandbox_read, roots=roots, extra=policy)
         args = [bin, "run", "--project", self.project, "--unscoped", mode, "--policy", policy]
         args += ["--state", self.state, "--mount", self.mount, "--socket", self.socket]
         if on_exit:
@@ -108,6 +109,31 @@ def test_implicit_commits_at_exit_when_asked(app):
     a, code, _, err = run(app, "implicit", "echo new > g.txt", on_exit="commit")
     assert code == 0 and "1 unscoped change(s) committed" in err
     assert (a.project / "g.txt").read_text() == "new\n"
+
+
+def test_commit_at_exit_obeys_write_deny(app):
+    # The on-exit commit is decided like any scope's: the software tier discards it.
+    policy = "write:\n  deny: ['*.pem']\n"
+    a, code, _, err = run(
+        app, "implicit", "echo k > key.pem; echo ok > g.txt", on_exit="commit", policy=policy
+    )
+    assert code == 0, err
+    assert "2 unscoped change(s) discarded: " in err and "key.pem" in err
+    assert not (a.project / "key.pem").exists()
+    assert not (a.project / "g.txt").exists()
+
+
+def test_commit_at_exit_holds_for_review(app):
+    policy = "review:\n  - {paths: ['src/**'], tier: human}\n"
+    a, code, _, err = run(
+        app, "implicit", "mkdir src; echo x > src/a.py", on_exit="commit", policy=policy
+    )
+    assert code == 0, err
+    assert "2 unscoped change(s) held for review (llm,human)" in err
+    assert not (a.project / "src").exists()
+    # The next run would get a frozen project: it refuses until the reviewers decide.
+    a2, code, _, err = run(app, "implicit", "true", on_exit="commit", policy=policy)
+    assert code != 0 and "held for llm review" in err
 
 
 def test_settle_unscoped_mid_run_and_keep_writing(app):

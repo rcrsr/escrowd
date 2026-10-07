@@ -6,14 +6,13 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context;
 use clap::{Parser, Subcommand, ValueEnum};
-use escrowd::commit::Outcome;
 use escrowd::daemon::{Config, default_runtime_dir};
 use escrowd::exec::{ExecConn, TOKEN_ENV, exec_socket};
 use escrowd::proto::escrow_service_client::EscrowServiceClient;
 use escrowd::proto::reviewer_service_client::ReviewerServiceClient;
 use escrowd::proto::{
-    GetChangeSetRequest, GetHeldRequest, HeldScope, ListHeldRequest, OutcomeStatus, ReviewRequest, SpawnRequest, Tier,
-    Verdict,
+    DecideRequest, GetChangeSetRequest, GetHeldRequest, HeldScope, ListHeldRequest, OutcomeStatus, ReviewRequest,
+    SettleUnscopedRequest, SpawnRequest, Tier, Verdict,
 };
 use escrowd::rpc::review_socket;
 use escrowd::sandbox::Mount;
@@ -481,6 +480,56 @@ async fn wait_for(socket: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Close the unscoped scope and decide it over the protocol socket, so the policy's
+/// review rules (`write:`, `review:`) and conflict policy apply as to any scope.
+async fn settle_unscoped(socket: &Path, on_exit: OnExit) -> anyhow::Result<String> {
+    let mut client = EscrowServiceClient::new(channel(socket).await?).max_decoding_message_size(usize::MAX);
+    let err = |s: tonic::Status| anyhow::anyhow!("{}", s.message());
+    let cs = client
+        .settle_unscoped(SettleUnscopedRequest {})
+        .await
+        .map_err(err)?
+        .into_inner()
+        .change_set
+        .unwrap_or_default();
+    let n = cs.changes.len();
+    let verdict = match on_exit {
+        OnExit::Commit => Verdict::Commit,
+        OnExit::Discard => Verdict::Discard,
+    };
+    let out = client
+        .decide(DecideRequest {
+            scope_id: UNSCOPED.into(),
+            verdict: verdict.into(),
+            ..Default::default()
+        })
+        .await
+        .map_err(err)?
+        .into_inner()
+        .outcome
+        .unwrap_or_default();
+    Ok(match OutcomeStatus::try_from(out.status) {
+        Ok(OutcomeStatus::Committed) => format!("{n} unscoped change(s) committed"),
+        Ok(OutcomeStatus::Discarded) if out.reasons.is_empty() => format!("{n} unscoped change(s) discarded"),
+        Ok(OutcomeStatus::Discarded) => format!("{n} unscoped change(s) discarded: {}", out.reasons.join("; ")),
+        Ok(OutcomeStatus::Conflict) => format!(
+            "unscoped changes {}, conflict on: {}",
+            if out.reopened {
+                "kept for the next run"
+            } else {
+                "discarded"
+            },
+            out.paths.join(", ")
+        ),
+        Ok(OutcomeStatus::Returned) => format!("{n} unscoped change(s) kept for the next run"),
+        // Unknown statuses read as held (protocol.md, versioning).
+        _ => format!(
+            "{n} unscoped change(s) held for review ({}): run `escrow daemon` on the project and decide with `escrow review`",
+            tiers(&out.tiers)
+        ),
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn run(
     project: PathBuf,
@@ -506,7 +555,8 @@ async fn run(
             dir.join("escrow.sock")
         }
     };
-    let _ = std::fs::remove_file(&socket); // wait_for must not mistake a stale socket for this daemon's
+    // wait_for must not mistake a stale socket for this daemon's, nor a live one's.
+    escrowd::rpc::clear_stale(&socket)?;
     for r in &reads {
         anyhow::ensure!(r.is_absolute(), "--read {} is not absolute", r.display());
     }
@@ -521,7 +571,19 @@ async fn run(
         bwrap,
         read: reads,
     })?;
-    let (views, children) = (daemon.views.clone(), daemon.children.clone());
+    let views = daemon.views.clone();
+    // A held unscoped scope is frozen until its reviewers decide: the app would get a
+    // read-only project (implicit), or the mode change would drop it (deny).
+    if unscoped != Unscoped::Passthrough
+        && let Ok(Some(hold)) = views.held(UNSCOPED)
+    {
+        anyhow::bail!(
+            "the last run's unscoped changes are held for {} review: decide them first \
+             (`escrow daemon --project {}` with the same --state, then `escrow review`)",
+            hold.tiers[0].as_str(),
+            project.display()
+        );
+    }
     let sandbox = daemon.sandbox();
     // The unscoped scope's views of $HOME and /tmp. Passthrough mode has none (a scope
     // left by an earlier run in another mode may still exist).
@@ -584,34 +646,11 @@ async fn run(
     };
 
     if unscoped == Unscoped::Implicit {
-        let settled = tokio::task::spawn_blocking(move || -> std::io::Result<String> {
-            // The app has exited; its last processes may still be writing back.
-            views.settle_last();
-            let stopped = children.stop(UNSCOPED);
-            let cs = views.close_scope_after(UNSCOPED, &stopped)?;
-            let n = cs.changes.len();
-            Ok(match on_exit {
-                OnExit::Discard => {
-                    views.drop_scope(UNSCOPED)?;
-                    format!("{n} unscoped change(s) discarded")
-                }
-                OnExit::Commit => match views.commit_closed(UNSCOPED, &cs)? {
-                    Outcome::Committed(..) => format!("{n} unscoped change(s) committed"),
-                    Outcome::Conflict(paths) => format!(
-                        "unscoped changes discarded, conflict on: {}",
-                        paths
-                            .iter()
-                            .map(|p| p.display().to_string())
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ),
-                },
-            })
-        })
-        .await?;
-        match settled {
+        // The app has exited; its last processes may still be writing back.
+        views.settle_last();
+        match settle_unscoped(&socket, on_exit).await {
             Ok(msg) => eprintln!("escrow: {msg}"),
-            Err(e) => eprintln!("escrow: settling unscoped changes failed: {e}"),
+            Err(e) => eprintln!("escrow: settling unscoped changes failed: {e:#}"),
         }
     }
     let _ = stop.send(());
@@ -664,11 +703,22 @@ async fn main() -> anyhow::Result<()> {
             threads,
         } => {
             let mut term = signal(SignalKind::terminate())?;
+            let mut int = signal(SignalKind::interrupt())?;
             let shutdown = async move {
                 tokio::select! {
                     _ = term.recv() => {}
-                    _ = tokio::signal::ctrl_c() => {}
+                    _ = int.recv() => {}
                 }
+                // Shutdown waits for running calls (bounded) and unmounts; a second
+                // signal exits at once and leaves the mount stale.
+                tokio::spawn(async move {
+                    tokio::select! {
+                        _ = term.recv() => {}
+                        _ = int.recv() => {}
+                    }
+                    eprintln!("escrowd: second signal, exiting without unmounting");
+                    std::process::exit(1);
+                });
             };
             let config = Config {
                 socket,

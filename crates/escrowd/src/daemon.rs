@@ -92,6 +92,8 @@ pub struct Daemon {
     home: Option<PathBuf>,
     bwrap: PathBuf,
     session: BackgroundSession,
+    /// `<state>/lock`, held while the daemon runs (see `lock_state`).
+    _lock: std::fs::File,
 }
 
 /// A root the policy lists, resolved against the host.
@@ -152,6 +154,7 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
     std::fs::create_dir_all(&state).with_context(|| format!("state dir {}", state.display()))?;
     std::fs::create_dir_all(&mount).with_context(|| format!("mount dir {}", mount.display()))?;
     let (state, mount) = (state.canonicalize()?, mount.canonicalize()?);
+    let lock = lock_state(&state)?;
     // The daemon must never touch its own view (deadlock), and staged files must not land in the project.
     if inside(&state, &project) || inside(&mount, &project) || inside(&project, &mount) || inside(&state, &mount) {
         bail!(
@@ -296,7 +299,34 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
         home: home.or_else(std::env::home_dir),
         bwrap: sandbox::find_bwrap(config.bwrap.as_deref()),
         session,
+        _lock: lock,
     })
+}
+
+/// Take `<state>/lock` (`flock`, exclusive) for as long as the file stays open: start-up
+/// rolls back every unfinished commit in the state, so a second daemon on it would undo
+/// the first one's commit mid-apply. The kernel drops the lock when the holder dies.
+fn lock_state(state: &Path) -> anyhow::Result<std::fs::File> {
+    use rustix::fs::{FlockOperation, flock};
+    use std::io::Write;
+    let path = state.join("lock");
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("opening {}", path.display()))?;
+    match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+        Ok(()) => {}
+        Err(rustix::io::Errno::WOULDBLOCK) => {
+            let pid = std::fs::read_to_string(&path).unwrap_or_default();
+            bail!("another escrowd (pid {}) serves state {}", pid.trim(), state.display())
+        }
+        Err(e) => return Err(std::io::Error::from(e)).with_context(|| format!("locking {}", path.display())),
+    }
+    file.set_len(0)?;
+    writeln!(file, "{}", std::process::id())?;
+    Ok(file)
 }
 
 impl Daemon {

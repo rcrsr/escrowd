@@ -3,7 +3,10 @@
 //! Every path here is relative to a directory fd and never goes through
 //! `/proc/self/fd`. The FUSE kernel resolves symlinks itself and looks up one
 //! component at a time, so relative paths reaching the daemon never cross a
-//! symlink unless the base changes underneath (hardening: phase 2).
+//! symlink. A base that changes underneath (a directory swapped for a symlink by
+//! an editor or another user) must not lead outside the root: each operation
+//! resolves the path's parent with `openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS)`
+//! and acts on the last component only (`beneath`).
 
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -14,7 +17,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use fuser::{FileAttr, FileType, INodeNo};
-use rustix::fs::{self as rfs, AtFlags, Mode, OFlags, Stat, Timespec, Timestamps};
+use rustix::fs::{self as rfs, AtFlags, Mode, OFlags, ResolveFlags, Stat, Timespec, Timestamps};
 
 /// `rel` as an fd-relative path; the empty path (the directory itself) is `.`.
 pub fn at(rel: &Path) -> &Path {
@@ -34,6 +37,56 @@ pub fn random(buf: &mut [u8]) -> io::Result<()> {
     Ok(())
 }
 
+/// Where an fd-relative operation on a path runs: the path's parent directory,
+/// resolved beneath the root fd, and its last component.
+struct Beneath<'a> {
+    dir: BorrowedFd<'a>,
+    parent: Option<OwnedFd>,
+    name: &'a Path,
+}
+
+impl Beneath<'_> {
+    fn fd(&self) -> BorrowedFd<'_> {
+        self.parent.as_ref().map_or(self.dir, |p| p.as_fd())
+    }
+}
+
+/// `rel`'s parent opened beneath `dir` with no symlink on the way (ELOOP), and its
+/// last component; `..` and absolute paths are refused (EXDEV), as openat2 does.
+/// A one-component path costs no syscall.
+fn beneath<'a>(dir: BorrowedFd<'a>, rel: &'a Path) -> io::Result<Beneath<'a>> {
+    use std::path::Component;
+    if rel
+        .components()
+        .any(|c| !matches!(c, Component::Normal(_) | Component::CurDir))
+    {
+        return Err(io::Error::from_raw_os_error(libc::EXDEV));
+    }
+    let rel = at(rel);
+    let (parent, name) = match (rel.parent(), rel.file_name()) {
+        (Some(p), Some(n)) if !p.as_os_str().is_empty() => (Some(p), Path::new(n)),
+        _ => (None, rel),
+    };
+    let parent = match parent {
+        None => None,
+        Some(p) => Some(open_beneath(dir, p, OFlags::PATH | OFlags::DIRECTORY)?),
+    };
+    Ok(Beneath { dir, parent, name })
+}
+
+/// openat2 confined to `dir`: no symlink in any component, no escape. EAGAIN (a
+/// concurrent rename seen mid-walk) is retried.
+fn open_beneath(dir: BorrowedFd, rel: &Path, flags: OFlags) -> io::Result<OwnedFd> {
+    let resolve = ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS;
+    let mut tries = 0;
+    loop {
+        match rfs::openat2(dir, at(rel), flags | OFlags::CLOEXEC, Mode::empty(), resolve) {
+            Err(rustix::io::Errno::AGAIN) if tries < 8 => tries += 1,
+            r => return Ok(r?),
+        }
+    }
+}
+
 pub fn parent(rel: &Path) -> &Path {
     rel.parent().unwrap_or(Path::new(""))
 }
@@ -47,7 +100,8 @@ pub fn open_dir(path: &Path) -> io::Result<OwnedFd> {
 }
 
 pub fn lstat(dir: BorrowedFd, rel: &Path) -> io::Result<Stat> {
-    Ok(rfs::statat(dir, at(rel), AtFlags::SYMLINK_NOFOLLOW)?)
+    let b = beneath(dir, rel)?;
+    Ok(rfs::statat(b.fd(), b.name, AtFlags::SYMLINK_NOFOLLOW)?)
 }
 
 pub fn is_dir(st: &Stat) -> bool {
@@ -55,9 +109,10 @@ pub fn is_dir(st: &Stat) -> bool {
 }
 
 pub fn open(dir: BorrowedFd, rel: &Path, flags: OFlags, mode: u32) -> io::Result<File> {
+    let b = beneath(dir, rel)?;
     let fd = rfs::openat(
-        dir,
-        at(rel),
+        b.fd(),
+        b.name,
         flags | OFlags::CLOEXEC | OFlags::NOFOLLOW,
         Mode::from_raw_mode(mode),
     )?;
@@ -65,49 +120,56 @@ pub fn open(dir: BorrowedFd, rel: &Path, flags: OFlags, mode: u32) -> io::Result
 }
 
 pub fn mkdir(dir: BorrowedFd, rel: &Path, mode: u32) -> io::Result<()> {
-    Ok(rfs::mkdirat(dir, rel, Mode::from_raw_mode(mode))?)
+    let b = beneath(dir, rel)?;
+    Ok(rfs::mkdirat(b.fd(), b.name, Mode::from_raw_mode(mode))?)
 }
 
 pub fn unlink(dir: BorrowedFd, rel: &Path, is_dir: bool) -> io::Result<()> {
+    let b = beneath(dir, rel)?;
     Ok(rfs::unlinkat(
-        dir,
-        rel,
+        b.fd(),
+        b.name,
         if is_dir { AtFlags::REMOVEDIR } else { AtFlags::empty() },
     )?)
 }
 
 pub fn rename(dir: BorrowedFd, from: &Path, to: &Path, flags: u32) -> io::Result<()> {
+    let (from, to) = (beneath(dir, from)?, beneath(dir, to)?);
     Ok(rfs::renameat_with(
-        dir,
-        from,
-        dir,
-        to,
+        from.fd(),
+        from.name,
+        to.fd(),
+        to.name,
         rfs::RenameFlags::from_bits_retain(flags),
     )?)
 }
 
 pub fn symlink(target: &Path, dir: BorrowedFd, rel: &Path) -> io::Result<()> {
-    Ok(rfs::symlinkat(target, dir, rel)?)
+    let b = beneath(dir, rel)?;
+    Ok(rfs::symlinkat(target, b.fd(), b.name)?)
 }
 
 pub fn readlink(dir: BorrowedFd, rel: &Path) -> io::Result<PathBuf> {
-    let c = rfs::readlinkat(dir, rel, Vec::new())?;
+    let b = beneath(dir, rel)?;
+    let c = rfs::readlinkat(b.fd(), b.name, Vec::new())?;
     Ok(PathBuf::from(OsString::from_vec(c.into_bytes())))
 }
 
 pub fn link(dir: BorrowedFd, from: &Path, to: &Path) -> io::Result<()> {
-    Ok(rfs::linkat(dir, from, dir, to, AtFlags::empty())?)
+    link_across(dir, from, dir, to)
 }
 
 /// Hard link `src_dir/src` as `dst_dir/dst` (EXDEV across filesystems).
 pub fn link_across(src_dir: BorrowedFd, src: &Path, dst_dir: BorrowedFd, dst: &Path) -> io::Result<()> {
-    Ok(rfs::linkat(src_dir, src, dst_dir, dst, AtFlags::empty())?)
+    let (src, dst) = (beneath(src_dir, src)?, beneath(dst_dir, dst)?);
+    Ok(rfs::linkat(src.fd(), src.name, dst.fd(), dst.name, AtFlags::empty())?)
 }
 
 pub fn chmod(dir: BorrowedFd, rel: &Path, mode: u32) -> io::Result<()> {
+    let b = beneath(dir, rel)?;
     Ok(rfs::chmodat(
-        dir,
-        at(rel),
+        b.fd(),
+        b.name,
         Mode::from_raw_mode(mode & 0o7777),
         AtFlags::empty(),
     )?)
@@ -116,7 +178,8 @@ pub fn chmod(dir: BorrowedFd, rel: &Path, mode: u32) -> io::Result<()> {
 pub fn chown(dir: BorrowedFd, rel: &Path, uid: Option<u32>, gid: Option<u32>) -> io::Result<()> {
     let uid = uid.map(rfs::Uid::from_raw);
     let gid = gid.map(rfs::Gid::from_raw);
-    Ok(rfs::chownat(dir, at(rel), uid, gid, AtFlags::SYMLINK_NOFOLLOW)?)
+    let b = beneath(dir, rel)?;
+    Ok(rfs::chownat(b.fd(), b.name, uid, gid, AtFlags::SYMLINK_NOFOLLOW)?)
 }
 
 pub const OMIT: Timespec = Timespec {
@@ -133,7 +196,8 @@ pub fn set_times(dir: BorrowedFd, rel: &Path, atime: Timespec, mtime: Timespec) 
         last_access: atime,
         last_modification: mtime,
     };
-    Ok(rfs::utimensat(dir, at(rel), &ts, AtFlags::SYMLINK_NOFOLLOW)?)
+    let b = beneath(dir, rel)?;
+    Ok(rfs::utimensat(b.fd(), b.name, &ts, AtFlags::SYMLINK_NOFOLLOW)?)
 }
 
 pub fn timespec(t: SystemTime) -> Timespec {
@@ -146,12 +210,7 @@ pub fn timespec(t: SystemTime) -> Timespec {
 
 /// Names and types in a directory, without `.` and `..`.
 pub fn read_dir(dir: BorrowedFd, rel: &Path) -> io::Result<Vec<(OsString, FileType)>> {
-    let fd = rfs::openat(
-        dir,
-        at(rel),
-        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
-        Mode::empty(),
-    )?;
+    let fd = open_beneath(dir, rel, OFlags::RDONLY | OFlags::DIRECTORY)?;
     let mut out = Vec::new();
     for e in rfs::Dir::new(fd)? {
         let e = e?;

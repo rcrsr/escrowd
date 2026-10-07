@@ -158,7 +158,7 @@ Subprocesses need a second sandbox per scope, but `--disable-userns` stops the a
 
 In-process code shares the harness's process, and with it the socket. Only subprocesses can be kept from the socket. A tool that must not reach the decision runs as a subprocess.
 
-`--unshare-net` stays opt-in; network capture is phase 9 (phase 8 before the Oct 5 renumbering).
+`--unshare-net` stays opt-in; network capture is phase 10 (phase 8 before the Oct 5 renumbering, 9 before Oct 6).
 
 As built (Oct 4, 2026):
 
@@ -218,7 +218,7 @@ Out of phase 1, by design:
 
 - Whole-file copy-up; block-level copy-up only if large files demand it.
 - Native code and `mmap` doing their own IO fall to the `unscoped` mode.
-- No network capture (`--unshare-net` blocks the network; the proxy is phase 9, renumbered Oct 5).
+- No network capture (`--unshare-net` blocks the network; the proxy is phase 10, renumbered Oct 5 and Oct 6).
 - Nested scopes stay deferred.
 - One daemon per `escrow run`; a long-lived per-user daemon waits until a harness needs one.
 

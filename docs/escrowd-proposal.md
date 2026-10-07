@@ -10,7 +10,7 @@ The fix is to stop watching tools and start watching the filesystem. The develop
 
 The plan starts small (a scope gate proved by a CLI test app) and grows into decision models, an audit log, SDKs in more languages, host adapters and network escrow.
 
-**Status, Oct 5, 2026.** Phases 0 to 2 are done: escrowd (Rust), the Python SDK and the conformance suite run on Linux, with crash-safe commits and real repositories at about 1.5× native ([phase 0](phase-0-spikes.md), [phase 1](phase-1-poc.md), [phase 2](phase-2-hardening.md)). Phase 3, held decisions (a post-approval by independent reviewers, negotiated between client and daemon), is next ([plan](phase-3-held-decisions.md)); then the protocol freezes and phase 4 builds the TypeScript SDK on it ([plan](phase-4-typescript-sdk.md)). Known limits of what is built are in [LIMITATIONS.md](../LIMITATIONS.md).
+**Status, Oct 5, 2026.** Phases 0 to 2 are done: escrowd (Rust), the Python SDK and the conformance suite run on Linux, with crash-safe commits and real repositories at about 1.5× native ([phase 0](phase-0-spikes.md), [phase 1](phase-1-poc.md), [phase 2](phase-2-hardening.md)). Phase 3, held decisions (a post-approval by independent reviewers, negotiated between client and daemon), is next ([plan](phase-3-held-decisions.md)); then the protocol freezes, phase 4 adds policy reviewers ([plan](phase-4-reviewers.md)) and phase 5 builds the TypeScript SDK on it ([plan](phase-5-typescript-sdk.md)). Known limits of what is built are in [LIMITATIONS.md](../LIMITATIONS.md).
 
 ## Core concepts
 
@@ -57,16 +57,17 @@ flowchart TB
     P1["1. CLI POC<br/>escrowd + Python SDK + test app"]
     P2["2. Hardening<br/>crash recovery, performance"]
     P3["3. Held decisions<br/>post-approval, protocol frozen"]
-    P4["4. TypeScript SDK"]
-    P5["5. pi adapter<br/>scope per tool call, turn or prompt"]
-    P6["6. More SDKs<br/>Go, Rust"]
-    P7["7. Decision tiers<br/>LLM auditor, human review"]
-    P8["8. Other hosts and macOS"]
-    P9["9. Network escrow"]
-    P0 --> P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7 --> P8 --> P9
+    P4["4. Policy reviewers<br/>commands declared in the policy"]
+    P5["5. TypeScript SDK"]
+    P6["6. pi adapter<br/>scope per tool call, turn or prompt"]
+    P7["7. More SDKs<br/>Go, Rust"]
+    P8["8. Decision tiers<br/>LLM auditor, human review"]
+    P9["9. Other hosts and macOS"]
+    P10["10. Network escrow"]
+    P0 --> P1 --> P2 --> P3 --> P4 --> P5 --> P6 --> P7 --> P8 --> P9 --> P10
 ```
 
-Every phase reuses escrowd and the scope model from phase 1; later phases add languages, decision tiers, hosts and network capture. Phases 0 to 2 are done. Renumbered Oct 5, 2026: held decisions became phase 3, ahead of the protocol freeze, and the later phases moved down one. Exit criteria are under Implementation phases.
+Every phase reuses escrowd and the scope model from phase 1; later phases add languages, decision tiers, hosts and network capture. Phases 0 to 2 are done. Renumbered Oct 5, 2026: held decisions became phase 3, ahead of the protocol freeze, and the later phases moved down one. Renumbered again Oct 6, 2026: policy reviewers became phase 4, ahead of the TypeScript SDK, and the later phases moved down one. Exit criteria are under Implementation phases.
 
 ## Scopes: the atomic boundary
 
@@ -130,7 +131,7 @@ FUSE captures project IO; bwrap contains everything else, so nothing reaches the
 - **Only one way to the project.** The FUSE view is mounted over `$PROJECT`; the real directory is never mounted in the sandbox.
 - **No uncaptured writes elsewhere.** The rest of the filesystem is read-only, with tmpfs for `/tmp` and home unless the policy's `roots:` routes them through FUSE (2.4).
 - **Paths outside the project (2.4).** `$HOME` and `/tmp` can be served like the project, each scope with its own view (`<id>.home/`, `<id>.tmp/`) mounted over the root in its sandbox. A rule per path decides: `capture` (staged, committed with the project in one journaled generation), `ephemeral` (staged, always discarded), `passthrough` (bound directly, outside escrow, logged at sandbox start) and `deny` (EACCES on reads, listings and changes, logged; the default for unlisted paths). The project, passthrough and read paths inside a root are mount points the view never serves; escrowd's state, views and sockets are absent from it.
-- **Network.** `--unshare-net`: no network in sandboxes. A proxy socket per scope as the only way out is phase 9.
+- **Network.** `--unshare-net`: no network in sandboxes. A proxy socket per scope as the only way out is phase 10.
 - **Lifetime.** `--unshare-pid --die-with-parent`; a scope's processes stop when it closes (SIGTERM, then SIGKILL after the policy's `close.grace_ms`).
 - **Tamper resistance.** The daemon, journal and ledger live outside the sandbox. The app gets only the RPC socket, no `/dev/fuse`, and nested user namespaces are disabled so it can't remount.
 - **Platform.** Linux first; macOS would need macFUSE or FSKit for capture and Seatbelt for containment.
@@ -146,9 +147,9 @@ Added in 2.7 ([#15](https://github.com/rcrsr/escrowd/issues/15)). escrowd defend
 | Subprocesses (bash, scripts, tests, tools) | Their scope's views only, in bwrap | No | No write reaches the project or a captured root before the decision; reads of `read.deny` and `deny` paths fail and are logged; no socket, no token (stripped from the environment), no other scope's view, no real project directory, no `/dev/fuse`, no nested user namespaces. A child cannot decide its own scope or start children in another |
 | IO outside any scope | The unscoped mode | Per mode | `deny` refuses project writes; `implicit` stages them in a default scope; `passthrough` lets them through unseen, with one ledger line at start saying so |
 
-Outside the model: processes of the same user outside escrowd (they can write the project directly), passthrough binds and the network until phase 9 (outside escrow by design), native code and `mmap` in the host process (they fall to the unscoped mode; `deny` is the mode for agent hosts), and the change set itself: `GetChangeSet` needs no token, since it only shows a closed scope's diff with `read.deny` content withheld.
+Outside the model: processes of the same user outside escrowd (they can write the project directly), passthrough binds and the network until phase 10 (outside escrow by design), native code and `mmap` in the host process (they fall to the unscoped mode; `deny` is the mode for agent hosts), and the change set itself: `GetChangeSet` needs no token, since it only shows a closed scope's diff with `read.deny` content withheld.
 
-The rule that follows for adapters: **untrusted tool code runs as a subprocess**, where the sandbox holds it; in-process extensions are trusted. Phase 5's pi adapter runs bash and every tool that executes model-written code through `escrow exec`.
+The rule that follows for adapters: **untrusted tool code runs as a subprocess**, where the sandbox holds it; in-process extensions are trusted. Phase 6's pi adapter runs bash and every tool that executes model-written code through `escrow exec`.
 
 ## Host developer experience
 
@@ -232,7 +233,7 @@ Build escrowd's own capture layer rather than adopting [AgentFS](https://github.
 | **For** | A working FUSE overlay (whiteouts, copy-up, stable inodes) and namespace setup, MIT licensed; a crash-safe SQLite store where `diff` is a query; SDKs and CLI in four languages; a macOS route over NFS without a kernel extension |
 | **Against** | No apply back to the project, so no decision or atomic commit; one overlay per session behind its own CLI instead of one daemon routing many scopes; SDKs are explicit file APIs, not transparent capture; reads go to the live base, so no snapshot at open; no read gating, policies or network containment; depends on Turso's beta engine, with schema migrations and `synchronous=OFF` |
 
-Lessons to adopt from AgentFS's code (1 to 5 and 9 are built; 6 became pre-images at commit; 7 is phase 8; 8 is not planned):
+Lessons to adopt from AgentFS's code (1 to 5 and 9 are built; 6 became pre-images at commit; 7 is phase 9; 8 is not planned):
 
 1. **Pre-open the base before mounting.** Open handles to the project before mounting the FUSE view over `$PROJECT`, so reads of the base never loop back into our own mount.
 2. **Stable inode numbers.** Map original inodes to copied-up ones so git, editors and build tools don't see files change identity.
@@ -254,12 +255,13 @@ Phase 1, a CLI test app proving the scope model on Linux, is the first deliverab
 | 1. CLI POC ([done](phase-1-poc.md)) | All seven exit tests pass in CI on Linux in 10 consecutive runs, with zero misattributed operations in the ledger | escrowd, a minimal Python SDK and a CLI test app doing regular IO; the exit tests become the shared conformance suite |
 | 2. Hardening ([done](phase-2-hardening.md)) | Zero partial commits across 1,000 runs killed at random points mid-commit; a real repo's test suite, and its whole agent pipeline including commit, runs under escrowd within 1.5× of native wall time; read-heavy agent work (`rg`, `git status`, `git log -p`) measured warm and cold (the 1.5× warm target was dropped in 2.8) | Crash recovery; stale-handle and unscoped-mode errors; writeback flush; performance work; path rules for `$HOME` and `/tmp`; change set diff; scope token and threat model ([plan](phase-2-hardening.md)) |
 | 3. Held decisions | The five rules of the [model](../examples/held-decisions/model.py) hold in escrowd, each a conformance check: a wait the policy requires is enforced by the daemon; the opener's token cannot commit a held scope; verdicts only tighten across tiers, and a human override is in the ledger; a client that continues gets a conflict, not a silent overwrite; a reviewer gets the session's earlier change sets; each change names the processes that made it (a `git commit` attributes `.git/` to `/usr/bin/git`). The protocol is then frozen: a written spec, `buf breaking` in CI against the tag | Policy `review:` rules (tier and wait per path) and software write rules; a `held` outcome, a streamed `AwaitDecision`, a reviewer role with its own credential; sessions (ordered scopes of one agent) and their history; process attribution of every change (program, arguments, parent chain), with write rules that can name the programs allowed to change a path; `escrow review` for a human reviewer on the command line; the Python SDK's side; protocol spec and freeze ([plan](phase-3-held-decisions.md)) |
-| 4. TypeScript SDK | The conformance suite, ported to TypeScript, passes against a TypeScript SDK and the same daemon, with no daemon changes since the freeze | TypeScript SDK with scopes in `AsyncLocalStorage` and wrapped `fs` / `child_process`; the suite ported to Vitest; an nx workspace driving every language's checks ([plan](phase-4-typescript-sdk.md)) |
-| 5. pi adapter | pi completes 10 scripted coding tasks end to end with zero unscoped writes in the ledger, and in each task with a seeded violation the agent receives the denial and fixes it within the same prompt | A [pi](https://pi.dev) extension opens a scope per tool call, turn or prompt (configurable) from pi's lifecycle events; built-in bash, read, write and edit run inside it, captured by the TypeScript SDK without reimplementation; decisions return as tool results; parallel tool execution supported; untrusted tool code runs as subprocesses, per the [threat model](#threat-model) |
-| 6. More SDKs | Go and Rust SDKs pass the conformance suite unchanged | Go explicit API (`scope.FS()`, `scope.Command()`); Rust; others by demand |
-| 7. Decision tiers | On a labelled set of 100 change sets, software rules catch every violation a rule covers, the LLM tier's precision and recall are reported (with and without the session's history), and every held change set reaches a verdict or its policy's timeout outcome | An LLM auditor isolated from the acting agent, on phase 3's reviewer role; a human review interface beyond `escrow review`; rules that match across a session's change sets |
-| 8. Other hosts and macOS | The conformance suite passes on macOS, and a second harness completes the phase 5 tasks with the same results as pi | Further harness adapters (LangGraph and others); macOS through NFS and Seatbelt |
-| 9. Network escrow | Zero outbound requests leave before their scope commits, and a discarded scope sends nothing, verified from proxy logs across the conformance suite | Proxy per scope; sends held until commit; non-deferrable calls flagged |
+| 4. Policy reviewers | Each reviewer the policy declares reviews the held scopes its rules name: a command's verdict is applied as its own, a delegated reviewer answers later with a single-use token, a hold whose reviewer was running at a crash is reviewed again after restart, and the policy and reviewer programs are out of every sandbox's reach | `reviewers:` in the policy (a command, its timeout and failure verdict, delegation, override right); `review:` rules name reviewers, `tier:` kept as built-in reviewers; a JSON contract on stdin and stdout; reviewer identity in the protocol (additions only, protocol 8); the policy and reviewer programs hidden from sandboxes ([plan](phase-4-reviewers.md)) |
+| 5. TypeScript SDK | The conformance suite, ported to TypeScript, passes against a TypeScript SDK and the same daemon, with no daemon changes since phase 4 | TypeScript SDK with scopes in `AsyncLocalStorage` and wrapped `fs` / `child_process`; the suite ported to Vitest; an nx workspace driving every language's checks ([plan](phase-5-typescript-sdk.md)) |
+| 6. pi adapter | pi completes 10 scripted coding tasks end to end with zero unscoped writes in the ledger, and in each task with a seeded violation the agent receives the denial and fixes it within the same prompt | A [pi](https://pi.dev) extension opens a scope per tool call, turn or prompt (configurable) from pi's lifecycle events; built-in bash, read, write and edit run inside it, captured by the TypeScript SDK without reimplementation; decisions return as tool results; parallel tool execution supported; untrusted tool code runs as subprocesses, per the [threat model](#threat-model) |
+| 7. More SDKs | Go and Rust SDKs pass the conformance suite unchanged | Go explicit API (`scope.FS()`, `scope.Command()`); Rust; others by demand |
+| 8. Decision tiers | On a labelled set of 100 change sets, software rules catch every violation a rule covers, the LLM tier's precision and recall are reported (with and without the session's history), and every held change set reaches a verdict or its policy's timeout outcome | An LLM auditor isolated from the acting agent, shipped as a phase 4 reviewer program; a human review interface beyond `escrow review`; rules that match across a session's change sets |
+| 9. Other hosts and macOS | The conformance suite passes on macOS, and a second harness completes the phase 6 tasks with the same results as pi | Further harness adapters (LangGraph and others); macOS through NFS and Seatbelt |
+| 10. Network escrow | Zero outbound requests leave before their scope commits, and a discarded scope sends nothing, verified from proxy logs across the conformance suite | Proxy per scope; sends held until commit; non-deferrable calls flagged |
 
 The thresholds (10 runs, 1,000 crash runs, 1.5×, 10 tasks, 100 change sets) started as proposed targets; phase 0's measurements confirmed them, and phases 1 and 2 met them, with express A at 1.53× accepted within run-to-run noise and the read-heavy target dropped (both in 2.8).
 
@@ -275,7 +277,7 @@ Phase 1 exit tests (all pass, with an eighth for the snapshot at open):
 
 ## Decision models
 
-Phase 7, on phase 3's [held decisions](#held-decisions). Route each staged effect to the cheapest layer that can clear it. All three share one interface: a scope's change set in, commit / discard / hold / return to agent plus reasons out.
+Phase 8, on phase 3's [held decisions](#held-decisions) and phase 4's policy reviewers. Route each staged effect to the cheapest layer that can clear it. All three share one interface: a scope's change set in, commit / discard / hold / return to agent plus reasons out.
 
 1. **Software.** Deterministic policies and linters. Fast and free; clears the obvious cases.
 2. **LLM.** Judgement calls that need semantics: does this change fit the task and the standards?
@@ -313,7 +315,7 @@ sequenceDiagram
 
 Reviewers also see **who made each change**: escrowd attributes every operation to its process (the program the kernel ran, its arguments, its parent chain), so a reviewer can tell `git commit` rewriting `.git/index` from a script doing it. The program is trustworthy; the arguments are the process's own claim (added Oct 6, 2026).
 
-Phase 7 then builds the real reviewers on this: an LLM auditor and a human review interface.
+Phase 4 makes reviewers declarable: the policy names each reviewer and the command that runs or delegates its review ([plan](phase-4-reviewers.md)). Phase 8 then builds the real reviewers on this: an LLM auditor and a human review interface.
 
 ## Open questions and next steps
 

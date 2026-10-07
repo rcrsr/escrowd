@@ -261,7 +261,7 @@ As built (Oct 5, 2026):
 As built (Oct 5, 2026):
 
 - **Scope token** (protocol 6): `OpenScopeResponse.token` is 32 bytes from `getrandom`, hex. The project view's store keeps its SHA-256 only, so a token survives a daemon restart and the state directory never holds it. `CloseScopeRequest`, `DecideRequest` (every verdict, an open scope's discard included) and `SpawnRequest` carry it; a missing or wrong token is `PERMISSION_DENIED` (exec: an error event) and an `op=token decision=deny` ledger line. The unscoped scope, and scopes opened before protocol 6, have no token and take any. `GetChangeSet` needs none (read only). The SDK keeps the token on the `Scope` object (`resume=` copies it); the gRPC `Client` remembers the tokens of scopes it opened. `escrow exec` reads `ESCROW_SCOPE_TOKEN`, sends it in the request and leaves it out of the child's environment; the daemon strips it too.
-- **Threat model**: a section in the proposal (actors, what each reaches, what escrowd guarantees, what is outside the model), a risk-table row, and the pi adapter's row (phase 4 then, phase 5 since the Oct 5 renumbering): untrusted tool code runs as subprocesses.
+- **Threat model**: a section in the proposal (actors, what each reaches, what escrowd guarantees, what is outside the model), a risk-table row, and the pi adapter's row (phase 4 then, phase 6 since the Oct 5 and Oct 6 renumberings): untrusted tool code runs as subprocesses.
 - **Conflict policy**: `conflict: {verdict: discard | return, reads: bool}`. With `return`, a conflicting commit writes nothing, logs `decide=conflict` then `decide=return`, and reopens the scope with its changes; `Outcome.reopened` (and `s.outcome.reopened`) says so, and the conflicting paths are the reasons. The scope keeps its snapshot, so a path that conflicted conflicts again while the scope still changes it.
 - **Read conflicts**: with `conflict.reads: true`, every captured file the scope read from the base (recorded at its first read since phase 1) must still have that version at commit; ephemeral paths and files the scope only read from its own upper are skipped.
 - **Passthrough ledger line**: `scope=unscoped op=passthrough path= decision=allow`, once at daemon start in `passthrough` mode; `escrow log unscoped` shows it.
@@ -305,7 +305,7 @@ All known limits are collected in [LIMITATIONS.md](../LIMITATIONS.md). Out of ph
 - No power-loss testing: process kills only (the fsync audit covers what kills cannot).
 - With the writeback cache, the kernel keeps its own size of a file it has an inode for: an editor outside escrowd that changes a base file's size is seen by a scope only once the kernel drops the inode (since phase 0; found in 2.3).
 - Native code and `mmap` doing their own IO still fall to the `unscoped` mode; passthrough IO stays unlogged.
-- No network capture (phase 9, after the Oct 5 renumbering); nested scopes stay deferred.
+- No network capture (phase 10, after the Oct 5 and Oct 6 renumberings); nested scopes stay deferred.
 - One daemon per `escrow run`.
 
 ## Open questions

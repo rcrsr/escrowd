@@ -4,7 +4,7 @@ Oct 5, 2026 · Andre Bremer · Draft
 
 **Status, Oct 6, 2026: phase 3 is complete**: 3.1 to 3.7 done, exit runs in [PR #34](https://github.com/rcrsr/escrowd/pull/34). The protocol is frozen at 7 ([spec](protocol.md)). Phase 2 is done ([plan](phase-2-hardening.md), exit runs in [PR #25](https://github.com/rcrsr/escrowd/pull/25)).
 
-Today an agent host blocks on a *pre*-approval: a permission prompt before a tool runs, judged on a description of the effect. Phase 3 makes escrow's decision a *post*-approval: the work runs in a scope, and independent reviewers judge the staged change set, with the client and escrowd negotiating whether the agent waits. The design is in the proposal ([Held decisions](escrowd-proposal.md#held-decisions)); a runnable model plays it ([`examples/held-decisions/model.py`](../examples/held-decisions/model.py)). Phase 3 builds it into escrowd and the Python SDK, attributes every change to the process that made it so reviewers can judge who changed what (added Oct 6, 2026), then freezes the protocol, so phase 4's TypeScript SDK and phase 7's reviewers build on a fixed v1.
+Today an agent host blocks on a *pre*-approval: a permission prompt before a tool runs, judged on a description of the effect. Phase 3 makes escrow's decision a *post*-approval: the work runs in a scope, and independent reviewers judge the staged change set, with the client and escrowd negotiating whether the agent waits. The design is in the proposal ([Held decisions](escrowd-proposal.md#held-decisions)); a runnable model plays it ([`examples/held-decisions/model.py`](../examples/held-decisions/model.py)). Phase 3 builds it into escrowd and the Python SDK, attributes every change to the process that made it so reviewers can judge who changed what (added Oct 6, 2026), then freezes the protocol, so phase 4's policy reviewers, phase 5's TypeScript SDK and phase 8's LLM auditor build on a fixed v1 (renumbered Oct 6, 2026).
 
 ## Exit criteria
 
@@ -40,7 +40,7 @@ flowchart LR
 | 3.3 | Process attribution | Every operation records its process (cached per process: program, command line, parent chain); each change in the change set lists its writers; the ledger names them; write rules can match on the program | 2 |
 | 3.4 | Reviewer role, `escrow review` | A reviewer credential separate from scope tokens; calls to list held scopes, read one with its session history and writers, and give a tier's verdict (monotonic, overrides ledgered); `AwaitDecision` streams a scope's status to its client; `escrow review` for a human | 1.2, 1.3, 1.5, 3 |
 | 3.5 | Python SDK | `escrow.scope(…, wait=…)` proposes the decide callback's verdict, waits or continues, and resolves `s.outcome` from the stream; a `held` status; the test app and SDK checks cover it; `s.outcome` shows each change's writers | 1, 2 |
-| 3.6 | Protocol freeze and spec | The protocol review below, `docs/protocol.md`, `buf lint` and `buf breaking` in CI, the tag, the `daemon-frozen` check phase 4 runs under | 5 |
+| 3.6 | Protocol freeze and spec | The protocol review below, `docs/protocol.md`, `buf lint` and `buf breaking` in CI, the tag, the `daemon-frozen` check phase 5 runs under (phase 4 before the Oct 6 renumbering) | 5 |
 | 3.7 | Exit runs | Checks 1–6 on the final commit | All |
 
 ## Design for each sub-phase
@@ -124,13 +124,13 @@ FUSE gives every request the caller's process ID, in the daemon's PID namespace,
 - **Credential.** Reviewers connect to a third socket (`<socket>.review`), created mode 0600 and never bound into a sandbox; scope tokens give no access there, and the review socket gives no scope rights (decided Oct 5, 2026).
 - **Calls.** `ListHeld`, `GetHeld` (change set with its writers, diff, the session's earlier change sets and verdicts), `Review(scope, tier, verdict, reasons, override)`. Monotonic: a verdict looser than the one so far fails unless `override` and the tier is human; the ledger records each verdict and every override.
 - **`AwaitDecision(scope, token)`** streams `held(tier)` updates, then the outcome; the client's existing `Decide` stays for unheld scopes.
-- **`escrow review`**: `list`, `show <scope>` (diff, writers and history), `commit|discard|return <scope> [--reason …] [--override]`. It is the human tier until phase 7's review interface.
+- **`escrow review`**: `list`, `show <scope>` (diff, writers and history), `commit|discard|return <scope> [--reason …] [--override]`. It is the human tier until phase 8's review interface.
 
 **As built (Oct 6, 2026).**
 
 - **The review socket.** `<socket>.review` serves the `Reviewer` service only, and the protocol socket serves `Escrow` only: each answers the other's calls with `UNIMPLEMENTED`. It is bound under a temporary name, set to mode 0600, then renamed into place, so no other user can connect in between. Sandboxes hide it, as they hide the other two sockets.
 - **Calls.** `ListHeld` returns the held scopes, oldest hold first, each with its name, labels, session, pending tiers, wait, verdict so far and tier reviews. `GetHeld` adds the change set (writers and diff) and the session's last 20 decisions. `Review(scope, tier, verdict, reasons, override)` gives a tier's verdict.
-- **Tier order.** The tier must be pending. An LLM reviews only when it is the next tier. A human may review while the LLM tier is still pending, and the human's verdict then stands for it too. Without this, every LLM-tier hold would stall until phase 7 brings an LLM reviewer. The software tier is not a reviewer (`INVALID_ARGUMENT`).
+- **Tier order.** The tier must be pending. An LLM reviews only when it is the next tier. A human may review while the LLM tier is still pending, and the human's verdict then stands for it too. Without this, every LLM-tier hold would stall until an LLM reviewer exists (phase 4 lets a policy declare one). The software tier is not a reviewer (`INVALID_ARGUMENT`).
 - **Monotonic verdicts.** Order: commit < return < discard. A looser verdict than the one so far fails with `PERMISSION_DENIED`, unless the tier is human and `override` is set. Each verdict is a ledger line `op=review-<tier> decision=<verdict>`; an override adds `op=override decision=<from>-to-<to>` before it. A discard goes on to the human tier, as in the model.
 - **Deciding.** After the last pending tier the daemon applies the verdict so far, as `Decide` would: a commit can conflict (rule 1.4), a return reopens the scope with each tier's reasons (`llm: …`), and every outcome unblocks the session. Until then the hold keeps the verdicts in the scope's store (`reviews` table, `hold_verdict`), so they survive a restart. Reviews and an opener's withdrawal of a held scope run one at a time.
 - **History.** `<state>/history.sqlite` keeps each decision of a scope that has a session or was held: its change set with the diff, the outcome and the tier reviews, as a `Decided` message. Each session keeps its newest 100 decisions, and scopes without a session keep 100 in all.
@@ -156,13 +156,13 @@ FUSE gives every request the caller's process ID, in the daemon's PID namespace,
 
 ### 3.6 Protocol freeze and spec
 
-Phase 2 changed the protocol five times (versions 2 to 6) and 3.2–3.4 change it again. Before the freeze, review it once for what phases 4 to 9 will need, so later phases add fields instead of breaking them:
+Phase 2 changed the protocol five times (versions 2 to 6) and 3.2–3.4 change it again. Before the freeze, review it once for what phases 4 to 9 will need (5 to 10 after the Oct 6 renumbering), so later phases add fields instead of breaking them:
 
 - **Errors.** Status codes are chosen per call today (`NOT_FOUND`, `FAILED_PRECONDITION`, `PERMISSION_DENIED`, `ABORTED`). Fix one table in the spec, so every SDK maps them to the same typed errors.
-- **Statuses.** SDKs treat an unknown `OutcomeStatus` as "not decided yet", so phase 7 can add review states without a new version.
+- **Statuses.** SDKs treat an unknown `OutcomeStatus` as "not decided yet", so phase 8 can add review states without a new version.
 - **Exec socket.** Frames are documented in the proto's header comment only. Move them to the spec with an example exchange; a TypeScript SDK runs the `escrow exec` binary as Python does (Node cannot pass file descriptors over a Unix socket), so the binary's interface (`--scope`, `--socket`, `ESCROW_SCOPE_TOKEN`, exit code 125 on an exec error) is part of the frozen surface too.
 - **Versioning.** `Ping.protocol_version` becomes 7 at the freeze and then changes only with a new package (`escrow.v2`). Additions (new fields, new calls) stay compatible under `buf breaking`'s wire rules.
-- **CI.** `buf lint` and `buf breaking --against '.git#tag=protocol-v1'` run in the Rust job; a `daemon-frozen` job fails a PR that changes `crates/escrowd/` or `proto/` while the `phase-4` label is on it.
+- **CI.** `buf lint` and `buf breaking --against '.git#tag=protocol-v1'` run in the Rust job; a `daemon-frozen` job fails a PR that changes `crates/escrowd/` or `proto/` while the `phase-4` label is on it (`phase-5` since the Oct 6 renumbering).
 
 **As built (Oct 6, 2026).**
 
@@ -171,7 +171,7 @@ Phase 2 changed the protocol five times (versions 2 to 6) and 3.2–3.4 change i
 - **Errors.** One table in the spec: `NOT_FOUND`, `PERMISSION_DENIED`, `FAILED_PRECONDITION`, `INVALID_ARGUMENT`, `ABORTED` (a commit rolled back; retry), `UNAVAILABLE`, `DEADLINE_EXCEEDED`, `UNIMPLEMENTED`, then `INTERNAL`. The Python client raises a typed error per code (`escrow._errors`: `EscrowNotFoundError`, `EscrowPermissionError`, `EscrowStateError`, …), each an `EscrowRpcError` and still a `grpc.RpcError` with `code()` and `details()`, so existing callers keep working.
 - **Statuses.** The SDK maps an unknown `OutcomeStatus` to `held` and follows `AwaitDecision` until a status it knows as final; an unknown tier or change kind is `"unknown"`.
 - **Versioning.** `PROTOCOL_VERSION` is 7. CI uses buf's FILE rules, not the wire rules planned: renaming or deleting a call breaks clients over gRPC, and the WIRE rules miss it.
-- **CI.** A `Protocol` job of its own, not in the Rust job: it needs the full history and the tag, and no Rust toolchain. It runs `buf lint`, `buf format --diff --exit-code` and `buf breaking --against '.git#tag=protocol-v1'` (skipped until the tag exists), and the CI Gate requires it. buf is pinned in `mise.toml` (1.73.0, `buf.yaml` at the root); the pre-push hook lints too. `daemon-frozen.yml` is a workflow of its own, since it runs on label changes, which must not re-run or cancel CI. It fails a `phase-4` PR that changes `crates/escrowd/` or `proto/`; phase 4 adds it to the `main` ruleset's required checks.
+- **CI.** A `Protocol` job of its own, not in the Rust job: it needs the full history and the tag, and no Rust toolchain. It runs `buf lint`, `buf format --diff --exit-code` and `buf breaking --against '.git#tag=protocol-v1'` (skipped until the tag exists), and the CI Gate requires it. buf is pinned in `mise.toml` (1.73.0, `buf.yaml` at the root); the pre-push hook lints too. `daemon-frozen.yml` is a workflow of its own, since it runs on label changes, which must not re-run or cancel CI. It fails a `phase-4` PR (`phase-5` since Oct 6) that changes `crates/escrowd/` or `proto/`; phase 5 adds it to the `main` ruleset's required checks.
 - **Tag.** `protocol-v1` goes on the merge commit of this sub-phase.
 - **Checks.** 4 in `tests/conformance/test_protocol.py`: each status code's typed error, a stream's typed error, unknown values, and the spec's coverage.
 
@@ -204,9 +204,9 @@ Found and fixed in 3.7:
 
 All known limits are in [LIMITATIONS.md](../LIMITATIONS.md). Out of phase 3, by design:
 
-- The LLM auditor and a review interface beyond the command line: phase 7. Phase 3's checks use stand-in reviewers, as the model does.
+- The LLM auditor and a review interface beyond the command line: phase 8 (phase 7 before Oct 6); declarable reviewers: phase 4. Phase 3's checks use stand-in reviewers, as the model does.
 - Stacking a scope on a held one (nested scopes, transitive release): not planned; waiting is the default.
-- The TypeScript SDK: phase 4.
+- The TypeScript SDK: phase 5 (phase 4 before Oct 6).
 
 ## Open questions
 
@@ -216,6 +216,6 @@ All known limits are in [LIMITATIONS.md](../LIMITATIONS.md). Out of phase 3, by 
 - [x] The unscoped scope (`implicit` mode): `SettleUnscoped` runs the policy's review rules like any scope. Decided Oct 5, 2026.
 - [x] `escrow replay`: dropped from the daemon's roadmap, decided Oct 5, 2026. Deciding a held change set is `escrow review`; rerunning a decision is a client SDK feature that needs no daemon (an SDK can run its decide callback again on a change set it kept).
 - [x] `conflict.reads`: stays off by default; the write-skew risk is documented (proposal, `LIMITATIONS.md`). Sessions that wait serialize one agent's scopes, which removes most of it; hosts that need serializable scopes turn it on. Decided Oct 5, 2026.
-- [x] Absolute symlinks into the project, followed in the host process: carried (`LIMITATIONS.md`); subprocesses are unaffected. Revisit with the TypeScript SDK's path rewrite in phase 4. Decided Oct 5, 2026.
+- [x] Absolute symlinks into the project, followed in the host process: carried (`LIMITATIONS.md`); subprocesses are unaffected. Revisit with the TypeScript SDK's path rewrite in phase 5 (phase 4 before Oct 6). Decided Oct 5, 2026.
 - [x] Arguments: whole in the change set, for reviewers; truncated to 4 KiB in the ledger, which lives outside every sandbox. Command lines can hold secrets (`curl -H "Authorization: …"`); the spec says so. Decided Oct 6, 2026 (redacting by policy pattern was the alternative).
 - [x] Data writes: attributed to the process that opened the file; no per-write cost, and the writeback cache keeps its speed. Decided Oct 6, 2026 (turning the writeback cache off for attributed paths was the alternative).
