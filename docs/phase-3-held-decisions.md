@@ -2,7 +2,7 @@
 
 Oct 5, 2026 · Andre Bremer · Draft
 
-**Status, Oct 6, 2026: 3.1 to 3.6 built, 3.7 run**; done when CI passes 10 consecutive runs. The protocol is frozen at 7 ([spec](protocol.md)). Phase 2 is done ([plan](phase-2-hardening.md), exit runs in [PR #25](https://github.com/rcrsr/escrowd/pull/25)).
+**Status, Oct 6, 2026: phase 3 is complete**: 3.1 to 3.7 done, exit runs in [PR #34](https://github.com/rcrsr/escrowd/pull/34). The protocol is frozen at 7 ([spec](protocol.md)). Phase 2 is done ([plan](phase-2-hardening.md), exit runs in [PR #25](https://github.com/rcrsr/escrowd/pull/25)).
 
 Today an agent host blocks on a *pre*-approval: a permission prompt before a tool runs, judged on a description of the effect. Phase 3 makes escrow's decision a *post*-approval: the work runs in a scope, and independent reviewers judge the staged change set, with the client and escrowd negotiating whether the agent waits. The design is in the proposal ([Held decisions](escrowd-proposal.md#held-decisions)); a runnable model plays it ([`examples/held-decisions/model.py`](../examples/held-decisions/model.py)). Phase 3 builds it into escrowd and the Python SDK, attributes every change to the process that made it so reviewers can judge who changed what (added Oct 6, 2026), then freezes the protocol, so phase 4's TypeScript SDK and phase 7's reviewers build on a fixed v1.
 
@@ -189,7 +189,7 @@ Checks 1–6 on the final commit: the suite 10 consecutive times per CI runner (
 | Crash soak (commit path changed) | Dev host, 100 runs | 78 rolled back, 22 committed, **0 partial** | `tests/soak/results/crash-wsl-dev-host-3.7.log` |
 | 5. `buf breaking` | Against `protocol-v1` | No breaking change | |
 | Attribution's cost | Benchmark VM, release build, median of 7 runs | Wall, escrow / native: express A **1.33×**, B **1.21×**, attrs A **1.07×**, B **1.10×** (2.8: 1.53×, 1.47×, 1.09×, 1.06×); workload C warm `rg` 3.27× (no target) | `bench/results/bench-ubuntu-24.04-3.7.log` |
-| 6. 10 consecutive CI runs | CI: 3 conformance jobs (Python 3.11 and 3.14) | PR | |
+| 6. 10 consecutive CI runs | CI: 3 conformance jobs (Python 3.11 and 3.14), with the crash and held soaks | **10 / 10** on each ([PR #34](https://github.com/rcrsr/escrowd/pull/34)) | |
 
 No regression from attribution: every A and B workload stays within 1.5× native. A first run, with the four host-matrix VMs still up beside other work on the host (load average 12 to 16), gave outliers of up to 129 s a run; the numbers above are a rerun with those VMs stopped. One run of express's suite passed 1,237 of 1,238 tests under escrow, and one native run did the same in the first attempt: a flaky express test, not escrow.
 

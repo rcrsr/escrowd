@@ -2,7 +2,7 @@
 
 Every known limit of escrowd as built, in one place. Each entry says where it is tracked. Update this file when a limit is found or lifted; the plans keep the detail.
 
-Status as of Oct 6, 2026: phase 3, after sub-phase 3.7 (exit runs).
+Status as of Oct 6, 2026: phase 3 complete (PR #34).
 
 ## Capture
 
