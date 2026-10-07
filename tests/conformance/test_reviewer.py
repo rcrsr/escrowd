@@ -345,3 +345,52 @@ def test_escrow_review_lists_shows_and_decides(start_daemon, escrow_bin):
             f"{s} committed\n  src/auth\n  src/auth/login.py\n  llm: no\n  human: fine\n"
         )
         assert review("list") == ""
+
+
+@pytest.mark.parametrize(
+    "fault, verdict, want",
+    [
+        ("intended", COMMIT, "held"),
+        ("committed", COMMIT, pb.OUTCOME_STATUS_COMMITTED),
+        # The start that drops the committed scope dies too.
+        ("committed+recovered", COMMIT, pb.OUTCOME_STATUS_COMMITTED),
+        ("applied", COMMIT, pb.OUTCOME_STATUS_COMMITTED),
+        ("settled", COMMIT, pb.OUTCOME_STATUS_COMMITTED),
+        ("applied", DISCARD, pb.OUTCOME_STATUS_DISCARDED),
+        ("applied", RETURN, pb.OUTCOME_STATUS_RETURNED),
+    ],
+)
+def test_a_kill_during_the_final_review_keeps_its_decision(start_daemon, fault, verdict, want):
+    """The daemon dies inside the last tier's review, before or after the decision
+    applies: the next start keeps the scope held, or keeps the decision for its
+    client (AwaitDecision) and its session's reviewers, never neither."""
+    fault, _, then = fault.partition("+")
+    d = start_daemon(policy=RULES, env={"ESCROWD_FAULT": f"{fault}:0:abort"})
+    with client(d) as c:
+        s = held_scope(d, c)
+        token = c.tokens[s]
+    with reviewer(d) as rv:
+        assert code(lambda: rv.review(s, LLM, verdict, reasons=["r"]))[0] == (
+            grpc.StatusCode.UNAVAILABLE
+        )
+    assert d.proc.wait(timeout=10) != 0
+    d.stop()
+    if then:
+        with pytest.raises(RuntimeError, match="injected abort"):
+            start_daemon(policy=RULES, env={"ESCROWD_FAULT": f"{then}:0:abort"})
+        subprocess.run(["fusermount3", "-u", "-z", d.mount], capture_output=True)
+    d = start_daemon(policy=RULES)
+    with client(d) as c, reviewer(d) as rv:
+        held = [h.scope_id for h in rv.list_held()]
+        out = next(c.await_decision(s, token=token, timeout=5))
+        if want == "held":
+            assert held == [s] and out.status == pb.OUTCOME_STATUS_HELD
+            assert not (d.project / "src").exists()
+            return
+        assert held == [] and out.status == want
+        assert (d.project / "src" / "util.py").exists() == (want == pb.OUTCOME_STATUS_COMMITTED)
+        assert out.reopened == (want == pb.OUTCOME_STATUS_RETURNED)
+        # The session's next reviewer sees it.
+        n = held_scope(d, c, path="src/next.py")
+        (last,) = rv.get_held(n).history
+        assert (last.scope_id, last.outcome.status) == (s, want)

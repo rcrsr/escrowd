@@ -1,7 +1,7 @@
 name: CI repeat
 
 # On demand, outside the CI Gate: the conformance suite 10 times in a row on each
-# runner, then the crash soak (50 random kills). Add the `ci:repeat` label to a pull
+# runner, then the crash and held soaks (50 random kills each). Add the `ci:repeat` label to a pull
 # request (remove and re-add it to run again on a newer push), or
 # `gh workflow run ci-repeat.yml --ref <branch> [-f runs=N]`. Other labels skip the job.
 

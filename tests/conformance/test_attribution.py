@@ -48,13 +48,14 @@ def test_a_sandboxed_command_is_the_writer(daemon):
     d = daemon
     with client(d) as c:
         s = c.open_scope().scope_id
-        r = d.exec(s, "sh", "-c", "echo x > a.txt; mkdir d; cp a.txt d/b.txt")
+        # `; true`: bash (Fedora's sh) runs the last command of `-c` in its own process.
+        r = d.exec(s, "sh", "-c", "echo x > a.txt; mkdir d; cp a.txt d/b.txt; true")
         assert r.returncode == 0, r.stderr
         cs = c.close_scope(s)
     (sh,) = writers(cs, "a.txt")
     assert (sh.program, sh.args) == (
         real("sh"),
-        ["sh", "-c", "echo x > a.txt; mkdir d; cp a.txt d/b.txt"],
+        ["sh", "-c", "echo x > a.txt; mkdir d; cp a.txt d/b.txt; true"],
     )
     (mkdir,) = writers(cs, "d")
     assert (mkdir.program, mkdir.args, mkdir.parent) == (real("mkdir"), ["mkdir", "d"], sh.id)
@@ -93,6 +94,7 @@ def test_git_commit_is_attributed_to_git(daemon):
     with client(d) as c:
         s = c.open_scope().scope_id
         script = "git init -q && git -c user.name=t -c user.email=t@t commit -q --allow-empty -m m"
+        script += "; true"  # bash (Fedora's sh) runs the last command in its own process
         r = d.exec(s, "sh", "-c", script, env={"HOME": None, "GIT_CONFIG_NOSYSTEM": "1"})
         assert r.returncode == 0, r.stderr
         cs = c.close_scope(s)

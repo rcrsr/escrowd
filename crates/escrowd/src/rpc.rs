@@ -228,6 +228,122 @@ fn review_proto(r: rules::Review) -> Review {
     }
 }
 
+/// A decision the history keeps: of a scope that has a session or was held.
+pub struct Kept {
+    who: Identity,
+    /// As decided, diff included; None for an open scope.
+    change_set: Option<ChangeSet>,
+    reviews: Vec<rules::TierReview>,
+}
+
+impl Kept {
+    fn entry(&self, outcome: Outcome) -> Vec<u8> {
+        Decided {
+            scope_id: self.who.id.clone(),
+            name: self.who.name.clone(),
+            change_set: self.change_set.clone(),
+            outcome: Some(outcome),
+            reviews: tier_reviews(&self.reviews),
+            decided_at_ms: now_ms(),
+        }
+        .encode_to_vec()
+    }
+
+    /// The outcome `verdict` gets if it applies with no conflict.
+    fn intended(&self, id: &str, verdict: Verdict, reasons: &[String]) -> Outcome {
+        let (status, paths) = match verdict {
+            Verdict::Commit => (
+                OutcomeStatus::Committed,
+                self.change_set
+                    .iter()
+                    .flat_map(|cs| cs.changes.iter().map(|c| c.path.clone()))
+                    .collect(),
+            ),
+            Verdict::Return => (OutcomeStatus::Returned, vec![]),
+            _ => (OutcomeStatus::Discarded, vec![]),
+        };
+        Outcome {
+            scope_id: id.to_string(),
+            status: status.into(),
+            paths,
+            reasons: reasons.to_vec(),
+            reopened: verdict == Verdict::Return,
+            ..Default::default()
+        }
+    }
+}
+
+/// `Service::apply` on the blocking pool. With `keep`, a committed scope stays until
+/// `finish_commit`, and the second value is the generation to finish it with.
+fn apply_now(
+    v: &Views,
+    children: &Children,
+    id: &str,
+    verdict: Verdict,
+    mut reasons: Vec<String>,
+    closed: Option<changeset::ChangeSet>,
+    keep: bool,
+) -> io::Result<(Outcome, Option<Option<u64>>)> {
+    let (mut paths, mut reopened, mut finish) = (vec![], false, None);
+    let status = match verdict {
+        Verdict::Commit => {
+            let committed = match keep {
+                true => v.commit_kept(id, closed.as_ref()),
+                false => closed.map_or_else(|| v.commit_scope(id), |cs| v.commit_closed(id, &cs)),
+            };
+            let outcome = match committed.inspect(|_| children.release(id)) {
+                Err(e) if !matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::InvalidInput) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Interrupted,
+                        format!("commit rolled back: {e}"),
+                    ));
+                }
+                r => r?,
+            };
+            match outcome {
+                commit::Outcome::Committed(generation, changed) => {
+                    paths = changed.iter().map(|p| path_str(p)).collect();
+                    finish = keep.then_some(generation);
+                    OutcomeStatus::Committed
+                }
+                commit::Outcome::Conflict(conflicts) => {
+                    reopened = v.conflict().verdict == ConflictVerdict::Return;
+                    paths = conflicts.iter().map(|p| path_str(p)).collect();
+                    reasons = paths
+                        .iter()
+                        .map(|p| format!("conflict: {p} changed in the project since the scope read it"))
+                        .collect();
+                    OutcomeStatus::Conflict
+                }
+            }
+        }
+        Verdict::Return => {
+            v.reopen_scope(id)?;
+            children.release(id);
+            reopened = true;
+            OutcomeStatus::Returned
+        }
+        _ => {
+            v.scope(id)
+                .map_err(|_| io::Error::new(io::ErrorKind::NotFound, format!("no scope {id}")))?;
+            children.stop(id);
+            let r = v.drop_scope(id);
+            children.release(id);
+            r?;
+            OutcomeStatus::Discarded
+        }
+    };
+    let out = Outcome {
+        scope_id: id.to_string(),
+        status: status.into(),
+        paths,
+        reasons,
+        reopened,
+        ..Default::default()
+    };
+    Ok((out, finish))
+}
+
 impl Service {
     pub fn new(views: Arc<Views>, children: Arc<Children>, diff: diff::Caps) -> Self {
         Service(Arc::new(Shared {
@@ -275,37 +391,9 @@ impl Service {
         Ok(got.map(|(cs, diff)| to_proto(&self.views, id.to_string(), cs, diff)))
     }
 
-    /// Keep a decision of a scope that has a session or was held, for its session's
-    /// reviewers and AwaitDecision. The decision is applied already: a failure to
-    /// keep it is logged, not returned.
-    async fn record(
-        &self,
-        who: Identity,
-        change_set: Option<ChangeSet>,
-        outcome: &Outcome,
-        reviews: &[rules::TierReview],
-    ) {
-        let entry = Decided {
-            scope_id: who.id.clone(),
-            name: who.name,
-            change_set,
-            outcome: Some(outcome.clone()),
-            reviews: tier_reviews(reviews),
-            decided_at_ms: now_ms(),
-        }
-        .encode_to_vec();
-        let (id, session, token) = (who.id, who.session, who.token_sha256);
-        let kept = self
-            .blocking(move |v| v.history.record(&id, &session, token.as_deref(), &entry))
-            .await;
-        if let Err(e) = kept {
-            eprintln!("escrowd: history: {}", e.message());
-        }
-    }
-
     /// The opener's decision: a commit runs the review and may hold the scope; a held
     /// scope can only be withdrawn (discarded).
-    async fn decide_scope(&self, req: DecideRequest) -> Result<Outcome, Status> {
+    async fn decide_scope(&self, req: DecideRequest, keep: Option<Kept>) -> Result<Outcome, Status> {
         let (id, mut reasons) = (req.scope_id.clone(), req.reasons);
         let mut verdict = Verdict::try_from(req.verdict).unwrap_or(Verdict::Unspecified);
         let wait = req.wait;
@@ -336,89 +424,57 @@ impl Service {
             }
             closed = Some(cs);
         }
-        self.apply(id, verdict, reasons, closed).await
+        self.apply(id, verdict, reasons, closed, keep).await
     }
 
     /// Apply a verdict: discard drops the scope (open or closed); return reopens a
     /// closed scope; commit applies a closed scope's change set (`closed`, if the
     /// caller built it), or reports the conflicting paths and drops or reopens the
-    /// scope, per the policy's conflict.verdict.
+    /// scope, per the policy's conflict.verdict. With `keep`, the decision goes to the
+    /// history: written ahead, then settled before a committed scope is dropped.
     async fn apply(
         &self,
         id: String,
         verdict: Verdict,
-        mut reasons: Vec<String>,
+        reasons: Vec<String>,
         closed: Option<changeset::ChangeSet>,
+        keep: Option<Kept>,
     ) -> Result<Outcome, Status> {
-        let (mut paths, mut reopened) = (vec![], false);
-        let scope = id.clone();
+        if verdict == Verdict::Unspecified {
+            return Err(Status::invalid_argument("verdict must be set"));
+        }
         let children = self.children.clone();
-        let status = match verdict {
-            Verdict::Discard => {
-                self.blocking(move |v| {
-                    v.scope(&scope)
-                        .map_err(|_| io::Error::new(io::ErrorKind::NotFound, format!("no scope {scope}")))?;
-                    children.stop(&scope);
-                    let r = v.drop_scope(&scope);
-                    children.release(&scope);
-                    r
-                })
-                .await?;
-                OutcomeStatus::Discarded
-            }
-            Verdict::Return => {
-                self.blocking(move |v| {
-                    v.reopen_scope(&scope)?;
-                    children.release(&scope);
-                    Ok(())
-                })
-                .await?;
-                reopened = true;
-                OutcomeStatus::Returned
-            }
-            Verdict::Commit => {
-                let outcome = self
-                    .blocking(move |v| {
-                        match closed
-                            .map_or_else(|| v.commit_scope(&scope), |cs| v.commit_closed(&scope, &cs))
-                            .inspect(|_| children.release(&scope))
-                        {
-                            Err(e) if !matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::InvalidInput) => {
-                                Err(io::Error::new(
-                                    io::ErrorKind::Interrupted,
-                                    format!("commit rolled back: {e}"),
-                                ))
-                            }
-                            r => r,
-                        }
-                    })
-                    .await?;
-                match outcome {
-                    commit::Outcome::Committed(_, changed) => {
-                        paths = changed.iter().map(|p| path_str(p)).collect();
-                        OutcomeStatus::Committed
+        self.blocking(move |v| {
+            let Some(keep) = keep else {
+                return apply_now(v, &children, &id, verdict, reasons, closed, false).map(|(out, _)| out);
+            };
+            let seq = v.history.intend(
+                &keep.who.id,
+                &keep.who.session,
+                keep.who.token_sha256.as_deref(),
+                &keep.entry(keep.intended(&id, verdict, &reasons)),
+            )?;
+            crate::fault::hit("intended", 0)?;
+            let (out, finish) = match apply_now(v, &children, &id, verdict, reasons, closed, true) {
+                Ok(r) => r,
+                Err(e) => {
+                    if let Err(c) = v.history.cancel(seq) {
+                        eprintln!("escrowd: history: {c}");
                     }
-                    commit::Outcome::Conflict(conflicts) => {
-                        reopened = self.views.conflict().verdict == ConflictVerdict::Return;
-                        paths = conflicts.iter().map(|p| path_str(p)).collect();
-                        reasons = paths
-                            .iter()
-                            .map(|p| format!("conflict: {p} changed in the project since the scope read it"))
-                            .collect();
-                        OutcomeStatus::Conflict
-                    }
+                    return Err(e);
                 }
+            };
+            crate::fault::hit("applied", 0)?;
+            if let Err(e) = v.history.settle(seq, &keep.entry(out.clone())) {
+                eprintln!("escrowd: history: {e}");
             }
-            Verdict::Unspecified => return Err(Status::invalid_argument("verdict must be set")),
-        };
-        Ok(Outcome {
-            scope_id: id,
-            status: status.into(),
-            paths,
-            reasons,
-            reopened,
-            ..Default::default()
+            crate::fault::hit("settled", 0)?;
+            if let Some(generation) = finish {
+                v.finish_commit(&id, generation)?;
+            }
+            Ok(out)
         })
+        .await
     }
 
     /// Send a client following scope `id` its hold's updates, then its first kept
@@ -561,16 +617,16 @@ impl EscrowService for Service {
             Some(_) => Some(self.reviewing.lock().await),
             None => None,
         };
-        let kept = match !who.session.is_empty() || who.hold.is_some() {
-            true => Some(self.closed_proto(&who.id).await?),
+        let keep = match !who.session.is_empty() || who.hold.is_some() {
+            true => Some(Kept {
+                change_set: self.closed_proto(&who.id).await?,
+                reviews: who.hold.as_ref().map(|h| h.reviews.clone()).unwrap_or_default(),
+                who,
+            }),
             false => None,
         };
-        let out = self.decide_scope(req).await?;
+        let out = self.decide_scope(req, keep).await?;
         if out.status() != OutcomeStatus::Held {
-            if let Some(cs) = kept {
-                let reviews = who.hold.as_ref().map(|h| h.reviews.clone()).unwrap_or_default();
-                self.record(who, cs, &out, &reviews).await;
-            }
             self.notify();
         }
         Ok(Response::new(DecideResponse { outcome: Some(out) }))
@@ -725,9 +781,13 @@ impl ReviewerService for Service {
                     .iter()
                     .flat_map(|r| r.reasons.iter().map(move |s| format!("{}: {s}", r.tier.as_str())))
                     .collect();
-                let out = self.apply(id, verdict_proto(hold.verdict), reasons, None).await?;
-                self.record(who, change_set, &out, &hold.reviews).await;
-                out
+                let keep = Kept {
+                    who,
+                    change_set,
+                    reviews: hold.reviews,
+                };
+                self.apply(id, verdict_proto(hold.verdict), reasons, None, Some(keep))
+                    .await?
             }
         };
         self.notify();

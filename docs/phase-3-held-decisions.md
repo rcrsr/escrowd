@@ -2,7 +2,7 @@
 
 Oct 5, 2026 · Andre Bremer · Draft
 
-**Status, Oct 6, 2026: 3.1 to 3.6 built**; 3.7 next. The protocol is frozen at 7 ([spec](protocol.md)). Phase 2 is done ([plan](phase-2-hardening.md), exit runs in [PR #25](https://github.com/rcrsr/escrowd/pull/25)).
+**Status, Oct 6, 2026: phase 3 is complete**: 3.1 to 3.7 done, exit runs in [PR #34](https://github.com/rcrsr/escrowd/pull/34). The protocol is frozen at 7 ([spec](protocol.md)). Phase 2 is done ([plan](phase-2-hardening.md), exit runs in [PR #25](https://github.com/rcrsr/escrowd/pull/25)).
 
 Today an agent host blocks on a *pre*-approval: a permission prompt before a tool runs, judged on a description of the effect. Phase 3 makes escrow's decision a *post*-approval: the work runs in a scope, and independent reviewers judge the staged change set, with the client and escrowd negotiating whether the agent waits. The design is in the proposal ([Held decisions](escrowd-proposal.md#held-decisions)); a runnable model plays it ([`examples/held-decisions/model.py`](../examples/held-decisions/model.py)). Phase 3 builds it into escrowd and the Python SDK, attributes every change to the process that made it so reviewers can judge who changed what (added Oct 6, 2026), then freezes the protocol, so phase 4's TypeScript SDK and phase 7's reviewers build on a fixed v1.
 
@@ -178,6 +178,27 @@ Phase 2 changed the protocol five times (versions 2 to 6) and 3.2–3.4 change i
 ### 3.7 Exit runs
 
 Checks 1–6 on the final commit: the suite 10 consecutive times per CI runner (`ci:repeat`), once on each Lima host, the crash soak with held scopes, the benchmark for attribution's cost, `buf breaking` against the tag. Logs go to `tests/conformance/results/` and `tests/soak/results/`; the status line gets the PR link.
+
+**As run (Oct 6, 2026).**
+
+| Check | Where | Result | Log |
+| --- | --- | --- | --- |
+| 1, 2, 3, 5. Conformance | Dev host | 240 / 241 (the one left fails only on this host: a stray `/tmp/x`) | |
+| 6. Conformance | Lima: Ubuntu 24.04, Ubuntu 26.04, Debian 13, Fedora 44 | **241 / 241** on each | `tests/conformance/results/<host>.log` |
+| 4. Held soak | Dev host, 100 runs: 8 held scopes each, killed while reviewers decide (a quarter killed again in recovery) | 388 scopes held at a kill, a call in flight at 88 kills (6 took effect, 82 did not); **0 lost, 0 failed** | `tests/soak/results/held-wsl-dev-host.log` |
+| Crash soak (commit path changed) | Dev host, 100 runs | 78 rolled back, 22 committed, **0 partial** | `tests/soak/results/crash-wsl-dev-host-3.7.log` |
+| 5. `buf breaking` | Against `protocol-v1` | No breaking change | |
+| Attribution's cost | Benchmark VM, release build, median of 7 runs | Wall, escrow / native: express A **1.33×**, B **1.21×**, attrs A **1.07×**, B **1.10×** (2.8: 1.53×, 1.47×, 1.09×, 1.06×); workload C warm `rg` 3.27× (no target) | `bench/results/bench-ubuntu-24.04-3.7.log` |
+| 6. 10 consecutive CI runs | CI: 3 conformance jobs (Python 3.11 and 3.14), with the crash and held soaks | **10 / 10** on each ([PR #34](https://github.com/rcrsr/escrowd/pull/34)) | |
+
+No regression from attribution: every A and B workload stays within 1.5× native. A first run, with the four host-matrix VMs still up beside other work on the host (load average 12 to 16), gave outliers of up to 129 s a run; the numbers above are a rerun with those VMs stopped. One run of express's suite passed 1,237 of 1,238 tests under escrow, and one native run did the same in the first attempt: a flaky express test, not escrow.
+
+Found and fixed in 3.7:
+
+- **A decision applied with no history entry.** The held soak (`tests/soak/held.py`) killed the daemon after a final review's commit landed but before its history row was written: the commit and the ledger had it, but `AwaitDecision` answered `NOT_FOUND` (10 of 86 kills with a call in flight). A kept decision is now written ahead, pending, with the outcome it intends; a committed scope is dropped only after the entry settles. The next start settles a pending entry from what survived (the commit journal finished it; the scope reopened, closed or gone) or cancels it. Fault points `intended`, `applied` and `settled` test each window (`test_reviewer.py`, 7 cases).
+- **A finished commit settled as a conflict.** CI's held soak killed a restart that had dropped a finished commit's scope but not yet settled its entry; the next start found the scope gone and called it a conflict. Recovery now settles a finished commit's entry before it drops the scope (fault point `recovered`).
+- **Attribution on Fedora.** Its `sh` is bash, which runs the last command of `sh -c` in its own process, so `cp` and `git commit` were children of bwrap, not of the shell. The attribution was right and the tests' assumption wrong; they end the script with `; true`.
+- **CI.** The held soak runs 50 kills after the crash soak when the commit path or `history.rs` changes, and in `ci-repeat.yml`.
 
 ## Carried limits
 

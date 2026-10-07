@@ -2,7 +2,7 @@
 
 Every known limit of escrowd as built, in one place. Each entry says where it is tracked. Update this file when a limit is found or lifted; the plans keep the detail.
 
-Status as of Oct 6, 2026: phase 3, after sub-phase 3.6 (protocol frozen).
+Status as of Oct 6, 2026: phase 3 complete (PR #34).
 
 ## Capture
 
@@ -87,6 +87,7 @@ Status as of Oct 6, 2026: phase 3, after sub-phase 3.6 (protocol frozen).
 | Anyone who can open the review socket (the daemon's user, mode 0600) reviews as any tier: the socket does not tell an LLM from a human, and `--tier` is the caller's word. | By design, decided Oct 5, 2026: the file mode is the credential; per-tier credentials come with phase 7's reviewers. |
 | The history keeps the newest 100 decisions per session (and 100 of scopes without one); a reviewer sees the last 20. `AwaitDecision` on a scope whose decision dropped out fails with `NOT_FOUND`. | By design (3.4). |
 | A scope's history entry holds its diff (up to `diff.max_bytes`), so `history.sqlite` grows with the diffs of up to 100 decisions per session. | By design (3.4); decisions of scopes without a session that were never held are not kept. |
+| A daemon killed while a commit of a kept decision found a conflict keeps it as a conflict without its paths. | By design (3.7): the next start knows the conflict from the scope reopened or gone, not which paths caused it. |
 | While the unscoped scope (`implicit` mode) is held, IO outside scopes fails as on any closed scope, until its verdict. | By design (3.2): `SettleUnscoped` meets the same review rules, decided Oct 5, 2026. |
 | A session's next `OpenScope` waits behind a held scope only up to the client's deadline (`grpc-timeout`); a client without one waits until the verdict. | By design (3.2). |
 | The Python SDK waits for a held verdict with no deadline: `escrow.scope(..., wait=True)` and a session's next open block until reviewers decide. `s.wait_decided(timeout=…)` and `await s.decided(timeout=…)` take one. | By design (3.5): the agent's turn is the reviewers' to end. |

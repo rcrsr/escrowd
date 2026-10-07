@@ -54,9 +54,11 @@ jobs:
               - 'buf.yaml'
               - 'mise.toml'
               - '.github/workflows/ci.yml'
-            # The commit path: runs the crash soak (50 random kills) after the suite.
+            # The commit path and held decisions: run the crash and held soaks (50 random
+            # kills each) after the suite.
             soak:
               - 'crates/escrowd/src/commit.rs'
+              - 'crates/escrowd/src/history.rs'
               - 'crates/escrowd/src/journal.rs'
               - 'crates/escrowd/src/snapshot.rs'
               - 'crates/escrowd/src/fault.rs'

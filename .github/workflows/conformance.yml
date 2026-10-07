@@ -14,7 +14,7 @@ on:
         type: number
         default: 1
       soak:
-        description: Run the crash soak (50 random kills mid-commit) after the suite.
+        description: Run the crash soak (50 random kills mid-commit) and the held soak (50 kills mid-review) after the suite.
         type: boolean
         default: false
 
@@ -74,3 +74,7 @@ jobs:
       - name: Crash soak, 50 random kills mid-commit
         if: inputs.soak
         run: uv run --project sdk/python --frozen python tests/soak/crash.py 50
+
+      - name: Held soak, 50 random kills mid-review
+        if: inputs.soak
+        run: uv run --project sdk/python --frozen python tests/soak/held.py 50
