@@ -377,7 +377,7 @@ impl Views {
         fs::create_dir_all(&trash)?;
         let ledger = Ledger::open(&state_dir.join("ledger.log"))?;
         let commits = Commits::open(state_dir)?;
-        let history = History::open(state_dir)?;
+        let history = History::open(state_dir, crate::record::settled)?;
         // Roll back an interrupted commit before any scope sees the base.
         let lowers: Lowers = std::array::from_fn(|r| roots.get(r).and_then(|s| s.lower.as_ref()).map(|l| l.as_fd()));
         let mut finished = Vec::new();

@@ -8,7 +8,9 @@
 
 pub mod changeset;
 pub mod commit;
+pub mod convert;
 pub mod daemon;
+pub mod decision;
 pub mod diff;
 pub mod error;
 pub mod exec;
@@ -20,6 +22,7 @@ pub mod journal;
 pub mod ledger;
 pub mod policy;
 pub mod proc;
+pub mod record;
 pub mod review;
 pub mod roots;
 pub mod rpc;

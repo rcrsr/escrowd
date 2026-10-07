@@ -3,7 +3,8 @@
 //! A reviewer of a held scope gets its session's earlier decisions, and a client
 //! following a held scope (`AwaitDecision`) gets its outcome even after the scope was
 //! dropped or the daemon restarted. Each row is one decision of a scope that has a
-//! session or was held, as the RPC layer encoded it (a `Decided` message).
+//! session or was held, in the record format of `record.rs`; this module stores the
+//! bytes and does not read them.
 //!
 //! A decision is written ahead, pending, with the outcome it intends, then settled
 //! with the outcome it got. A daemon killed in between leaves a pending row, which the
@@ -14,10 +15,7 @@ use std::io;
 use std::path::Path;
 use std::sync::Mutex;
 
-use prost::Message;
 use rusqlite::{Connection, OptionalExtension, params};
-
-use crate::proto::{Decided, OutcomeStatus};
 
 /// Decisions kept per session, and for scopes without one.
 const KEEP: i64 = 100;
@@ -39,7 +37,11 @@ CREATE INDEX IF NOT EXISTS decided_session ON decided (session, seq);
 
 pub struct History {
     db: Mutex<Connection>,
+    settled_as: Settle,
 }
+
+/// A pending record as its scope's fate shows it applied; None: not applied.
+pub type Settle = fn(&[u8], Fate) -> Option<Vec<u8>>;
 
 /// What a pending decision's scope shows at the next start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -67,7 +69,8 @@ fn sql(e: rusqlite::Error) -> io::Error {
 }
 
 impl History {
-    pub fn open(state: &Path) -> io::Result<Self> {
+    /// `settle` reads a pending record at start (`resolve`).
+    pub fn open(state: &Path, settle: Settle) -> io::Result<Self> {
         let db = Connection::open(state.join("history.sqlite")).map_err(sql)?;
         db.execute_batch(SCHEMA).map_err(sql)?;
         // A history from before pending rows (3.4 to 3.6) gets the column.
@@ -79,7 +82,10 @@ impl History {
             db.execute_batch("ALTER TABLE decided ADD COLUMN pending INTEGER NOT NULL DEFAULT 0")
                 .map_err(sql)?;
         }
-        Ok(History { db: Mutex::new(db) })
+        Ok(History {
+            db: Mutex::new(db),
+            settled_as: settle,
+        })
     }
 
     /// Record a decision of `scope`; keeps the newest `KEEP` of its session.
@@ -159,12 +165,9 @@ impl History {
         };
         let mut settled = 0;
         for (seq, scope, entry) in pending {
-            match Decided::decode(&entry[..])
-                .ok()
-                .and_then(|d| settled_as(d, fate(&scope)))
-            {
-                Some(d) => {
-                    self.settle(seq, &d.encode_to_vec())?;
+            match (self.settled_as)(&entry, fate(&scope)) {
+                Some(entry) => {
+                    self.settle(seq, &entry)?;
                     settled += 1;
                 }
                 None => self.cancel(seq)?,
@@ -210,37 +213,18 @@ impl History {
     }
 }
 
-/// A pending decision as its scope's fate shows it applied; None: not applied.
-fn settled_as(mut d: Decided, fate: Fate) -> Option<Decided> {
-    let out = d.outcome.as_mut()?;
-    let intended = out.status();
-    let conflict = |out: &mut crate::proto::Outcome, reopened: bool| {
-        out.set_status(OutcomeStatus::Conflict);
-        out.paths.clear();
-        out.reasons = vec!["conflict: the project changed since the scope's snapshot".into()];
-        out.reopened = reopened;
-    };
-    match (intended, fate) {
-        (OutcomeStatus::Committed, Fate::Committed)
-        | (OutcomeStatus::Returned, Fate::Open)
-        | (OutcomeStatus::Discarded, Fate::Gone) => {}
-        // A commit that found a conflict reopened or dropped the scope.
-        (OutcomeStatus::Committed, Fate::Open) => conflict(out, true),
-        (OutcomeStatus::Committed, Fate::Gone) => conflict(out, false),
-        _ => return None,
-    }
-    Some(d)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::{Decided, OutcomeStatus};
+    use crate::record;
+    use prost::Message;
 
     #[test]
     fn keeps_the_newest_per_session_and_each_scopes_latest() {
         let dir = std::env::temp_dir().join(format!("escrowd-history-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let h = History::open(&dir).unwrap();
+        let h = History::open(&dir, record::settled).unwrap();
         for i in 0..KEEP + 5 {
             h.record(&format!("s{i}"), "a", Some("t"), &[i as u8]).unwrap();
         }
@@ -268,7 +252,7 @@ mod tests {
         use crate::proto::Outcome;
         let dir = std::env::temp_dir().join(format!("escrowd-pending-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let h = History::open(&dir).unwrap();
+        let h = History::open(&dir, record::settled).unwrap();
         let entry = |status: OutcomeStatus| {
             Decided {
                 outcome: Some(Outcome {

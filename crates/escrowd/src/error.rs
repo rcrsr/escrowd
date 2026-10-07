@@ -21,6 +21,8 @@ pub enum Error {
     /// A commit rolled back: nothing was applied and the scope is still closed;
     /// decide again (ABORTED).
     Aborted(String),
+    /// The daemon is shutting down (UNAVAILABLE).
+    Stopping,
     /// Anything else, every OS error included (INTERNAL).
     Io(io::Error),
 }
@@ -43,6 +45,7 @@ impl fmt::Display for Error {
             Error::NoScope(m) | Error::State(m) | Error::Denied(m) | Error::Invalid(m) | Error::Aborted(m) => {
                 f.write_str(m)
             }
+            Error::Stopping => f.write_str("escrowd is shutting down"),
             Error::Io(e) => e.fmt(f),
         }
     }
@@ -75,6 +78,7 @@ impl From<Error> for io::Error {
             Error::State(_) | Error::Invalid(_) => io::ErrorKind::InvalidInput,
             Error::Denied(_) => io::ErrorKind::PermissionDenied,
             Error::Aborted(_) => io::ErrorKind::Interrupted,
+            Error::Stopping => io::ErrorKind::ConnectionAborted,
         };
         io::Error::new(kind, e.to_string())
     }
