@@ -85,6 +85,25 @@ impl std::fmt::Display for Raced {
 
 impl std::error::Error for Raced {}
 
+/// A failed commit whose rollback failed too: the base may be partly applied until
+/// the next start rolls it back from the journal.
+#[derive(Debug)]
+struct RollbackFailed(String);
+
+impl std::fmt::Display for RollbackFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for RollbackFailed {}
+
+/// `e`, from `Commits::commit`, is a failure whose rollback failed: unlike any other
+/// error there, the scope cannot simply be decided again.
+pub fn rollback_failed(e: &io::Error) -> bool {
+    e.get_ref().is_some_and(|r| r.is::<RollbackFailed>())
+}
+
 pub enum Outcome {
     /// The generation the commit created (None for an empty change set) and the changed paths.
     Committed(Option<u64>, Vec<PathBuf>),
@@ -378,7 +397,7 @@ impl Commits {
             return match (self.rollback(lowers, generation, only), raced) {
                 (Ok(()), Some((root, p))) => Ok(Outcome::Conflict(vec![show(root, &p)])),
                 (Ok(()), None) => Err(e),
-                (Err(r), _) => Err(io::Error::other(format!("{e}; rollback failed: {r}"))),
+                (Err(r), _) => Err(io::Error::other(RollbackFailed(format!("{e}; rollback failed: {r}")))),
             };
         }
         Ok(Outcome::Committed(Some(generation), paths))

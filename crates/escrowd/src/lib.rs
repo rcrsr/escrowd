@@ -10,6 +10,7 @@ pub mod changeset;
 pub mod commit;
 pub mod daemon;
 pub mod diff;
+pub mod error;
 pub mod exec;
 pub mod fault;
 pub mod fuse;

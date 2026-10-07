@@ -35,6 +35,7 @@ use rustix::fs::{OFlags, Stat};
 use crate::changeset::{self, ChangeSet, Kind};
 use crate::commit::{Commits, Lowers, Outcome};
 use crate::diff;
+use crate::error::{self, Error};
 use crate::gate::Gate;
 use crate::history::{self, History};
 use crate::ledger::Ledger;
@@ -491,7 +492,7 @@ impl Views {
             return Ok(());
         }
         let readonly = self.unscoped == Unscoped::Deny;
-        if let Ok(h) = self.handle(UNSCOPED) {
+        if let Some(h) = self.scopes.read().unwrap().get(UNSCOPED).cloned() {
             if h.readonly == readonly {
                 return Ok(());
             }
@@ -575,7 +576,7 @@ impl Views {
 
     /// Create a scope with a view per served root; returns its id, its project view in
     /// the mount and its token.
-    pub fn open_scope(&self, name: &str, labels: &HashMap<String, String>, session: &str) -> io::Result<Opened> {
+    pub fn open_scope(&self, name: &str, labels: &HashMap<String, String>, session: &str) -> error::Result<Opened> {
         let since = self.commits.current();
         let mut bytes = [0u8; 32];
         sys::random(&mut bytes)?;
@@ -604,18 +605,15 @@ impl Views {
         })
     }
 
-    /// `token` is scope `id`'s (PermissionDenied if not; NotFound if no such scope).
+    /// `token` is scope `id`'s (`Denied` if not; `NoScope` if no such scope).
     /// The unscoped scope has none and takes any.
-    pub fn check_token(&self, id: &str, token: &str) -> io::Result<()> {
+    pub fn check_token(&self, id: &str, token: &str) -> error::Result<()> {
         let hs = self.handles(id)?;
         if hs[0].store_read().token_matches(&token_sha256(token)) {
             return Ok(());
         }
         self.ledger.append(id, "token", Path::new(""), None, "deny");
-        Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!("scope {id}: missing or wrong token"),
-        ))
+        Err(Error::Denied(format!("scope {id}: missing or wrong token")))
     }
 
     /// The served roots other than the project, with scope `id`'s view of each in the
@@ -635,14 +633,14 @@ impl Views {
     }
 
     /// Every view of scope `id`, the project's first.
-    fn handles(&self, id: &str) -> io::Result<Vec<Arc<ScopeHandle>>> {
+    fn handles(&self, id: &str) -> error::Result<Vec<Arc<ScopeHandle>>> {
         let scopes = self.scopes.read().unwrap();
         let hs: Vec<Arc<ScopeHandle>> = self
             .served()
             .filter_map(|r| scopes.get(&roots::view_name(id, r)).cloned())
             .collect();
         if hs.first().is_none_or(|h| h.root != PROJECT) {
-            return Err(io::Error::new(io::ErrorKind::NotFound, format!("no scope {id}")));
+            return Err(Error::no_scope(id));
         }
         Ok(hs)
     }
@@ -655,7 +653,7 @@ impl Views {
             labels: HashMap::new(),
             procs: BTreeMap::new(),
             unscoped: 0,
-            review: None,
+            review: review::Review::default(),
         };
         for h in hs {
             let cs = changeset::build(&self.base(h), h)?;
@@ -674,11 +672,11 @@ impl Views {
     }
 
     /// The change set of a closed scope, with its review; an open scope is an error
-    /// (InvalidInput).
-    pub fn closed_change_set(&self, id: &str) -> io::Result<ChangeSet> {
+    /// (`State`).
+    pub fn closed_change_set(&self, id: &str) -> error::Result<ChangeSet> {
         let hs = self.closed_handles(id)?;
         let mut cs = self.change_set(&hs)?;
-        cs.review = Some(self.review(id, &hs, &cs, false)?);
+        cs.review = self.review(id, &hs, &cs, false)?;
         Ok(cs)
     }
 
@@ -729,7 +727,7 @@ impl Views {
     }
 
     /// The content diff of a closed scope's change set `cs`, against its snapshot.
-    pub fn diff(&self, id: &str, cs: &ChangeSet, caps: diff::Caps) -> io::Result<String> {
+    pub fn diff(&self, id: &str, cs: &ChangeSet, caps: diff::Caps) -> error::Result<String> {
         let hs = self.closed_handles(id)?;
         let mut out = diff::Diff::new(caps);
         for h in &hs {
@@ -749,24 +747,10 @@ impl Views {
         Ok(out.finish())
     }
 
-    fn handle(&self, id: &str) -> io::Result<Arc<ScopeHandle>> {
-        self.scopes
-            .read()
-            .unwrap()
-            .get(id)
-            .cloned()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("no scope {id}")))
-    }
-
-    /// Freeze the scope and return its change set. The caller has fsynced its open files
-    /// (syncfs is not a barrier on plain FUSE); sandboxes are stopped here from phase 1.5.
-    /// Closing a closed scope returns the same change set.
-    pub fn close_scope(&self, id: &str) -> io::Result<ChangeSet> {
-        self.close_scope_after(id, &[])
-    }
-
-    /// Close after stopping the scope's sandboxes (process groups `stopped`).
-    pub fn close_scope_after(&self, id: &str, stopped: &[i32]) -> io::Result<ChangeSet> {
+    /// Freeze the scope and return its change set, after its sandboxes (process groups
+    /// `stopped`) were stopped. The caller has fsynced its open files (syncfs is not a
+    /// barrier on plain FUSE). Closing a closed scope returns the same change set.
+    pub fn close_scope_after(&self, id: &str, stopped: &[i32]) -> error::Result<ChangeSet> {
         let hs = self.handles(id)?;
         let first = !hs[0].is_closed();
         if first {
@@ -784,17 +768,17 @@ impl Views {
         }
         let mut cs = self.change_set(&hs)?;
         cs.unscoped = hs[0].unscoped_seen.load(Ordering::Relaxed);
-        cs.review = Some(self.review(id, &hs, &cs, first)?);
+        cs.review = self.review(id, &hs, &cs, first)?;
         Ok(cs)
     }
 
-    /// The hold of scope `id`, if reviewers have it (NotFound if no such scope).
-    pub fn held(&self, id: &str) -> io::Result<Option<Hold>> {
+    /// The hold of scope `id`, if reviewers have it (`NoScope` if no such scope).
+    pub fn held(&self, id: &str) -> error::Result<Option<Hold>> {
         Ok(self.handles(id)?[0].store_read().hold().cloned())
     }
 
-    /// Scope `id`'s name, session, token hash and hold (NotFound if no such scope).
-    pub fn identity(&self, id: &str) -> io::Result<Identity> {
+    /// Scope `id`'s name, session, token hash and hold (`NoScope` if no such scope).
+    pub fn identity(&self, id: &str) -> error::Result<Identity> {
         let hs = self.handles(id)?;
         let store = hs[0].store_read();
         Ok(Identity {
@@ -808,7 +792,7 @@ impl Views {
     }
 
     /// Every held scope, oldest hold first.
-    pub fn held_scopes(&self) -> io::Result<Vec<Identity>> {
+    pub fn held_scopes(&self) -> error::Result<Vec<Identity>> {
         let ids: Vec<String> = {
             let scopes = self.scopes.read().unwrap();
             scopes
@@ -822,7 +806,7 @@ impl Views {
             match self.identity(&id) {
                 Ok(i) if i.hold.is_some() => out.push(i),
                 Ok(_) => {}
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                Err(e) if e.is_no_scope() => {}
                 Err(e) => return Err(e),
             }
         }
@@ -832,7 +816,7 @@ impl Views {
 
     /// Hold closed scope `id` for the reviewers of `tiers` (cheapest first); `wait`: its
     /// session's next scope does not open until the verdict.
-    pub fn hold_scope(&self, id: &str, tiers: Vec<Tier>, wait: bool) -> io::Result<Hold> {
+    pub fn hold_scope(&self, id: &str, tiers: Vec<Tier>, wait: bool) -> error::Result<Hold> {
         let hs = self.closed_handles(id)?;
         let names: Vec<&str> = tiers.iter().map(|t| t.as_str()).collect();
         let decision = format!("{}{}", names.join(","), if wait { ",wait" } else { "" });
@@ -853,7 +837,7 @@ impl Views {
 
     /// `tier`'s verdict on held scope `id`. The tier must be pending; a human's verdict
     /// also stands for the cheaper tiers pending before it. A verdict looser than the
-    /// one so far needs a human and `over` (PermissionDenied otherwise); the ledger
+    /// one so far needs a human and `over` (`Denied` otherwise); the ledger
     /// records each verdict and every override. Before the last pending tier the hold
     /// keeps the verdict (written at once); after it nothing is written: the caller
     /// applies the final verdict, which drops or reopens the scope.
@@ -864,43 +848,34 @@ impl Views {
         verdict: Decision,
         reasons: Vec<String>,
         over: bool,
-    ) -> io::Result<Reviewed> {
+    ) -> error::Result<Reviewed> {
         let hs = self.closed_handles(id)?;
         let mut store = hs[0].store();
         let Some(mut hold) = store.hold().cloned() else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("scope {id} is not held"),
-            ));
+            return Err(Error::State(format!("scope {id} is not held")));
         };
         let Some(at) = hold.tiers.iter().position(|t| *t == tier) else {
             let waiting: Vec<&str> = hold.tiers.iter().map(|t| t.as_str()).collect();
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "scope {id} is not waiting for {}: it waits for {}",
-                    tier.as_str(),
-                    waiting.join(", ")
-                ),
-            ));
+            return Err(Error::State(format!(
+                "scope {id} is not waiting for {}: it waits for {}",
+                tier.as_str(),
+                waiting.join(", ")
+            )));
         };
         if tier != Tier::Human && at > 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("scope {id} waits for {} first", hold.tiers[0].as_str()),
-            ));
+            return Err(Error::State(format!(
+                "scope {id} waits for {} first",
+                hold.tiers[0].as_str()
+            )));
         }
         let looser = verdict < hold.verdict;
         if looser && !(over && tier == Tier::Human) {
-            return Err(io::Error::new(
-                io::ErrorKind::PermissionDenied,
-                format!(
-                    "{} cannot loosen {} to {}: only a human can, with an override",
-                    tier.as_str(),
-                    hold.verdict.as_str(),
-                    verdict.as_str()
-                ),
-            ));
+            return Err(Error::Denied(format!(
+                "{} cannot loosen {} to {}: only a human can, with an override",
+                tier.as_str(),
+                hold.verdict.as_str(),
+                verdict.as_str()
+            )));
         }
         if looser {
             let change = format!("{}-to-{}", hold.verdict.as_str(), verdict.as_str());
@@ -950,7 +925,7 @@ impl Views {
     }
 
     /// Return to agent: the decision's reasons go back and the scope accepts IO again.
-    pub fn reopen_scope(&self, id: &str) -> io::Result<()> {
+    pub fn reopen_scope(&self, id: &str) -> error::Result<()> {
         let hs = self.closed_handles(id)?;
         let now = self.unscoped_changes.load(Ordering::Relaxed);
         if hs[0].store_read().hold().is_some() {
@@ -987,15 +962,15 @@ impl Views {
     /// Commit a closed scope's change set to the project, all or nothing, and drop the
     /// scope. On a conflict nothing is written and the policy's `conflict.verdict`
     /// drops the scope (discard) or reopens it (return); on a failure the commit is
-    /// rolled back and the scope stays closed.
-    pub fn commit_scope(&self, id: &str) -> io::Result<Outcome> {
+    /// rolled back and the scope stays closed (`Aborted`).
+    pub fn commit_scope(&self, id: &str) -> error::Result<Outcome> {
         let hs = self.closed_handles(id)?;
         let cs = self.change_set(&hs)?;
         self.commit_change_set(id, &hs, &cs, false)
     }
 
     /// `commit_scope` with the change set `close_scope` returned (the scope is frozen since).
-    pub fn commit_closed(&self, id: &str, cs: &ChangeSet) -> io::Result<Outcome> {
+    pub fn commit_closed(&self, id: &str, cs: &ChangeSet) -> error::Result<Outcome> {
         let hs = self.closed_handles(id)?;
         self.commit_change_set(id, &hs, cs, false)
     }
@@ -1003,7 +978,7 @@ impl Views {
     /// `commit_scope` (with `cs`, if given) that keeps a committed scope until
     /// `finish_commit`: the caller settles the decision in the history in between, so
     /// a scope gone at the next start was never committed (`history::Fate`).
-    pub fn commit_kept(&self, id: &str, cs: Option<&ChangeSet>) -> io::Result<Outcome> {
+    pub fn commit_kept(&self, id: &str, cs: Option<&ChangeSet>) -> error::Result<Outcome> {
         let hs = self.closed_handles(id)?;
         match cs {
             Some(cs) => self.commit_change_set(id, &hs, cs, true),
@@ -1012,31 +987,38 @@ impl Views {
     }
 
     /// Drop a scope `commit_kept` committed.
-    pub fn finish_commit(&self, id: &str, generation: Option<u64>) -> io::Result<()> {
+    pub fn finish_commit(&self, id: &str, generation: Option<u64>) -> error::Result<()> {
         self.remove_scope(id)?;
         // One journal write records the scope gone (before a new scope of the same id
         // opens) and forgets what no scope reads any more.
         self.gc(generation)?;
-        self.ensure_unscoped()
+        Ok(self.ensure_unscoped()?)
     }
 
-    fn closed_handles(&self, id: &str) -> io::Result<Vec<Arc<ScopeHandle>>> {
+    fn closed_handles(&self, id: &str) -> error::Result<Vec<Arc<ScopeHandle>>> {
         let hs = self.handles(id)?;
         if !hs[0].is_closed() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("scope {id} is not closed"),
-            ));
+            return Err(Error::State(format!("scope {id} is not closed")));
         }
         Ok(hs)
     }
 
-    fn commit_change_set(&self, id: &str, hs: &[Arc<ScopeHandle>], cs: &ChangeSet, keep: bool) -> io::Result<Outcome> {
+    fn commit_change_set(
+        &self,
+        id: &str,
+        hs: &[Arc<ScopeHandle>],
+        cs: &ChangeSet,
+        keep: bool,
+    ) -> error::Result<Outcome> {
         let hs: Vec<&ScopeHandle> = hs.iter().map(|h| h.as_ref()).collect();
         let show = |root: usize, p: &Path| self.shown(root, p);
-        let outcome = self
-            .commits
-            .commit(&self.lowers(), &hs, cs, self.conflict.reads, &show)?;
+        // A failed commit rolled back in place: the scope is still closed, and the
+        // caller may decide again. A failed rollback is the host's problem.
+        let outcome = match self.commits.commit(&self.lowers(), &hs, cs, self.conflict.reads, &show) {
+            Ok(o) => o,
+            Err(e) if crate::commit::rollback_failed(&e) => return Err(e.into()),
+            Err(e) => return Err(Error::Aborted(format!("commit rolled back: {e}"))),
+        };
         match &outcome {
             Outcome::Committed(generation, _) => {
                 crate::fault::hit("committed", 0)?;
@@ -1065,12 +1047,12 @@ impl Views {
     }
 
     /// Drop a scope and its staged changes.
-    pub fn drop_scope(&self, id: &str) -> io::Result<()> {
+    pub fn drop_scope(&self, id: &str) -> error::Result<()> {
         self.handles(id)?;
         self.ledger.append(id, "decide", Path::new(""), None, "discard");
         self.remove_scope(id)?;
         self.gc(None)?;
-        self.ensure_unscoped()
+        Ok(self.ensure_unscoped()?)
     }
 
     /// Drop generations no open scope reads through any more; `dropped`: the
@@ -1081,7 +1063,7 @@ impl Views {
     }
 
     /// Remove every view of scope `id`.
-    fn remove_scope(&self, id: &str) -> io::Result<()> {
+    fn remove_scope(&self, id: &str) -> error::Result<()> {
         let hs: Vec<Arc<ScopeHandle>> = {
             let mut scopes = self.scopes.write().unwrap();
             (0..roots::COUNT)
@@ -1089,7 +1071,7 @@ impl Views {
                 .collect()
         };
         if hs.is_empty() {
-            return Err(io::Error::new(io::ErrorKind::NotFound, format!("no scope {id}")));
+            return Err(Error::no_scope(id));
         }
         for h in hs {
             let names = self.t().forget_scope(&h.id, h.idx);

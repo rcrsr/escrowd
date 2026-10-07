@@ -63,8 +63,8 @@ pub struct ChangeSet {
     pub procs: BTreeMap<u64, Info>,
     /// Changes the unscoped mode saw while the scope was open (set by close).
     pub unscoped: u64,
-    /// The close-time review (set by close and by `closed_change_set`).
-    pub review: Option<Review>,
+    /// The close-time review (set by close and by `closed_change_set`; the default before).
+    pub review: Review,
 }
 
 pub fn build(base: &Base, h: &ScopeHandle) -> io::Result<ChangeSet> {
@@ -76,7 +76,7 @@ pub fn build(base: &Base, h: &ScopeHandle) -> io::Result<ChangeSet> {
             labels: store.labels()?,
             procs: BTreeMap::new(),
             unscoped: 0,
-            review: None,
+            review: Review::default(),
         });
     }
     drop(store);
@@ -136,7 +136,7 @@ pub fn build(base: &Base, h: &ScopeHandle) -> io::Result<ChangeSet> {
         labels: store.labels()?,
         procs,
         unscoped: 0,
-        review: None,
+        review: Review::default(),
     })
 }
 

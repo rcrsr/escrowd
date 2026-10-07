@@ -1,7 +1,6 @@
 //! gRPC services over Unix sockets: `EscrowService` for clients, `ReviewerService` on
 //! the review socket (`<socket>.review`, mode 0600) for reviewers of held scopes.
 
-use std::io;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,6 +12,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::{ReceiverStream, UnixListenerStream};
 use tonic::{Request, Response, Status};
 
+use crate::error::{self, Error};
 use crate::exec::Children;
 use crate::policy::ConflictVerdict;
 use crate::proto::escrow_service_server::{EscrowService, EscrowServiceServer};
@@ -80,13 +80,15 @@ fn deadline(md: &tonic::metadata::MetadataMap) -> Option<tokio::time::Instant> {
     Some(tokio::time::Instant::now() + d.saturating_sub(Duration::from_millis(100)))
 }
 
-fn io_status(e: std::io::Error) -> Status {
-    match e.kind() {
-        std::io::ErrorKind::NotFound => Status::not_found(e.to_string()),
-        std::io::ErrorKind::InvalidInput => Status::failed_precondition(e.to_string()),
-        std::io::ErrorKind::PermissionDenied => Status::permission_denied(e.to_string()),
-        std::io::ErrorKind::Interrupted => Status::aborted(e.to_string()),
-        _ => Status::internal(e.to_string()),
+/// The protocol's status code of each daemon error (`docs/protocol.md`).
+fn status(e: Error) -> Status {
+    match e {
+        Error::NoScope(m) => Status::not_found(m),
+        Error::State(m) => Status::failed_precondition(m),
+        Error::Denied(m) => Status::permission_denied(m),
+        Error::Invalid(m) => Status::invalid_argument(m),
+        Error::Aborted(m) => Status::aborted(m),
+        Error::Io(e) => Status::internal(e.to_string()),
     }
 }
 
@@ -134,7 +136,7 @@ fn to_proto(views: &Views, scope_id: String, cs: changeset::ChangeSet, diff: Str
         labels: cs.labels,
         diff,
         unscoped_ops: cs.unscoped,
-        review: cs.review.map(review_proto),
+        review: Some(review_proto(cs.review)),
         processes: cs
             .procs
             .into_values()
@@ -223,11 +225,7 @@ fn now_ms() -> u64 {
 
 fn review_proto(r: rules::Review) -> Review {
     Review {
-        verdict: match r.verdict {
-            rules::Verdict::Commit => Verdict::Commit,
-            rules::Verdict::Discard => Verdict::Discard,
-        }
-        .into(),
+        verdict: verdict_proto(r.verdict).into(),
         reasons: r.reasons(),
         tiers: r.tiers.into_iter().map(|t| tier_proto(t).into()).collect(),
         wait_required: r.wait,
@@ -289,7 +287,7 @@ fn apply_now(
     mut reasons: Vec<String>,
     closed: Option<changeset::ChangeSet>,
     keep: bool,
-) -> io::Result<(Outcome, Option<Option<u64>>)> {
+) -> error::Result<(Outcome, Option<Option<u64>>)> {
     let (mut paths, mut reopened, mut finish) = (vec![], false, None);
     let status = match verdict {
         Verdict::Commit => {
@@ -297,15 +295,7 @@ fn apply_now(
                 true => v.commit_kept(id, closed.as_ref()),
                 false => closed.map_or_else(|| v.commit_scope(id), |cs| v.commit_closed(id, &cs)),
             };
-            let outcome = match committed.inspect(|_| children.release(id)) {
-                Err(e) if !matches!(e.kind(), io::ErrorKind::NotFound | io::ErrorKind::InvalidInput) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Interrupted,
-                        format!("commit rolled back: {e}"),
-                    ));
-                }
-                r => r?,
-            };
+            let outcome = committed.inspect(|_| children.release(id))?;
             match outcome {
                 commit::Outcome::Committed(generation, changed) => {
                     paths = changed.iter().map(|p| path_str(p)).collect();
@@ -330,8 +320,9 @@ fn apply_now(
             OutcomeStatus::Returned
         }
         _ => {
-            v.scope(id)
-                .map_err(|_| io::Error::new(io::ErrorKind::NotFound, format!("no scope {id}")))?;
+            if v.scope(id).is_err() {
+                return Err(Error::no_scope(id));
+            }
             children.stop(id);
             let r = v.drop_scope(id);
             children.release(id);
@@ -400,7 +391,7 @@ impl Service {
                     let diff = v.diff(&id2, &cs, caps)?;
                     Ok(Some((cs, diff)))
                 }
-                Err(e) if e.kind() == io::ErrorKind::InvalidInput => Ok(None),
+                Err(Error::State(_)) => Ok(None),
                 Err(e) => Err(e),
             })
             .await?;
@@ -429,8 +420,8 @@ impl Service {
         if matches!(verdict, Verdict::Commit | Verdict::Return) && self.views.reviews() {
             let scope = id.clone();
             let cs = self.blocking(move |v| v.closed_change_set(&scope)).await?;
-            let r = cs.review.as_ref().expect("a closed change set has a review");
-            if r.verdict == rules::Verdict::Discard {
+            let r = &cs.review;
+            if r.verdict == Decision::Discard {
                 verdict = Verdict::Discard;
                 reasons = r.reasons();
             } else if verdict == Verdict::Commit && !r.tiers.is_empty() {
@@ -506,7 +497,7 @@ impl Service {
                 .blocking(move |v| {
                     let held = match v.held(&id2) {
                         Ok(h) => h,
-                        Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                        Err(e) if e.is_no_scope() => None,
                         Err(e) => return Err(e),
                     };
                     let decided = match held {
@@ -550,13 +541,13 @@ impl Service {
     /// Filesystem work runs off the async executor.
     async fn blocking<T: Send + 'static>(
         &self,
-        f: impl FnOnce(&Views) -> std::io::Result<T> + Send + 'static,
+        f: impl FnOnce(&Views) -> error::Result<T> + Send + 'static,
     ) -> Result<T, Status> {
         let views = self.views.clone();
         tokio::task::spawn_blocking(move || f(&views))
             .await
             .map_err(|e| Status::internal(e.to_string()))?
-            .map_err(io_status)
+            .map_err(status)
     }
 }
 
@@ -709,7 +700,7 @@ impl EscrowService for Service {
                         v.check_token(&id2, &token)?;
                         Some(who)
                     }
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => None,
+                    Err(e) if e.is_no_scope() => None,
                     Err(e) => return Err(e),
                 };
                 // Gone: decided, maybe since the first read.
@@ -723,10 +714,7 @@ impl EscrowService for Service {
                         .as_ref()
                         .is_some_and(|t| *t != views::token_sha256(&token))
                 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        format!("scope {id2}: missing or wrong token"),
-                    ));
+                    return Err(Error::Denied(format!("scope {id2}: missing or wrong token")));
                 }
                 Ok((live, latest.map(|l| l.seq)))
             })
