@@ -153,3 +153,37 @@ def test_without_review_rules_a_session_never_waits(daemon):
         c.close_scope(s)
         assert c.commit(s, wait=True).status == pb.OUTCOME_STATUS_COMMITTED
         c.open_scope(session="agent-1", timeout=2)
+
+
+def test_sigterm_ends_waiting_calls(start_daemon):
+    # A follower and an open behind a held scope (no deadline) would keep the server's
+    # graceful shutdown waiting forever: shutdown ends them with UNAVAILABLE.
+    d = start_daemon(policy=RULES)
+    errors = []
+    with client(d) as c:
+        s, out = held_scope(d, c, "docs/a.md", wait=True)
+        assert out.status == pb.OUTCOME_STATUS_HELD and out.wait
+
+        def follow():
+            try:
+                for _ in c.await_decision(s):
+                    pass
+            except grpc.RpcError as e:
+                errors.append(e.code())
+
+        def blocked_open():
+            try:
+                c.open_scope(session="agent-1", timeout=None)
+            except grpc.RpcError as e:
+                errors.append(e.code())
+
+        threads = [threading.Thread(target=f) for f in (follow, blocked_open)]
+        for t in threads:
+            t.start()
+        time.sleep(0.5)
+        start = time.monotonic()
+        assert d.stop() == 0
+        assert time.monotonic() - start < 5
+        for t in threads:
+            t.join(timeout=5)
+    assert errors == [grpc.StatusCode.UNAVAILABLE] * 2

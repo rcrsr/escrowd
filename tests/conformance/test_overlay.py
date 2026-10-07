@@ -201,3 +201,44 @@ def test_upper_has_no_copy_of_untouched_files(cow):
 
 def test_view_is_mounted(cow):
     assert os.path.ismount(cow.daemon.mount)
+
+
+def swap_for_symlink(project: Path, outside: Path) -> None:
+    """Replace project/d with a symlink to `outside`, as an editor or another user could."""
+    shutil.rmtree(project / "d")
+    (project / "d").symlink_to(outside)
+
+
+def test_base_symlink_swap_is_not_followed(daemon, runtime_dir):
+    outside = runtime_dir / "outside"
+    outside.mkdir()
+    (outside / "secret").write_text("outside\n")
+    (daemon.project / "d").mkdir()
+    (daemon.project / "d" / "f").write_text("in\n")
+    with escrow.connect(str(daemon.socket)) as c:
+        sid = c.open_scope().scope_id
+        view = daemon.mount / sid
+        assert (view / "d" / "f").read_text() == "in\n"  # the kernel caches d as a directory
+        swap_for_symlink(daemon.project, outside)
+        try:
+            leaked = (view / "d" / "secret").read_text()
+        except OSError:
+            leaked = None
+        assert leaked is None
+        c.discard(sid)
+
+
+def test_commit_does_not_follow_a_swapped_base_dir(daemon, runtime_dir):
+    outside = runtime_dir / "outside"
+    outside.mkdir()
+    (daemon.project / "d").mkdir()
+    with escrow.connect(str(daemon.socket)) as c:
+        sid = c.open_scope().scope_id
+        (daemon.mount / sid / "d" / "new.txt").write_text("staged\n")
+        c.close_scope(sid)
+        swap_for_symlink(daemon.project, outside)
+        try:
+            c.commit(sid)
+        except escrow.EscrowRpcError:
+            pass
+    assert list(outside.iterdir()) == []

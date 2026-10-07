@@ -50,12 +50,12 @@ Sessions order an agent's scopes. While a scope of a session is held with a wait
 | Call | Token | Does | Errors |
 | --- | --- | --- | --- |
 | `Ping` | none | Daemon version and `protocol_version` | none |
-| `OpenScope` | none | Opens a scope; returns its id, views and token. In a session behind a held scope, waits for the verdict | `FAILED_PRECONDITION` at the deadline |
+| `OpenScope` | none | Opens a scope; returns its id, views and token. In a session behind a held scope, waits for the verdict | `FAILED_PRECONDITION` at the deadline, `UNAVAILABLE` at shutdown |
 | `CloseScope` | the scope's | Stops the scope's children, freezes it, returns its change set | `NOT_FOUND`, `PERMISSION_DENIED` |
 | `Decide` | the scope's | Commits, discards or returns the scope; a commit may hold it | `NOT_FOUND`, `PERMISSION_DENIED`, `FAILED_PRECONDITION`, `INVALID_ARGUMENT`, `ABORTED` |
 | `SettleUnscoped` | none | Closes the implicit default scope (id `unscoped`) and returns its change set | `FAILED_PRECONDITION` outside `implicit` mode |
 | `GetChangeSet` | none | A closed, undecided scope's change set, diff included | `NOT_FOUND`, `FAILED_PRECONDITION` |
-| `AwaitDecision` | the scope's | Streams a held scope's outcome after each review, then its verdict | `NOT_FOUND`, `PERMISSION_DENIED`, `FAILED_PRECONDITION` |
+| `AwaitDecision` | the scope's | Streams a held scope's outcome after each review, then its verdict | `NOT_FOUND`, `PERMISSION_DENIED`, `FAILED_PRECONDITION`, `UNAVAILABLE` at shutdown |
 
 `ReviewerService`, on `<socket>.review`:
 
@@ -66,7 +66,7 @@ Sessions order an agent's scopes. While a scope of a session is held with a wait
 | `Review` | A tier's verdict; after the last pending tier, the scope is decided | `NOT_FOUND`, `FAILED_PRECONDITION`, `INVALID_ARGUMENT`, `PERMISSION_DENIED`, `ABORTED` |
 
 - **Tokens.** `OpenScopeResponse.token` is the scope's capability. Only the opener gets it; the scope id alone, which a path reveals, is not enough. The daemon keeps its SHA-256. The unscoped scope has no token.
-- **Deadlines.** `OpenScope` in a session reads the call's `grpc-timeout`. 100 ms before it, the call fails with `FAILED_PRECONDITION` and the held scope stays held; a client can also see its own `DEADLINE_EXCEEDED` first. With no deadline, the call waits for the verdict. The Python SDK opens with none.
+- **Deadlines.** `OpenScope` in a session reads the call's `grpc-timeout`. 100 ms before it, the call fails with `FAILED_PRECONDITION` and the held scope stays held; a client can also see its own `DEADLINE_EXCEEDED` first. With no deadline, the call waits for the verdict, or until the daemon shuts down (`UNAVAILABLE`). The Python SDK opens with none.
 - **Verdicts.** They only tighten: commit < return < discard. `Decide` cannot loosen the software tier's verdict (`ChangeSet.review`), and a reviewer cannot loosen an earlier tier's, unless the tier is human and `override` is set. The ledger records each override.
 - **Arguments in change sets.** `Process.args` holds each writer's whole command line. Command lines can carry secrets (`curl -H "Authorization: …"`). Reviewers get them in full; the ledger keeps the first 4 KiB.
 

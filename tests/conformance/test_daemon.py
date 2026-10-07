@@ -1,5 +1,7 @@
 """Phase 1.1: the daemon serves the protocol over its Unix socket."""
 
+import os
+import subprocess
 import time
 
 import grpc
@@ -48,3 +50,27 @@ def test_stale_socket_is_replaced(start_daemon):
         except grpc.RpcError:
             time.sleep(0.05)
     pytest.fail("second daemon never answered on the stale socket path")
+
+
+def test_second_daemon_on_one_state_is_refused(daemon):
+    # Start-up rolls back unfinished commits: a second daemon on the state would undo
+    # the first one's commit mid-apply.
+    args = [daemon.bin, "daemon", "--socket", daemon.work / "other.sock"]
+    args += ["--project", daemon.project, "--state", daemon.state]
+    args += ["--mount", daemon.work / "other-mnt"]
+    run = subprocess.run(args, capture_output=True, text=True, timeout=10)
+    assert run.returncode != 0
+    assert "another escrowd" in run.stderr
+    assert str(os.getpid()) not in run.stderr  # the holder's pid, not ours
+    with escrow.connect(str(daemon.socket)) as client:
+        assert client.ping(timeout=5).protocol_version == 7
+
+
+def test_live_socket_is_not_taken_over(daemon):
+    args = [daemon.bin, "daemon", "--socket", daemon.socket, "--project", daemon.project]
+    args += ["--state", daemon.work / "other-state", "--mount", daemon.work / "other-mnt"]
+    run = subprocess.run(args, capture_output=True, text=True, timeout=10)
+    assert run.returncode != 0
+    assert "in use" in run.stderr
+    with escrow.connect(str(daemon.socket)) as client:
+        assert client.ping(timeout=5).protocol_version == 7

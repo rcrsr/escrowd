@@ -6,7 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use prost::Message;
 use tokio::net::UnixListener;
 use tokio::sync::mpsc;
@@ -26,6 +26,9 @@ use crate::{changeset, commit, diff, policy};
 /// The session's earlier decisions a reviewer gets.
 const HISTORY: usize = 20;
 
+/// How long shutdown waits for clients to finish their calls before it unmounts anyway.
+const GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Served on the protocol socket (`EscrowService`) and the review socket (`ReviewerService`).
 #[derive(Clone)]
 pub struct Service(Arc<Shared>);
@@ -39,6 +42,9 @@ pub struct Shared {
     changed: tokio::sync::watch::Sender<u64>,
     /// Reviews, and an opener's withdrawal of a held scope, one at a time.
     reviewing: tokio::sync::Mutex<()>,
+    /// Set at shutdown: calls that wait (an open behind a held scope, AwaitDecision)
+    /// end with UNAVAILABLE, or the server would wait on them forever.
+    stopping: tokio::sync::watch::Sender<bool>,
 }
 
 impl std::ops::Deref for Service {
@@ -352,7 +358,17 @@ impl Service {
             diff,
             changed: tokio::sync::watch::Sender::new(0),
             reviewing: tokio::sync::Mutex::new(()),
+            stopping: tokio::sync::watch::Sender::new(false),
         }))
+    }
+
+    fn stop(&self) {
+        self.stopping.send_replace(true);
+    }
+
+    /// Resolves once shutdown starts.
+    async fn stopped(&self) {
+        let _ = self.stopping.subscribe().wait_for(|s| *s).await;
     }
 
     fn notify(&self) {
@@ -523,6 +539,10 @@ impl Service {
             tokio::select! {
                 r = changed.changed() => if r.is_err() { return },
                 _ = tx.closed() => return,
+                _ = self.stopped() => {
+                    let _ = send(Err(Status::unavailable("escrowd is shutting down"))).await;
+                    return;
+                }
             }
         }
     }
@@ -554,23 +574,27 @@ impl EscrowService for Service {
         let until = deadline(req.metadata());
         let req = req.into_inner();
         let mut changed = self.changed.subscribe();
+        let expired = async move {
+            match until {
+                Some(until) => tokio::time::sleep_until(until).await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::pin!(expired);
         loop {
             changed.borrow_and_update();
             let Some(held) = self.views.blocking_hold(&req.session) else {
                 break;
             };
-            let Some(until) = until else {
-                let _ = changed.changed().await;
-                continue;
-            };
             tokio::select! {
                 _ = changed.changed() => {}
-                _ = tokio::time::sleep_until(until) => {
+                _ = &mut expired => {
                     return Err(Status::failed_precondition(format!(
                         "session {}: scope {held} is held for review; the next scope opens after its verdict",
                         req.session
                     )));
                 }
+                _ = self.stopped() => return Err(Status::unavailable("escrowd is shutting down")),
             }
         }
         let (opened, roots) = self
@@ -795,11 +819,21 @@ impl ReviewerService for Service {
     }
 }
 
+/// Remove a stale socket file left by a dead daemon; fail if a live one still accepts
+/// connections on it.
+pub fn clear_stale(socket: &Path) -> anyhow::Result<()> {
+    if std::fs::symlink_metadata(socket).is_err() {
+        return Ok(());
+    }
+    if std::os::unix::net::UnixStream::connect(socket).is_ok() {
+        bail!("{} is in use by another daemon", socket.display());
+    }
+    std::fs::remove_file(socket).with_context(|| format!("removing stale socket {}", socket.display()))
+}
+
 /// Bind a Unix socket, replacing a stale socket file left by a previous daemon.
 pub fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
-    if socket.exists() {
-        std::fs::remove_file(socket).with_context(|| format!("removing stale socket {}", socket.display()))?;
-    }
+    clear_stale(socket)?;
     UnixListener::bind(socket).with_context(|| format!("binding {}", socket.display()))
 }
 
@@ -817,27 +851,44 @@ fn bind_private(socket: &Path) -> anyhow::Result<UnixListener> {
 }
 
 /// Serve clients on `socket` and reviewers on its review socket until `shutdown`
-/// resolves; the sockets are removed on exit.
+/// resolves; the sockets are removed on exit. Waiting calls end at once; calls still
+/// running after `GRACE` are abandoned, so the caller can unmount and flush.
 pub async fn serve(socket: &Path, service: Service, shutdown: impl Future<Output = ()>) -> anyhow::Result<()> {
     let review_path = review_socket(socket);
     let review_listener = bind_private(&review_path)?;
     let listener = bind(socket)?;
-    let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-    let reviewers = tokio::spawn(
-        tonic::transport::Server::builder()
-            .add_service(ReviewerServiceServer::new(service.clone()))
-            .serve_with_incoming_shutdown(UnixListenerStream::new(review_listener), async {
-                let _ = stopped.await;
-            }),
-    );
-    let result = tonic::transport::Server::builder()
-        .add_service(EscrowServiceServer::new(service))
-        .serve_with_incoming_shutdown(UnixListenerStream::new(listener), shutdown)
-        .await;
-    let _ = stop.send(());
-    let reviewed = reviewers.await;
+    let started = service.clone();
+    let reviewers = tonic::transport::Server::builder()
+        .add_service(ReviewerServiceServer::new(service.clone()))
+        .serve_with_incoming_shutdown(UnixListenerStream::new(review_listener), async move {
+            started.stopped().await
+        });
+    let stopper = service.clone();
+    let clients = tonic::transport::Server::builder()
+        .add_service(EscrowServiceServer::new(service.clone()))
+        .serve_with_incoming_shutdown(UnixListenerStream::new(listener), async move {
+            shutdown.await;
+            stopper.stop();
+        });
+    // The reviewers stop with the clients, also when the clients' server fails.
+    let clients = async {
+        let r = clients.await;
+        service.stop();
+        r
+    };
+    let both = async { tokio::join!(clients, reviewers) };
+    let (result, reviewed) = tokio::select! {
+        r = both => r,
+        _ = async {
+            service.stopped().await;
+            tokio::time::sleep(GRACE).await;
+        } => {
+            eprintln!("escrowd: clients still busy {}s after shutdown; closing anyway", GRACE.as_secs());
+            (Ok(()), Ok(()))
+        }
+    };
     let _ = std::fs::remove_file(socket);
     let _ = std::fs::remove_file(&review_path);
     result?;
-    Ok(reviewed??)
+    Ok(reviewed?)
 }
