@@ -61,7 +61,7 @@ impl Views {
     /// The served roots other than the project, with scope `id`'s view of each in the
     /// mount; none if the scope does not exist (the unscoped scope in passthrough mode).
     pub fn root_views(&self, id: &str) -> Vec<RootView> {
-        if !self.scopes.read().unwrap().contains_key(id) {
+        if !self.scopes.read().contains_key(id) {
             return Vec::new();
         }
         self.served()
@@ -76,7 +76,7 @@ impl Views {
 
     /// Every view of scope `id`, the project's first.
     pub(super) fn handles(&self, id: &str) -> error::Result<Vec<Arc<ScopeHandle>>> {
-        let scopes = self.scopes.read().unwrap();
+        let scopes = self.scopes.read();
         let hs: Vec<Arc<ScopeHandle>> = self
             .served()
             .filter_map(|r| scopes.get(&roots::view_name(id, r)).cloned())
@@ -353,23 +353,27 @@ impl Views {
     /// Drop generations no open scope reads through any more; `dropped`: the
     /// generation whose scope was just dropped.
     pub(super) fn gc(&self, dropped: Option<u64>) -> io::Result<()> {
-        let oldest = self.scopes.read().unwrap().values().map(|h| h.since).min();
+        let oldest = self.scopes.read().values().map(|h| h.since).min();
         self.commits.gc(oldest, dropped)
     }
 
     /// Remove every view of scope `id`.
     pub(super) fn remove_scope(&self, id: &str) -> error::Result<()> {
         let hs: Vec<Arc<ScopeHandle>> = {
-            let mut scopes = self.scopes.write().unwrap();
+            let mut scopes = self.scopes.write();
+            let mut by_idx = self.by_idx.write();
             (0..roots::COUNT)
                 .filter_map(|r| scopes.remove(&roots::view_name(id, r)))
+                .inspect(|h| {
+                    by_idx.remove(&h.idx);
+                })
                 .collect()
         };
         if hs.is_empty() {
             return Err(Error::no_scope(id));
         }
         for h in hs {
-            let names = self.t().forget_scope(&h.id, h.idx);
+            let names = h.inodes.lock().top_names();
             // After the last settle the mount goes away: invalidating is wasted kernel work.
             if id == UNSCOPED
                 && !self.last_settle.load(Ordering::Acquire)
@@ -383,7 +387,7 @@ impl Views {
             }
             // FUSE calls in flight may still hold the handle; they fail once the directory is gone.
             let gone = h.store().discard_to(&self.trash)?;
-            let mut cleaners = self.cleaners.lock().unwrap();
+            let mut cleaners = self.cleaners.lock();
             cleaners.retain(|c| !c.is_finished());
             cleaners.push(std::thread::spawn(move || {
                 let _ = fs::remove_dir_all(gone);
@@ -394,17 +398,17 @@ impl Views {
 
     /// At shutdown: write every scope's deferred metadata and finish deleting dropped scopes.
     pub fn flush(&self) -> io::Result<()> {
-        for h in self.scopes.read().unwrap().values() {
+        for h in self.scopes.read().values() {
             h.store().flush()?;
         }
-        for c in self.cleaners.lock().unwrap().drain(..) {
+        for c in self.cleaners.lock().drain(..) {
             let _ = c.join();
         }
         Ok(())
     }
 
     pub fn scope_ids(&self) -> Vec<String> {
-        let mut ids: Vec<String> = self.scopes.read().unwrap().keys().cloned().collect();
+        let mut ids: Vec<String> = self.scopes.read().keys().cloned().collect();
         ids.sort();
         ids
     }

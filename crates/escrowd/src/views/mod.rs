@@ -30,8 +30,10 @@ use std::fs::{self, File};
 use std::io;
 use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+
+use parking_lot::{Condvar, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use fuser::{Errno, FileType};
 use rustix::fs::{OFlags, Stat};
@@ -58,9 +60,10 @@ mod overlay;
 mod scopes;
 
 pub use crate::policy::Unscoped;
+use files::Files;
 use files::writeback_thread;
 pub use hold::{Identity, Reviewed};
-use inodes::Tables;
+use inodes::Inodes;
 pub use inodes::{Node, Pages};
 pub use overlay::{Loc, ScopeHandle};
 
@@ -135,9 +138,11 @@ pub struct Views {
     notifier: std::sync::OnceLock<fuser::Notifier>,
     scopes: RwLock<HashMap<String, Arc<ScopeHandle>>>,
     next_idx: Mutex<u64>,
-    t: Mutex<Tables>,
+    /// Each served view by its scope index, the top bits of its inode numbers.
+    by_idx: RwLock<HashMap<u64, Arc<ScopeHandle>>>,
+    files: Mutex<Files>,
     /// Signalled when a file handle is released.
-    released: std::sync::Condvar,
+    released: Condvar,
     /// The app has exited: deciding the unscoped scope opens no new one.
     last_settle: AtomicBool,
     /// Changes to captured paths the unscoped scope was asked for (allowed or EROFS), since start.
@@ -203,11 +208,9 @@ impl Views {
             notifier: std::sync::OnceLock::new(),
             scopes: RwLock::new(HashMap::new()),
             next_idx: Mutex::new(0),
-            t: Mutex::new(Tables {
-                next_fh: 1,
-                ..Default::default()
-            }),
-            released: std::sync::Condvar::new(),
+            by_idx: RwLock::new(HashMap::new()),
+            files: Mutex::new(Files::default()),
+            released: Condvar::new(),
             last_settle: AtomicBool::new(false),
             unscoped_changes: AtomicU64::new(0),
             writeback: Mutex::new(writeback_thread()),
@@ -280,7 +283,7 @@ impl Views {
             return Ok(());
         }
         let readonly = self.unscoped == Unscoped::Deny;
-        if let Some(h) = self.scopes.read().unwrap().get(UNSCOPED).cloned() {
+        if let Some(h) = self.scopes.read().get(UNSCOPED).cloned() {
             if h.readonly == readonly {
                 return Ok(());
             }
@@ -308,7 +311,7 @@ impl Views {
     }
 
     fn alloc_idx(&self) -> io::Result<u64> {
-        let mut n = self.next_idx.lock().unwrap();
+        let mut n = self.next_idx.lock();
         *n += 1;
         if *n >= 1 << (64 - SCOPE_SHIFT) {
             return Err(io::Error::other("scope index space exhausted"));
@@ -335,7 +338,7 @@ impl Views {
             }
             self.attach(store)?;
         }
-        *self.next_idx.lock().unwrap() = max_idx;
+        *self.next_idx.lock() = max_idx;
         Ok(())
     }
 
@@ -355,8 +358,10 @@ impl Views {
             unscoped_at: AtomicU64::new(self.unscoped_changes.load(Ordering::Relaxed)),
             unscoped_seen: AtomicU64::new(0),
             store: RwLock::new(store),
+            inodes: Mutex::new(Inodes::default()),
         });
-        self.scopes.write().unwrap().insert(h.id.clone(), h.clone());
+        self.scopes.write().insert(h.id.clone(), h.clone());
+        self.by_idx.write().insert(h.idx, h.clone());
         Ok(h)
     }
 }

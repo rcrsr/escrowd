@@ -3,12 +3,30 @@
 
 use super::*;
 
+/// The open files of every view, by file handle.
+pub(super) struct Files {
+    files: HashMap<u64, (Arc<ScopeHandle>, Arc<File>)>,
+    /// The process that opened each file handle.
+    openers: HashMap<u64, u32>,
+    next_fh: u64,
+}
+
+impl Default for Files {
+    fn default() -> Self {
+        Files {
+            files: HashMap::new(),
+            openers: HashMap::new(),
+            next_fh: 1,
+        }
+    }
+}
+
 impl Views {
     // ---- open files ----
 
     /// `pid`: the process that opened it (FUSE reports the calling thread).
     pub fn add_file(&self, h: Arc<ScopeHandle>, f: File, pid: u32) -> u64 {
-        let mut t = self.t();
+        let mut t = self.files.lock();
         let fh = t.next_fh;
         t.next_fh += 1;
         t.files.insert(fh, (h, Arc::new(f)));
@@ -25,31 +43,40 @@ impl Views {
     /// the sandboxes (the SDK's app) are the SDK's to flush.
     pub(super) fn settle_dead_handles(&self, id: &str, stopped: &[i32], within: std::time::Duration) {
         let deadline = std::time::Instant::now() + within;
-        let mut t = self.t();
         loop {
-            let pending = t
-                .files
-                .iter()
-                .any(|(fh, (h, _))| h.group == id && t.openers.get(fh).is_some_and(|p| finishing(*p, stopped)));
+            // The openers under the lock, their state in /proc outside it: FUSE
+            // requests of every scope take this lock.
+            let openers: Vec<u32> = {
+                let t = self.files.lock();
+                t.files
+                    .iter()
+                    .filter(|(_, (h, _))| h.group == id)
+                    .filter_map(|(fh, _)| t.openers.get(fh).copied())
+                    .collect()
+            };
+            let pending = openers.into_iter().any(|p| finishing(p, stopped));
             let left = deadline.saturating_duration_since(std::time::Instant::now());
             if !pending || left.is_zero() {
                 return;
             }
-            t = self
-                .released
-                .wait_timeout(t, left.min(std::time::Duration::from_millis(20)))
-                .unwrap()
-                .0;
+            let mut t = self.files.lock();
+            self.released
+                .wait_for(&mut t, left.min(std::time::Duration::from_millis(20)));
         }
     }
 
     pub fn file(&self, fh: u64) -> R<Arc<File>> {
-        self.t().files.get(&fh).map(|(_, f)| f.clone()).ok_or(Errno::EBADF)
+        self.files
+            .lock()
+            .files
+            .get(&fh)
+            .map(|(_, f)| f.clone())
+            .ok_or(Errno::EBADF)
     }
 
     /// A handle to write through: the tag is fixed at open, and a closed scope takes no writes.
     pub fn file_for_write(&self, fh: u64) -> R<Arc<File>> {
-        let (h, f) = self.t().files.get(&fh).cloned().ok_or(Errno::EBADF)?;
+        let (h, f) = self.files.lock().files.get(&fh).cloned().ok_or(Errno::EBADF)?;
         if h.is_closed() {
             self.ledger.append(&h.group, "write", Path::new(""), None, "deny");
             return Err(Errno::EBADF);
@@ -59,7 +86,7 @@ impl Views {
 
     pub fn release(&self, fh: u64) {
         let f = {
-            let mut t = self.t();
+            let mut t = self.files.lock();
             t.openers.remove(&fh);
             t.files.remove(&fh)
         };
@@ -69,7 +96,7 @@ impl Views {
         if let Some((_, f)) = f
             && rustix::fs::fcntl_getfl(&*f).is_ok_and(|fl| fl.contains(OFlags::RDWR))
         {
-            let _ = self.writeback.lock().unwrap().send(f);
+            let _ = self.writeback.lock().send(f);
         }
     }
 

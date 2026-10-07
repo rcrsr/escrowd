@@ -51,7 +51,11 @@ fn reply_entry(v: &Views, h: &ScopeHandle, rel: &Path, reply: ReplyEntry) {
         .locate(h, rel)
         .and_then(|(_, st)| Ok(sys::attr(v.ino_for(h, rel)?, &st)))
     {
-        Ok(a) => reply.entry(ttl, &a, Generation(0)),
+        Ok(a) => {
+            // Before the reply: the kernel may use the number at once.
+            v.looked_up(h, rel, a.ino.0);
+            reply.entry(ttl, &a, Generation(0))
+        }
         // A negative entry: the kernel caches the absence (a create replaces it). Not under
         // the unscoped root, which resets in place: kernel 7.0 keeps a negative entry
         // through its invalidation.
@@ -121,8 +125,11 @@ fn entry_ino(v: &Views, dir_ino: u64, at: &Dir, name: &OsStr) -> R<u64> {
     }
 }
 
-/// The cache lifetime and attributes of entry `name` (the kernel ignores those of `.` and `..`).
-fn entry_attr(v: &Views, dir_ino: u64, at: &Dir, name: &OsStr) -> R<(&'static Duration, FileAttr)> {
+/// A READDIRPLUS entry: its cache lifetime and attributes, and the view and path the
+/// kernel takes a reference to by it (none for `.` and `..`, whose attributes it ignores).
+type PlusEntry = (&'static Duration, FileAttr, Option<(Arc<ScopeHandle>, PathBuf)>);
+
+fn entry_attr(v: &Views, dir_ino: u64, at: &Dir, name: &OsStr) -> R<PlusEntry> {
     let ino = entry_ino(v, dir_ino, at, name)?;
     match (name.as_bytes(), at) {
         (b"." | b"..", _) => Ok((
@@ -131,12 +138,18 @@ fn entry_attr(v: &Views, dir_ino: u64, at: &Dir, name: &OsStr) -> R<(&'static Du
                 ino: INodeNo(ino),
                 ..sys::absent()
             },
+            None,
         )),
         (_, None) => {
             let h = v.scope(&name.to_string_lossy())?;
-            Ok((&TTL, sys::attr(ino, &v.locate(&h, Path::new(""))?.1)))
+            let attr = sys::attr(ino, &v.locate(&h, Path::new(""))?.1);
+            Ok((&TTL, attr, Some((h, PathBuf::new()))))
         }
-        (_, Some((h, rel))) => Ok((ttl(h), sys::attr(ino, &v.locate(h, &rel.join(name))?.1))),
+        (_, Some((h, rel))) => {
+            let rel = rel.join(name);
+            let attr = sys::attr(ino, &v.locate(h, &rel)?.1);
+            Ok((ttl(h), attr, Some((h.clone(), rel))))
+        }
     }
 }
 
@@ -153,6 +166,11 @@ impl Filesystem for FuseView {
                 | InitFlags::FUSE_READDIRPLUS_AUTO,
         );
         Ok(())
+    }
+
+    /// The kernel dropped `nlookup` references to `ino`: at none, its table entry goes.
+    fn forget(&self, _req: &Request, ino: INodeNo, nlookup: u64) {
+        self.0.forget(ino.0, nlookup);
     }
 
     fn lookup(&self, _req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEntry) {
@@ -432,11 +450,15 @@ impl Filesystem for FuseView {
             Err(e) => return reply.error(e),
         };
         for (i, (_, name)) in entries.iter().enumerate().skip(offset as usize) {
-            let Ok((ttl, attr)) = entry_attr(v, ino.0, &at, name) else {
+            let Ok((ttl, attr, at_path)) = entry_attr(v, ino.0, &at, name) else {
                 continue;
             };
             if reply.add(attr.ino, (i + 1) as u64, name, ttl, &attr, Generation(0)) {
                 break;
+            }
+            // The kernel takes a reference to each entry it receives, but `.` and `..`.
+            if let Some((h, rel)) = at_path {
+                v.looked_up(&h, &rel, attr.ino.0);
             }
         }
         reply.ok()
@@ -478,6 +500,7 @@ impl Filesystem for FuseView {
             let f = v.create(&h, req.pid(), &rel, mode & !umask, flags)?;
             let st = rustix::fs::fstat(&f).map_err(|e| errno(e.into()))?;
             let attr = sys::attr(v.ino_for(&h, &rel)?, &st);
+            v.looked_up(&h, &rel, attr.ino.0);
             Ok((attr, f, h))
         })();
         match r {

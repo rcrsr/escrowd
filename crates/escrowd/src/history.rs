@@ -11,9 +11,9 @@
 //! next start settles from what survived (`Fate`): no decision is applied without one
 //! kept, and none is kept that was not applied.
 
+use parking_lot::Mutex;
 use std::io;
 use std::path::Path;
-use std::sync::Mutex;
 
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
@@ -97,7 +97,7 @@ impl History {
     /// Write a decision of `scope` ahead, pending, with the outcome it intends. Readers
     /// do not see it until `settle`.
     pub fn intend(&self, scope: &str, session: &str, token_sha256: Option<&str>, entry: &[u8]) -> io::Result<u64> {
-        let db = self.db.lock().unwrap();
+        let db = self.db.lock();
         db.execute(
             "INSERT INTO decided (scope, session, token_sha256, entry, pending) VALUES (?1, ?2, ?3, ?4, 1)",
             params![scope, session, token_sha256, entry],
@@ -108,7 +108,7 @@ impl History {
 
     /// The pending decision `seq` got `entry`; keeps the newest `KEEP` of its session.
     pub fn settle(&self, seq: u64, entry: &[u8]) -> io::Result<()> {
-        let mut db = self.db.lock().unwrap();
+        let mut db = self.db.lock();
         let tx = db.transaction().map_err(sql)?;
         let session: String = tx
             .query_row("SELECT session FROM decided WHERE seq = ?1", [seq as i64], |r| r.get(0))
@@ -130,7 +130,7 @@ impl History {
 
     /// The pending decision `seq` was not applied.
     pub fn cancel(&self, seq: u64) -> io::Result<()> {
-        let db = self.db.lock().unwrap();
+        let db = self.db.lock();
         db.execute("DELETE FROM decided WHERE seq = ?1", [seq as i64])
             .map_err(sql)
             .map(drop)
@@ -150,7 +150,7 @@ impl History {
 
     fn resolve_where(&self, scope: Option<&str>, fate: impl Fn(&str) -> Fate) -> io::Result<usize> {
         let pending: Vec<(u64, String, Vec<u8>)> = {
-            let db = self.db.lock().unwrap();
+            let db = self.db.lock();
             let mut st = db
                 .prepare(
                     "SELECT seq, scope, entry FROM decided WHERE pending = 1 AND (?1 IS NULL OR scope = ?1)
@@ -177,7 +177,7 @@ impl History {
 
     /// The latest decision of `scope`, if one is kept.
     pub fn latest(&self, scope: &str) -> io::Result<Option<Latest>> {
-        let db = self.db.lock().unwrap();
+        let db = self.db.lock();
         db.query_row(
             "SELECT seq, token_sha256, entry FROM decided WHERE scope = ?1 AND pending = 0
              ORDER BY seq DESC LIMIT 1",
@@ -199,7 +199,7 @@ impl History {
         if session.is_empty() {
             return Ok(Vec::new());
         }
-        let db = self.db.lock().unwrap();
+        let db = self.db.lock();
         let mut st = db
             .prepare("SELECT entry FROM decided WHERE session = ?1 AND pending = 0 ORDER BY seq DESC LIMIT ?2")
             .map_err(sql)?;

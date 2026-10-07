@@ -34,12 +34,12 @@
 //! files need no fsync of their own. Cleanup forgets a generation before it
 //! removes the generation's files, and start removes files no generation names.
 
+use parking_lot::{Mutex, MutexGuard};
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, MutexGuard};
 
 use fuser::FileType;
 use rustix::fs::{OFlags, Stat};
@@ -240,7 +240,7 @@ impl Commits {
     }
 
     fn journal(&self) -> MutexGuard<'_, Journal> {
-        self.journal.lock().unwrap()
+        self.journal.lock()
     }
 
     /// The generation new scopes open at.
@@ -251,7 +251,7 @@ impl Commits {
     /// On start: roll back unfinished commits and load the finished generations.
     /// Returns the scopes whose commit finished but which were not dropped yet.
     pub fn recover(&self, lowers: &Lowers) -> io::Result<Vec<(u64, String)>> {
-        let _serial = self.serial.lock().unwrap();
+        let _serial = self.serial.lock();
         let mut finished = Vec::new();
         let gens = self.journal().gens()?;
         for (g, scope, state) in gens {
@@ -309,7 +309,7 @@ impl Commits {
         reads: bool,
         show: Show,
     ) -> io::Result<Outcome> {
-        let _serial = self.serial.lock().unwrap();
+        let _serial = self.serial.lock();
         let mut parts = Vec::new();
         for h in hs {
             let lower = lower_of(lowers, h.root)?;
@@ -407,7 +407,7 @@ impl Commits {
         let (lower, h, plan, root) = (part.lower, part.h, &part.plan, part.root);
         let touched = plan.touched();
         let removes: HashSet<&PathBuf> = plan.removes.iter().collect();
-        let aliases = self.aliases.lock().unwrap();
+        let aliases = self.aliases.lock();
         let same = |p: &Path, want: Option<Version>, have: Option<Version>| match (want, have) {
             (None, None) => true,
             (Some(mut w), Some(have)) => {
@@ -675,7 +675,7 @@ impl Commits {
         }
         // A copy has a new inode and ctime: scopes that recorded the original must not conflict.
         let journal = self.journal();
-        let mut aliases = self.aliases.lock().unwrap();
+        let mut aliases = self.aliases.lock();
         for e in entries.iter().filter(|e| reached(e)) {
             let Some(m) = e.pre else { continue };
             if let Ok(now) = sys::lstat(lower, &e.path).map(|st| Version::of(&st))
@@ -692,7 +692,7 @@ impl Commits {
     /// the oldest open scope's generation (all of them when no scope is open).
     /// `dropped`: the generation whose scope was just dropped (see `scope_dropped`).
     pub fn gc(&self, oldest_open: Option<u64>, dropped: Option<u64>) -> io::Result<()> {
-        let _serial = self.serial.lock().unwrap();
+        let _serial = self.serial.lock();
         let floor = oldest_open.unwrap_or(u64::MAX);
         let done: Vec<u64> = self
             .journal()
@@ -707,7 +707,7 @@ impl Commits {
             self.unregister(g)?;
         }
         if oldest_open.is_none() {
-            self.aliases.lock().unwrap().clear();
+            self.aliases.lock().clear();
         }
         Ok(())
     }

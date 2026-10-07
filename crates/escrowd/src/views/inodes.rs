@@ -3,45 +3,48 @@
 
 use super::*;
 
-pub(super) type Key = (String, PathBuf);
-
+/// One view's inode table: path to inode and back, the kernel's lookup count of
+/// each inode, and what the kernel may keep of each inode's cached pages. Each view
+/// has its own, so dropping a scope drops its tables whole.
 #[derive(Default)]
-pub(super) struct Tables {
-    pub(super) paths: HashMap<u64, Key>,
-    pub(super) inos: HashMap<Key, u64>,
-    pub(super) files: HashMap<u64, (Arc<ScopeHandle>, Arc<File>)>,
-    /// The process that opened each file handle.
-    pub(super) openers: HashMap<u64, u32>,
-    pub(super) next_fh: u64,
+pub(super) struct Inodes {
+    pub(super) paths: HashMap<u64, PathBuf>,
+    pub(super) inos: HashMap<PathBuf, u64>,
+    /// How many times the kernel has looked each inode up; FUSE forget lowers it, and
+    /// at 0 the entry goes (its number is derived or pinned, so it comes back the same).
+    lookups: HashMap<u64, u64>,
     /// The base version whose pages the kernel may cache for each inode opened from the base.
     pub(super) cached: HashMap<u64, Version>,
     /// Inodes copied up from a base version other than the cached one: the next open drops the pages.
     pub(super) stale: std::collections::HashSet<u64>,
 }
 
-impl Tables {
+impl Inodes {
     /// Entries at or under `from` now live under `to`; returns (new path, ino) of each.
     /// Only a directory has entries under it to look for.
-    pub(super) fn rekey(&mut self, scope: &str, from: &Path, to: &Path, dir: bool) -> Vec<(PathBuf, u64)> {
-        if let Some(ino) = self.inos.remove(&(scope.to_string(), to.to_path_buf())) {
+    pub(super) fn rekey(&mut self, from: &Path, to: &Path, dir: bool) -> Vec<(PathBuf, u64)> {
+        if let Some(ino) = self.inos.remove(to) {
             self.paths.remove(&ino);
         }
         let old: Vec<(PathBuf, u64)> = if dir {
             self.inos
                 .iter()
-                .filter(|((s, p), _)| s == scope && p.starts_with(from))
-                .map(|((_, p), &i)| (p.clone(), i))
+                .filter(|(p, _)| p.starts_with(from))
+                .map(|(p, &i)| (p.clone(), i))
                 .collect()
         } else {
-            let key = (scope.to_string(), from.to_path_buf());
-            self.inos.get(&key).map(|&i| (key.1, i)).into_iter().collect()
+            self.inos
+                .get(from)
+                .map(|&i| (from.to_path_buf(), i))
+                .into_iter()
+                .collect()
         };
         let mut out = Vec::with_capacity(old.len());
         for (p, ino) in old {
             let new = moved(&p, from, to).expect("filtered on prefix");
-            self.inos.remove(&(scope.to_string(), p));
-            self.inos.insert((scope.to_string(), new.clone()), ino);
-            self.paths.insert(ino, (scope.to_string(), new.clone()));
+            self.inos.remove(&p);
+            self.inos.insert(new.clone(), ino);
+            self.paths.insert(ino, new.clone());
             out.push((new, ino));
         }
         out
@@ -49,17 +52,43 @@ impl Tables {
 
     /// `rel` no longer exists; its inode lives on under another hard link, if any
     /// (`linked`: it had more than one).
-    pub(super) fn forget_path(&mut self, scope: &str, rel: &Path, linked: bool) {
-        let key = (scope.to_string(), rel.to_path_buf());
-        if let Some(ino) = self.inos.remove(&key)
-            && self.paths.get(&ino) == Some(&key)
+    pub(super) fn forget_path(&mut self, rel: &Path, linked: bool) {
+        if let Some(ino) = self.inos.remove(rel)
+            && self.paths.get(&ino).is_some_and(|p| p == rel)
         {
-            let other = || self.inos.iter().find(|(_, i)| **i == ino).map(|(k, _)| k.clone());
+            let other = || self.inos.iter().find(|(_, i)| **i == ino).map(|(p, _)| p.clone());
             match linked.then(other).flatten() {
                 Some(other) => self.paths.insert(ino, other),
                 None => self.paths.remove(&ino),
             };
         }
+    }
+
+    /// The kernel took one more reference to `ino`, found at `rel`.
+    pub(super) fn looked_up(&mut self, rel: &Path, ino: u64) {
+        if self.inos.get(rel) != Some(&ino) {
+            self.inos.insert(rel.to_path_buf(), ino);
+            self.paths.insert(ino, rel.to_path_buf());
+        }
+        *self.lookups.entry(ino).or_default() += 1;
+    }
+
+    /// The kernel dropped `n` references to `ino`; at none, forget the inode under
+    /// every name. An inode the kernel holds open has references, so no open file loses
+    /// its entry.
+    pub(super) fn forget(&mut self, ino: u64, n: u64) {
+        let Some(count) = self.lookups.get_mut(&ino) else {
+            return;
+        };
+        *count = count.saturating_sub(n);
+        if *count > 0 {
+            return;
+        }
+        self.lookups.remove(&ino);
+        self.paths.remove(&ino);
+        self.inos.retain(|_, i| *i != ino);
+        self.cached.remove(&ino);
+        self.stale.remove(&ino);
     }
 
     /// What the kernel may do with the pages it caches for `ino`, opened at `loc`
@@ -83,19 +112,13 @@ impl Tables {
         }
     }
 
-    /// Forget a scope's entries; returns the top-level names the kernel may have cached.
-    pub(super) fn forget_scope(&mut self, scope: &str, idx: u64) -> Vec<OsString> {
-        let top = self
-            .inos
+    /// The top-level names the kernel may have cached.
+    pub(super) fn top_names(&self) -> Vec<OsString> {
+        self.inos
             .keys()
-            .filter(|(s, p)| s == scope && p.components().count() == 1)
-            .map(|(_, p)| p.as_os_str().to_os_string())
-            .collect();
-        self.inos.retain(|(s, _), _| s != scope);
-        self.paths.retain(|_, (s, _)| s != scope);
-        self.cached.retain(|ino, _| ino >> SCOPE_SHIFT != idx);
-        self.stale.retain(|ino| ino >> SCOPE_SHIFT != idx);
-        top
+            .filter(|p| p.components().count() == 1)
+            .map(|p| p.as_os_str().to_os_string())
+            .collect()
     }
 }
 
@@ -119,12 +142,8 @@ pub enum Node {
 impl Views {
     // ---- lookups ----
 
-    pub(super) fn t(&self) -> MutexGuard<'_, Tables> {
-        self.t.lock().unwrap()
-    }
-
     pub fn scope(&self, id: &str) -> R<Arc<ScopeHandle>> {
-        self.scopes.read().unwrap().get(id).cloned().ok_or(Errno::ENOENT)
+        self.scopes.read().get(id).cloned().ok_or(Errno::ENOENT)
     }
 
     pub fn node(&self, ino: u64) -> R<Node> {
@@ -135,8 +154,30 @@ impl Views {
             let view = roots::view_name(UNSCOPED, (ino - UNSCOPED_ROOT) as usize);
             return Ok(Node::In(self.scope(&view)?, PathBuf::new()));
         }
-        let (s, p) = self.t().paths.get(&ino).cloned().ok_or(Errno::ENOENT)?;
-        Ok(Node::In(self.scope(&s)?, p))
+        let h = self.view_of(ino).ok_or(Errno::ENOENT)?;
+        let p = h.inodes.lock().paths.get(&ino).cloned().ok_or(Errno::ENOENT)?;
+        Ok(Node::In(h, p))
+    }
+
+    /// The view an inode number belongs to (its scope index), if it is still served.
+    fn view_of(&self, ino: u64) -> Option<Arc<ScopeHandle>> {
+        self.by_idx.read().get(&(ino >> SCOPE_SHIFT)).cloned()
+    }
+
+    /// The kernel took a reference to `ino`, `rel` in `h` (an entry or create reply,
+    /// or a READDIRPLUS entry other than `.` and `..`): from now on `node` finds it.
+    /// The unscoped roots' fixed numbers need no entry.
+    pub fn looked_up(&self, h: &ScopeHandle, rel: &Path, ino: u64) {
+        if ino >> SCOPE_SHIFT == h.idx {
+            h.inodes.lock().looked_up(rel, ino);
+        }
+    }
+
+    /// FUSE forget: the kernel dropped `n` references to `ino`.
+    pub fn forget(&self, ino: u64, n: u64) {
+        if let Some(h) = self.view_of(ino) {
+            h.inodes.lock().forget(ino, n);
+        }
     }
 
     /// The scope and path of an entry inside a scope; the mount root itself holds no files.
@@ -151,13 +192,13 @@ impl Views {
         let (h, p) = self.key(parent)?;
         Ok((h, p.join(name)))
     }
-    /// The scope's inode for `rel`: a pinned number, else the base st_ino, else a new upper number.
+    /// The scope's inode for `rel`: a pinned number, else the base st_ino, else a new
+    /// upper number (pinned). The table learns it when the kernel looks it up.
     pub fn ino_for(&self, h: &ScopeHandle, rel: &Path) -> R<u64> {
         if h.group == UNSCOPED && rel.as_os_str().is_empty() {
             return Ok(UNSCOPED_ROOT + h.root as u64);
         }
-        let key = (h.id.clone(), rel.to_path_buf());
-        if let Some(&ino) = self.t().inos.get(&key) {
+        if let Some(&ino) = h.inodes.lock().inos.get(rel) {
             return Ok(ino);
         }
         let prefix = h.idx << SCOPE_SHIFT;
@@ -167,19 +208,53 @@ impl Views {
             None => match self.lower_stat(h, rel).map(|st| st.st_ino) {
                 Some(i) if i < UPPER_BIT => prefix | i,
                 _ => {
+                    // Under the store's lock: two lookups of a new path pin one number.
                     let mut store = h.store();
-                    let ino = prefix | UPPER_BIT | store.alloc_upper_ino();
-                    store.set_pin(rel, ino).map_err(errno)?;
-                    ino
+                    match store.pin(rel) {
+                        Some(ino) => ino,
+                        None => {
+                            let ino = prefix | UPPER_BIT | store.alloc_upper_ino();
+                            store.set_pin(rel, ino).map_err(errno)?;
+                            ino
+                        }
+                    }
                 }
             },
         };
-        let mut t = self.t();
-        if let Some(&existing) = t.inos.get(&key) {
-            return Ok(existing);
-        }
-        t.paths.insert(ino, key.clone());
-        t.inos.insert(key, ino);
         Ok(ino)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_inode_stays_while_the_kernel_holds_it_under_any_name() {
+        let mut t = Inodes::default();
+        let (a, b) = (Path::new("a"), Path::new("d/b"));
+        t.looked_up(a, 7);
+        t.looked_up(a, 7);
+        t.looked_up(b, 7); // a hard link: one inode, two names
+        t.forget(7, 2);
+        assert_eq!(t.paths.get(&7).map(PathBuf::as_path), Some(b));
+        t.forget(7, 1);
+        assert!(t.paths.is_empty() && t.inos.is_empty() && t.lookups.is_empty());
+        t.forget(7, 1); // a forget for an inode already gone changes nothing
+        assert!(t.lookups.is_empty());
+    }
+
+    #[test]
+    fn a_rename_moves_every_entry_under_a_directory() {
+        let mut t = Inodes::default();
+        t.looked_up(Path::new("d"), 1);
+        t.looked_up(Path::new("d/x"), 2);
+        t.looked_up(Path::new("e"), 3);
+        let moved = t.rekey(Path::new("d"), Path::new("e"), true);
+        assert_eq!(moved.len(), 2);
+        assert_eq!(t.inos.get(Path::new("e/x")), Some(&2));
+        assert!(!t.paths.values().any(|p| p == Path::new("d")));
+        t.forget(3, 1); // the replaced `e` was dropped from the table by the rename
+        assert_eq!(t.paths.get(&1).map(PathBuf::as_path), Some(Path::new("e")));
     }
 }

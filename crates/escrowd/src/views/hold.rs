@@ -43,7 +43,7 @@ impl Views {
     /// Every held scope, oldest hold first.
     pub fn held_scopes(&self) -> error::Result<Vec<Identity>> {
         let ids: Vec<String> = {
-            let scopes = self.scopes.read().unwrap();
+            let scopes = self.scopes.read();
             scopes
                 .values()
                 .filter(|h| h.root == PROJECT && h.store_read().hold().is_some())
@@ -159,7 +159,7 @@ impl Views {
         if session.is_empty() {
             return None;
         }
-        let scopes = self.scopes.read().unwrap();
+        let scopes = self.scopes.read();
         let mut ids: Vec<&String> = scopes
             .values()
             .filter(|h| h.root == PROJECT)

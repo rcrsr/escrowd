@@ -31,16 +31,17 @@ pub struct ScopeHandle {
     /// Changes the unscoped mode saw while the scope was open, fixed at close.
     pub(super) unscoped_seen: AtomicU64,
     pub(super) store: RwLock<ScopeStore>,
+    pub(super) inodes: Mutex<Inodes>,
 }
 
 impl ScopeHandle {
     pub(crate) fn store(&self) -> RwLockWriteGuard<'_, ScopeStore> {
-        self.store.write().unwrap()
+        self.store.write()
     }
 
     /// Lookups share the store.
     pub(crate) fn store_read(&self) -> RwLockReadGuard<'_, ScopeStore> {
-        self.store.read().unwrap()
+        self.store.read()
     }
 
     pub fn is_closed(&self) -> bool {
@@ -131,8 +132,8 @@ impl Views {
             return self.ensure_upper_dir(h, rel);
         }
         {
-            let mut t = self.t();
-            if let Some(&ino) = t.inos.get(&(h.id.clone(), rel.to_path_buf()))
+            let mut t = h.inodes.lock();
+            if let Some(&ino) = t.inos.get(rel)
                 && t.cached.get(&ino).is_some_and(|v| *v != Version::of(&st))
             {
                 t.stale.insert(ino);
@@ -363,7 +364,7 @@ impl Views {
                 (None, _) => store.drop_writers(rel).map_err(errno)?,
             }
         }
-        self.t().forget_path(&h.id, rel, st.st_nlink > 1);
+        h.inodes.lock().forget_path(rel, st.st_nlink > 1);
         self.log_by(h, op, rel, by, "allow");
         Ok(())
     }
@@ -412,7 +413,7 @@ impl Views {
         self.copy_up(h, from)?;
         self.ensure_upper_dir(h, parent(to))?;
         sys::rename(h.upper.as_fd(), from, to, flags).map_err(errno)?;
-        let moved_entries = self.t().rekey(&h.id, from, to, from_dir);
+        let moved_entries = h.inodes.lock().rekey(from, to, from_dir);
         let to_dir = to_exists.as_ref().is_some_and(|(_, st)| sys::is_dir(st));
         h.store()
             .batch(|store| {
@@ -469,9 +470,7 @@ impl Views {
             store.set_pin(src, ino).map_err(errno)?;
             store.set_pin(dst, ino).map_err(errno)?;
         }
-        let mut t = self.t();
-        t.inos.insert((h.id.clone(), dst.to_path_buf()), ino);
-        drop(t);
+        h.inodes.lock().inos.insert(dst.to_path_buf(), ino);
         self.wrote(h, dst, by)?;
         self.log_by(h, "link", dst, by, "allow");
         Ok(())
@@ -529,7 +528,7 @@ impl Views {
             }
         }
         .map_err(errno)?;
-        let pages = match self.t().pages(ino, loc, &st) {
+        let pages = match h.inodes.lock().pages(ino, loc, &st) {
             Pages::Empty(_) if writes => Pages::Drop,
             p => p,
         };

@@ -11,7 +11,9 @@
 //! outcome it got, and only then is a committed scope dropped (`Kept`).
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 
 use tokio::sync::{OwnedMutexGuard, mpsc, watch};
 
@@ -135,7 +137,7 @@ struct Locks(Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>);
 
 impl Locks {
     async fn lock(&self, id: &str) -> ScopeLock<'_> {
-        let lock = self.0.lock().unwrap().entry(id.to_string()).or_default().clone();
+        let lock = self.0.lock().entry(id.to_string()).or_default().clone();
         let guard = lock.clone().lock_owned().await;
         ScopeLock {
             locks: self,
@@ -147,7 +149,7 @@ impl Locks {
 
     #[cfg(test)]
     fn len(&self) -> usize {
-        self.0.lock().unwrap().len()
+        self.0.lock().len()
     }
 }
 
@@ -162,7 +164,7 @@ struct ScopeLock<'a> {
 impl Drop for ScopeLock<'_> {
     fn drop(&mut self) {
         self.guard.take();
-        let mut locks = self.locks.0.lock().unwrap();
+        let mut locks = self.locks.0.lock();
         // The table's reference and ours: nobody else waits for it.
         if Arc::strong_count(&self.lock) == 2 {
             locks.remove(&self.id);
