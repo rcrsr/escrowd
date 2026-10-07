@@ -36,7 +36,7 @@ use crate::changeset::{self, ChangeSet, Kind};
 use crate::commit::{Commits, Lowers, Outcome};
 use crate::diff;
 use crate::gate::Gate;
-use crate::history::History;
+use crate::history::{self, History};
 use crate::ledger::Ledger;
 use crate::policy::{ConflictRules, ConflictVerdict, Tier};
 use crate::proc::{Proc, Procs};
@@ -379,7 +379,9 @@ impl Views {
         let history = History::open(state_dir)?;
         // Roll back an interrupted commit before any scope sees the base.
         let lowers: Lowers = std::array::from_fn(|r| roots.get(r).and_then(|s| s.lower.as_ref()).map(|l| l.as_fd()));
+        let mut finished = Vec::new();
         for (generation, id) in commits.recover(&lowers)? {
+            finished.push(id.clone());
             let mut found = false;
             for root in 0..roots::COUNT {
                 let dir = scopes_dir.join(roots::view_name(&id, root));
@@ -422,6 +424,7 @@ impl Views {
         views.load_scopes()?;
         views.ensure_unscoped()?;
         views.gc(None)?;
+        views.history.resolve(|id| views.fate(id, &finished))?;
         // IO outside a scope goes straight to the project, unseen: the ledger says so
         // once (logging each operation would route it through FUSE).
         if unscoped == Unscoped::Passthrough {
@@ -960,6 +963,25 @@ impl Views {
         Ok(())
     }
 
+    /// What a scope with a pending decision shows at start (`history::Fate`); `finished`:
+    /// the scopes whose commit the journal finished.
+    fn fate(&self, id: &str, finished: &[String]) -> history::Fate {
+        if finished.iter().any(|f| f == id) {
+            return history::Fate::Committed;
+        }
+        let Ok(hs) = self.handles(id) else {
+            return history::Fate::Gone;
+        };
+        if hs[0].is_closed() {
+            return history::Fate::Closed;
+        }
+        // A decided unscoped scope is replaced by a fresh one, with no changes.
+        if id == UNSCOPED && self.change_set(&hs).is_ok_and(|cs| cs.changes.is_empty()) {
+            return history::Fate::Gone;
+        }
+        history::Fate::Open
+    }
+
     /// Commit a closed scope's change set to the project, all or nothing, and drop the
     /// scope. On a conflict nothing is written and the policy's `conflict.verdict`
     /// drops the scope (discard) or reopens it (return); on a failure the commit is
@@ -967,13 +989,33 @@ impl Views {
     pub fn commit_scope(&self, id: &str) -> io::Result<Outcome> {
         let hs = self.closed_handles(id)?;
         let cs = self.change_set(&hs)?;
-        self.commit_change_set(id, &hs, &cs)
+        self.commit_change_set(id, &hs, &cs, false)
     }
 
     /// `commit_scope` with the change set `close_scope` returned (the scope is frozen since).
     pub fn commit_closed(&self, id: &str, cs: &ChangeSet) -> io::Result<Outcome> {
         let hs = self.closed_handles(id)?;
-        self.commit_change_set(id, &hs, cs)
+        self.commit_change_set(id, &hs, cs, false)
+    }
+
+    /// `commit_scope` (with `cs`, if given) that keeps a committed scope until
+    /// `finish_commit`: the caller settles the decision in the history in between, so
+    /// a scope gone at the next start was never committed (`history::Fate`).
+    pub fn commit_kept(&self, id: &str, cs: Option<&ChangeSet>) -> io::Result<Outcome> {
+        let hs = self.closed_handles(id)?;
+        match cs {
+            Some(cs) => self.commit_change_set(id, &hs, cs, true),
+            None => self.commit_change_set(id, &hs, &self.change_set(&hs)?, true),
+        }
+    }
+
+    /// Drop a scope `commit_kept` committed.
+    pub fn finish_commit(&self, id: &str, generation: Option<u64>) -> io::Result<()> {
+        self.remove_scope(id)?;
+        // One journal write records the scope gone (before a new scope of the same id
+        // opens) and forgets what no scope reads any more.
+        self.gc(generation)?;
+        self.ensure_unscoped()
     }
 
     fn closed_handles(&self, id: &str) -> io::Result<Vec<Arc<ScopeHandle>>> {
@@ -987,7 +1029,7 @@ impl Views {
         Ok(hs)
     }
 
-    fn commit_change_set(&self, id: &str, hs: &[Arc<ScopeHandle>], cs: &ChangeSet) -> io::Result<Outcome> {
+    fn commit_change_set(&self, id: &str, hs: &[Arc<ScopeHandle>], cs: &ChangeSet, keep: bool) -> io::Result<Outcome> {
         let hs: Vec<&ScopeHandle> = hs.iter().map(|h| h.as_ref()).collect();
         let show = |root: usize, p: &Path| self.shown(root, p);
         let outcome = self
@@ -997,10 +1039,10 @@ impl Views {
             Outcome::Committed(generation, _) => {
                 crate::fault::hit("committed", 0)?;
                 self.ledger.append(id, "decide", Path::new(""), None, "commit");
-                self.remove_scope(id)?;
-                // One journal write records the scope gone (before a new scope of the
-                // same id opens) and forgets what no scope reads any more.
-                self.gc(*generation)?;
+                if !keep {
+                    self.finish_commit(id, *generation)?;
+                }
+                return Ok(outcome);
             }
             Outcome::Conflict(paths) => {
                 for p in paths {

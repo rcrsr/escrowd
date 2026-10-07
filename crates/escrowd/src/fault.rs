@@ -5,6 +5,9 @@
 //! the commit rolls back in place, or with `abort`, which kills the daemon so the
 //! next start rolls it back. `committed` fires after the journal says done, before
 //! the scope is dropped (only `abort` makes sense there: the next start drops it).
+//! A decision the history keeps passes `intended` (written ahead), `applied` (before
+//! it is settled) and `settled` (before a committed scope is dropped); with `abort`,
+//! the next start settles or cancels it.
 //! `restore` fires while a rollback puts originals back (with `abort`: a crash
 //! during recovery). `race:<n>` plays an editor: just before apply step `n`
 //! re-checks its path, it appends to the live file (creating it if missing; not
