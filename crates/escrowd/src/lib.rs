@@ -10,6 +10,7 @@ pub(crate) mod changeset;
 pub(crate) mod commit;
 pub(crate) mod convert;
 pub mod daemon;
+pub(crate) mod db;
 pub mod decision;
 pub(crate) mod diff;
 pub mod error;

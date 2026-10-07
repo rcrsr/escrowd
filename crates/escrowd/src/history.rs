@@ -15,14 +15,14 @@ use std::io;
 use std::path::Path;
 use std::sync::Mutex;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
+
+use crate::db::{self, Durability, sql};
 
 /// Decisions kept per session, and for scopes without one.
 const KEEP: i64 = 100;
 
 const SCHEMA: &str = "
-PRAGMA synchronous = NORMAL;
-PRAGMA journal_mode = WAL;
 CREATE TABLE IF NOT EXISTS decided (
     seq INTEGER PRIMARY KEY,
     scope TEXT NOT NULL,
@@ -64,24 +64,23 @@ pub struct Latest {
     pub entry: Vec<u8>,
 }
 
-fn sql(e: rusqlite::Error) -> io::Error {
-    io::Error::other(e)
+/// Version 1: the table with pending rows. A history from 3.4 to 3.6 has it
+/// without the column.
+fn v1_pending(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(SCHEMA)?;
+    if !db::has_column(tx, "decided", "pending")? {
+        tx.execute_batch("ALTER TABLE decided ADD COLUMN pending INTEGER NOT NULL DEFAULT 0")?;
+    }
+    Ok(())
 }
 
 impl History {
     /// `settle` reads a pending record at start (`resolve`).
     pub fn open(state: &Path, settle: Settle) -> io::Result<Self> {
-        let db = Connection::open(state.join("history.sqlite")).map_err(sql)?;
-        db.execute_batch(SCHEMA).map_err(sql)?;
-        // A history from before pending rows (3.4 to 3.6) gets the column.
-        let has_pending = db
-            .prepare("SELECT 1 FROM pragma_table_info('decided') WHERE name = 'pending'")
-            .and_then(|mut st| st.exists([]))
-            .map_err(sql)?;
-        if !has_pending {
-            db.execute_batch("ALTER TABLE decided ADD COLUMN pending INTEGER NOT NULL DEFAULT 0")
-                .map_err(sql)?;
-        }
+        // Full: a decision is applied only after its pending row is on disk, so the
+        // row must survive whatever the commit survives.
+        let mut db = db::open(&state.join("history.sqlite"), Durability::Full)?;
+        db::migrate(&mut db, "history.sqlite", &[v1_pending])?;
         Ok(History {
             db: Mutex::new(db),
             settled_as: settle,
@@ -244,6 +243,24 @@ mod tests {
             (seq, b"second".to_vec(), None)
         );
         assert!(h.latest("s0").unwrap().is_none());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_history_from_before_pending_rows_gets_the_column() {
+        let dir = crate::db::temp_dir("history-v0");
+        {
+            let old = Connection::open(dir.join("history.sqlite")).unwrap();
+            old.execute_batch(
+                "CREATE TABLE decided (seq INTEGER PRIMARY KEY, scope TEXT NOT NULL, session TEXT NOT NULL,
+                     token_sha256 TEXT, entry BLOB NOT NULL) STRICT;
+                 INSERT INTO decided VALUES (1, 's1', 'a', NULL, X'00');",
+            )
+            .unwrap();
+        }
+        let h = History::open(&dir, record::settled).unwrap();
+        assert_eq!(h.latest("s1").unwrap().unwrap().seq, 1, "an old row reads as settled");
+        assert_eq!(h.session("a", 10).unwrap(), vec![vec![0u8]]);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

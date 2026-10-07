@@ -29,7 +29,9 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
+
+use crate::db::{self, Durability, sql};
 
 use crate::policy::Tier;
 use crate::proc::{Info, Proc};
@@ -110,12 +112,6 @@ pub struct ScopeStore {
 
 const PIN_BATCH: usize = 4096;
 
-// synchronous first, so the switch of a new database to WAL runs under it.
-const PRAGMAS: &str = "
-PRAGMA synchronous = NORMAL;
-PRAGMA journal_mode = WAL;
-";
-
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value ANY) STRICT;
 CREATE TABLE IF NOT EXISTS whiteouts (path BLOB PRIMARY KEY) STRICT;
@@ -165,8 +161,18 @@ fn split_nul(b: &[u8]) -> Vec<String> {
         .collect()
 }
 
-fn sql(e: rusqlite::Error) -> io::Error {
-    io::Error::other(e)
+/// Version 1: the tables as of protocol 7. Stores from before kept no version;
+/// every table they lack is created.
+fn v1(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(SCHEMA)
+}
+
+/// Normal: a store's rows survive a crash of the daemon; a scope does not survive
+/// a crash of the host it runs on, and its writes are the hot path.
+fn open_db(dir: &Path) -> io::Result<Connection> {
+    let mut db = db::open(&dir.join("meta.sqlite"), Durability::Normal)?;
+    db::migrate(&mut db, "meta.sqlite", &[v1])?;
+    Ok(db)
 }
 
 fn write_version(db: &Connection, rel: &Path, seen: Seen, v: Version) -> io::Result<()> {
@@ -231,11 +237,8 @@ impl ScopeStore {
         let dir = scopes_dir.join(id);
         fs::create_dir(&dir)?;
         fs::create_dir(dir.join("upper"))?;
-        let mut db = Connection::open(dir.join("meta.sqlite")).map_err(sql)?;
-        db.execute_batch(PRAGMAS).map_err(sql)?;
-        // One transaction: a scope opens with one write.
+        let mut db = open_db(&dir)?;
         let tx = db.transaction().map_err(sql)?;
-        tx.execute_batch(SCHEMA).map_err(sql)?;
         tx.execute(
             "INSERT INTO meta VALUES ('name', ?1), ('idx', ?2), ('since', ?3), ('readonly', ?4), ('next_upper_ino', 0), ('state', 'open')",
             params![name, idx as i64, since as i64, readonly as i64],
@@ -260,9 +263,7 @@ impl ScopeStore {
     /// Reopen an existing scope directory, e.g. after a daemon restart.
     pub fn load(scopes_dir: &Path, id: &str) -> io::Result<Self> {
         let dir = scopes_dir.join(id);
-        let db = Connection::open(dir.join("meta.sqlite")).map_err(sql)?;
-        db.execute_batch(PRAGMAS).map_err(sql)?;
-        db.execute_batch(SCHEMA).map_err(sql)?;
+        let db = open_db(&dir)?;
         Self::from_db(dir, id, db)
     }
 
