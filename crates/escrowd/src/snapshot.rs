@@ -9,13 +9,13 @@
 //! resolution is complete. Pre-images keep the original's inode number, size,
 //! mode and times, so inode numbers and recorded versions stay stable.
 
+use parking_lot::RwLock;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io;
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
 
 use fuser::FileType;
 use rustix::fs::{OFlags, Stat};
@@ -127,7 +127,7 @@ impl Generations {
 
     /// Make a generation's pre-images visible to the scopes opened before it.
     pub fn register(&self, generation: u64, entries: impl IntoIterator<Item = (PathBuf, Entry)>) {
-        let mut ix = self.index.write().unwrap();
+        let mut ix = self.index.write();
         for (p, e) in entries {
             if let Some(name) = p.file_name() {
                 ix.children
@@ -141,7 +141,7 @@ impl Generations {
     }
 
     pub fn unregister(&self, generation: u64) {
-        let mut ix = self.index.write().unwrap();
+        let mut ix = self.index.write();
         let mut emptied = Vec::new();
         for (p, gens) in ix.paths.iter_mut() {
             if gens.remove(&generation).is_some() && gens.is_empty() {
@@ -190,7 +190,7 @@ impl Generations {
     }
 
     fn resolve(&self, since: u64, rel: &Path) -> Option<(u64, Entry)> {
-        let ix = self.index.read().unwrap();
+        let ix = self.index.read();
         if since >= ix.latest {
             return None;
         }
@@ -200,7 +200,7 @@ impl Generations {
 
     /// Names recorded below `rel` by generations after `since`.
     fn children(&self, since: u64, rel: &Path) -> Vec<OsString> {
-        let ix = self.index.read().unwrap();
+        let ix = self.index.read();
         if since >= ix.latest {
             return Vec::new();
         }

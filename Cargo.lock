@@ -370,6 +370,7 @@ dependencies = [
  "globset",
  "libc",
  "memchr",
+ "parking_lot",
  "prost",
  "protoc-bin-vendored",
  "rusqlite",

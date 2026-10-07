@@ -3,28 +3,26 @@
 //! A reviewer of a held scope gets its session's earlier decisions, and a client
 //! following a held scope (`AwaitDecision`) gets its outcome even after the scope was
 //! dropped or the daemon restarted. Each row is one decision of a scope that has a
-//! session or was held, as the RPC layer encoded it (a `Decided` message).
+//! session or was held, in the record format of `record.rs`; this module stores the
+//! bytes and does not read them.
 //!
 //! A decision is written ahead, pending, with the outcome it intends, then settled
 //! with the outcome it got. A daemon killed in between leaves a pending row, which the
 //! next start settles from what survived (`Fate`): no decision is applied without one
 //! kept, and none is kept that was not applied.
 
+use parking_lot::Mutex;
 use std::io;
 use std::path::Path;
-use std::sync::Mutex;
 
-use prost::Message;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
-use crate::proto::{Decided, OutcomeStatus};
+use crate::db::{self, Durability, sql};
 
 /// Decisions kept per session, and for scopes without one.
 const KEEP: i64 = 100;
 
 const SCHEMA: &str = "
-PRAGMA synchronous = NORMAL;
-PRAGMA journal_mode = WAL;
 CREATE TABLE IF NOT EXISTS decided (
     seq INTEGER PRIMARY KEY,
     scope TEXT NOT NULL,
@@ -39,7 +37,11 @@ CREATE INDEX IF NOT EXISTS decided_session ON decided (session, seq);
 
 pub struct History {
     db: Mutex<Connection>,
+    settled_as: Settle,
 }
+
+/// A pending record as its scope's fate shows it applied; None: not applied.
+pub type Settle = fn(&[u8], Fate) -> Option<Vec<u8>>;
 
 /// What a pending decision's scope shows at the next start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -62,24 +64,27 @@ pub struct Latest {
     pub entry: Vec<u8>,
 }
 
-fn sql(e: rusqlite::Error) -> io::Error {
-    io::Error::other(e)
+/// Version 1: the table with pending rows. A history from 3.4 to 3.6 has it
+/// without the column.
+fn v1_pending(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(SCHEMA)?;
+    if !db::has_column(tx, "decided", "pending")? {
+        tx.execute_batch("ALTER TABLE decided ADD COLUMN pending INTEGER NOT NULL DEFAULT 0")?;
+    }
+    Ok(())
 }
 
 impl History {
-    pub fn open(state: &Path) -> io::Result<Self> {
-        let db = Connection::open(state.join("history.sqlite")).map_err(sql)?;
-        db.execute_batch(SCHEMA).map_err(sql)?;
-        // A history from before pending rows (3.4 to 3.6) gets the column.
-        let has_pending = db
-            .prepare("SELECT 1 FROM pragma_table_info('decided') WHERE name = 'pending'")
-            .and_then(|mut st| st.exists([]))
-            .map_err(sql)?;
-        if !has_pending {
-            db.execute_batch("ALTER TABLE decided ADD COLUMN pending INTEGER NOT NULL DEFAULT 0")
-                .map_err(sql)?;
-        }
-        Ok(History { db: Mutex::new(db) })
+    /// `settle` reads a pending record at start (`resolve`).
+    pub fn open(state: &Path, settle: Settle) -> io::Result<Self> {
+        // Full: a decision is applied only after its pending row is on disk, so the
+        // row must survive whatever the commit survives.
+        let mut db = db::open(&state.join("history.sqlite"), Durability::Full)?;
+        db::migrate(&mut db, "history.sqlite", &[v1_pending])?;
+        Ok(History {
+            db: Mutex::new(db),
+            settled_as: settle,
+        })
     }
 
     /// Record a decision of `scope`; keeps the newest `KEEP` of its session.
@@ -92,7 +97,7 @@ impl History {
     /// Write a decision of `scope` ahead, pending, with the outcome it intends. Readers
     /// do not see it until `settle`.
     pub fn intend(&self, scope: &str, session: &str, token_sha256: Option<&str>, entry: &[u8]) -> io::Result<u64> {
-        let db = self.db.lock().unwrap();
+        let db = self.db.lock();
         db.execute(
             "INSERT INTO decided (scope, session, token_sha256, entry, pending) VALUES (?1, ?2, ?3, ?4, 1)",
             params![scope, session, token_sha256, entry],
@@ -103,7 +108,7 @@ impl History {
 
     /// The pending decision `seq` got `entry`; keeps the newest `KEEP` of its session.
     pub fn settle(&self, seq: u64, entry: &[u8]) -> io::Result<()> {
-        let mut db = self.db.lock().unwrap();
+        let mut db = self.db.lock();
         let tx = db.transaction().map_err(sql)?;
         let session: String = tx
             .query_row("SELECT session FROM decided WHERE seq = ?1", [seq as i64], |r| r.get(0))
@@ -125,7 +130,7 @@ impl History {
 
     /// The pending decision `seq` was not applied.
     pub fn cancel(&self, seq: u64) -> io::Result<()> {
-        let db = self.db.lock().unwrap();
+        let db = self.db.lock();
         db.execute("DELETE FROM decided WHERE seq = ?1", [seq as i64])
             .map_err(sql)
             .map(drop)
@@ -145,7 +150,7 @@ impl History {
 
     fn resolve_where(&self, scope: Option<&str>, fate: impl Fn(&str) -> Fate) -> io::Result<usize> {
         let pending: Vec<(u64, String, Vec<u8>)> = {
-            let db = self.db.lock().unwrap();
+            let db = self.db.lock();
             let mut st = db
                 .prepare(
                     "SELECT seq, scope, entry FROM decided WHERE pending = 1 AND (?1 IS NULL OR scope = ?1)
@@ -159,12 +164,9 @@ impl History {
         };
         let mut settled = 0;
         for (seq, scope, entry) in pending {
-            match Decided::decode(&entry[..])
-                .ok()
-                .and_then(|d| settled_as(d, fate(&scope)))
-            {
-                Some(d) => {
-                    self.settle(seq, &d.encode_to_vec())?;
+            match (self.settled_as)(&entry, fate(&scope)) {
+                Some(entry) => {
+                    self.settle(seq, &entry)?;
                     settled += 1;
                 }
                 None => self.cancel(seq)?,
@@ -175,7 +177,7 @@ impl History {
 
     /// The latest decision of `scope`, if one is kept.
     pub fn latest(&self, scope: &str) -> io::Result<Option<Latest>> {
-        let db = self.db.lock().unwrap();
+        let db = self.db.lock();
         db.query_row(
             "SELECT seq, token_sha256, entry FROM decided WHERE scope = ?1 AND pending = 0
              ORDER BY seq DESC LIMIT 1",
@@ -197,7 +199,7 @@ impl History {
         if session.is_empty() {
             return Ok(Vec::new());
         }
-        let db = self.db.lock().unwrap();
+        let db = self.db.lock();
         let mut st = db
             .prepare("SELECT entry FROM decided WHERE session = ?1 AND pending = 0 ORDER BY seq DESC LIMIT ?2")
             .map_err(sql)?;
@@ -210,37 +212,18 @@ impl History {
     }
 }
 
-/// A pending decision as its scope's fate shows it applied; None: not applied.
-fn settled_as(mut d: Decided, fate: Fate) -> Option<Decided> {
-    let out = d.outcome.as_mut()?;
-    let intended = out.status();
-    let conflict = |out: &mut crate::proto::Outcome, reopened: bool| {
-        out.set_status(OutcomeStatus::Conflict);
-        out.paths.clear();
-        out.reasons = vec!["conflict: the project changed since the scope's snapshot".into()];
-        out.reopened = reopened;
-    };
-    match (intended, fate) {
-        (OutcomeStatus::Committed, Fate::Committed)
-        | (OutcomeStatus::Returned, Fate::Open)
-        | (OutcomeStatus::Discarded, Fate::Gone) => {}
-        // A commit that found a conflict reopened or dropped the scope.
-        (OutcomeStatus::Committed, Fate::Open) => conflict(out, true),
-        (OutcomeStatus::Committed, Fate::Gone) => conflict(out, false),
-        _ => return None,
-    }
-    Some(d)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::proto::{Decided, OutcomeStatus};
+    use crate::record;
+    use prost::Message;
 
     #[test]
     fn keeps_the_newest_per_session_and_each_scopes_latest() {
         let dir = std::env::temp_dir().join(format!("escrowd-history-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let h = History::open(&dir).unwrap();
+        let h = History::open(&dir, record::settled).unwrap();
         for i in 0..KEEP + 5 {
             h.record(&format!("s{i}"), "a", Some("t"), &[i as u8]).unwrap();
         }
@@ -264,11 +247,29 @@ mod tests {
     }
 
     #[test]
+    fn a_history_from_before_pending_rows_gets_the_column() {
+        let dir = crate::db::temp_dir("history-v0");
+        {
+            let old = Connection::open(dir.join("history.sqlite")).unwrap();
+            old.execute_batch(
+                "CREATE TABLE decided (seq INTEGER PRIMARY KEY, scope TEXT NOT NULL, session TEXT NOT NULL,
+                     token_sha256 TEXT, entry BLOB NOT NULL) STRICT;
+                 INSERT INTO decided VALUES (1, 's1', 'a', NULL, X'00');",
+            )
+            .unwrap();
+        }
+        let h = History::open(&dir, record::settled).unwrap();
+        assert_eq!(h.latest("s1").unwrap().unwrap().seq, 1, "an old row reads as settled");
+        assert_eq!(h.session("a", 10).unwrap(), vec![vec![0u8]]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
     fn a_start_settles_or_cancels_each_pending_decision() {
         use crate::proto::Outcome;
         let dir = std::env::temp_dir().join(format!("escrowd-pending-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let h = History::open(&dir).unwrap();
+        let h = History::open(&dir, record::settled).unwrap();
         let entry = |status: OutcomeStatus| {
             Decided {
                 outcome: Some(Outcome {
