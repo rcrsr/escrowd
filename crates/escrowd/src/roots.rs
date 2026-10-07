@@ -119,11 +119,6 @@ impl Rules {
     }
 }
 
-/// `p` relative to `root`, if it is at or under it.
-pub fn under<'a>(p: &'a Path, root: &Path) -> Option<&'a Path> {
-    p.strip_prefix(root).ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

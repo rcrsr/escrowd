@@ -6,30 +6,30 @@
 //! scope. Scope children start in their own bwrap sandbox through the exec
 //! socket; IO outside any scope follows the unscoped mode.
 
-pub mod changeset;
-pub mod commit;
-pub mod convert;
+pub(crate) mod changeset;
+pub(crate) mod commit;
+pub(crate) mod convert;
 pub mod daemon;
 pub mod decision;
-pub mod diff;
+pub(crate) mod diff;
 pub mod error;
 pub mod exec;
-pub mod fault;
-pub mod fuse;
-pub mod gate;
-pub mod history;
-pub mod journal;
-pub mod ledger;
+pub(crate) mod fault;
+pub(crate) mod fuse;
+pub(crate) mod gate;
+pub(crate) mod history;
+pub(crate) mod journal;
+pub(crate) mod ledger;
 pub mod policy;
-pub mod proc;
-pub mod record;
-pub mod review;
-pub mod roots;
+pub(crate) mod proc;
+pub(crate) mod record;
+pub(crate) mod review;
+pub(crate) mod roots;
 pub mod rpc;
 pub mod sandbox;
-pub mod snapshot;
-pub mod store;
-pub mod sys;
+pub(crate) mod snapshot;
+pub(crate) mod store;
+pub(crate) mod sys;
 pub mod views;
 
 /// Protocol version reported by `Ping`: 7 since the freeze (tag `protocol-v1`),
