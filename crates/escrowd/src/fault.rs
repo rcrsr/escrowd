@@ -7,7 +7,8 @@
 //! the scope is dropped (only `abort` makes sense there: the next start drops it).
 //! A decision the history keeps passes `intended` (written ahead), `applied` (before
 //! it is settled) and `settled` (before a committed scope is dropped); with `abort`,
-//! the next start settles or cancels it.
+//! the next start settles or cancels it. `recovered` fires at start, after recovery
+//! dropped the scopes of finished commits.
 //! `restore` fires while a rollback puts originals back (with `abort`: a crash
 //! during recovery). `race:<n>` plays an editor: just before apply step `n`
 //! re-checks its path, it appends to the live file (creating it if missing; not

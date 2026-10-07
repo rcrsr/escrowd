@@ -183,9 +183,9 @@ Checks 1–6 on the final commit: the suite 10 consecutive times per CI runner (
 
 | Check | Where | Result | Log |
 | --- | --- | --- | --- |
-| 1, 2, 3, 5. Conformance | Dev host | 240 / 240 (one more fails only on this host: a stray `/tmp/x`) | |
-| 6. Conformance | Lima: Ubuntu 24.04, Ubuntu 26.04, Debian 13, Fedora 44 | **240 / 240** on each | `tests/conformance/results/<host>.log` |
-| 4. Held soak | Dev host, 100 runs: 8 held scopes each, killed while reviewers decide (a quarter killed again in recovery) | 393 scopes held at a kill, a call in flight at 83 kills (13 took effect, 70 did not); **0 lost, 0 failed** | `tests/soak/results/held-wsl-dev-host.log` |
+| 1, 2, 3, 5. Conformance | Dev host | 240 / 241 (the one left fails only on this host: a stray `/tmp/x`) | |
+| 6. Conformance | Lima: Ubuntu 24.04, Ubuntu 26.04, Debian 13, Fedora 44 | **241 / 241** on each | `tests/conformance/results/<host>.log` |
+| 4. Held soak | Dev host, 100 runs: 8 held scopes each, killed while reviewers decide (a quarter killed again in recovery) | 388 scopes held at a kill, a call in flight at 88 kills (6 took effect, 82 did not); **0 lost, 0 failed** | `tests/soak/results/held-wsl-dev-host.log` |
 | Crash soak (commit path changed) | Dev host, 100 runs | 78 rolled back, 22 committed, **0 partial** | `tests/soak/results/crash-wsl-dev-host-3.7.log` |
 | 5. `buf breaking` | Against `protocol-v1` | No breaking change | |
 | Attribution's cost | Benchmark VM, release build, median of 7 runs | Wall, escrow / native: express A **1.33×**, B **1.21×**, attrs A **1.07×**, B **1.10×** (2.8: 1.53×, 1.47×, 1.09×, 1.06×); workload C warm `rg` 3.27× (no target) | `bench/results/bench-ubuntu-24.04-3.7.log` |
@@ -195,7 +195,8 @@ No regression from attribution: every A and B workload stays within 1.5× native
 
 Found and fixed in 3.7:
 
-- **A decision applied with no history entry.** The held soak (`tests/soak/held.py`) killed the daemon after a final review's commit landed but before its history row was written: the commit and the ledger had it, but `AwaitDecision` answered `NOT_FOUND` (10 of 86 kills with a call in flight). A kept decision is now written ahead, pending, with the outcome it intends; a committed scope is dropped only after the entry settles. The next start settles a pending entry from what survived (the commit journal finished it; the scope reopened, closed or gone) or cancels it. Fault points `intended`, `applied` and `settled` test each window (`test_reviewer.py`, 6 cases).
+- **A decision applied with no history entry.** The held soak (`tests/soak/held.py`) killed the daemon after a final review's commit landed but before its history row was written: the commit and the ledger had it, but `AwaitDecision` answered `NOT_FOUND` (10 of 86 kills with a call in flight). A kept decision is now written ahead, pending, with the outcome it intends; a committed scope is dropped only after the entry settles. The next start settles a pending entry from what survived (the commit journal finished it; the scope reopened, closed or gone) or cancels it. Fault points `intended`, `applied` and `settled` test each window (`test_reviewer.py`, 7 cases).
+- **A finished commit settled as a conflict.** CI's held soak killed a restart that had dropped a finished commit's scope but not yet settled its entry; the next start found the scope gone and called it a conflict. Recovery now settles a finished commit's entry before it drops the scope (fault point `recovered`).
 - **Attribution on Fedora.** Its `sh` is bash, which runs the last command of `sh -c` in its own process, so `cp` and `git commit` were children of bwrap, not of the shell. The attribution was right and the tests' assumption wrong; they end the script with `; true`.
 - **CI.** The held soak runs 50 kills after the crash soak when the commit path or `history.rs` changes, and in `ci-repeat.yml`.
 

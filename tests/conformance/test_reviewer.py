@@ -352,6 +352,8 @@ def test_escrow_review_lists_shows_and_decides(start_daemon, escrow_bin):
     [
         ("intended", COMMIT, "held"),
         ("committed", COMMIT, pb.OUTCOME_STATUS_COMMITTED),
+        # The start that drops the committed scope dies too.
+        ("committed+recovered", COMMIT, pb.OUTCOME_STATUS_COMMITTED),
         ("applied", COMMIT, pb.OUTCOME_STATUS_COMMITTED),
         ("settled", COMMIT, pb.OUTCOME_STATUS_COMMITTED),
         ("applied", DISCARD, pb.OUTCOME_STATUS_DISCARDED),
@@ -362,6 +364,7 @@ def test_a_kill_during_the_final_review_keeps_its_decision(start_daemon, fault, 
     """The daemon dies inside the last tier's review, before or after the decision
     applies: the next start keeps the scope held, or keeps the decision for its
     client (AwaitDecision) and its session's reviewers, never neither."""
+    fault, _, then = fault.partition("+")
     d = start_daemon(policy=RULES, env={"ESCROWD_FAULT": f"{fault}:0:abort"})
     with client(d) as c:
         s = held_scope(d, c)
@@ -372,6 +375,10 @@ def test_a_kill_during_the_final_review_keeps_its_decision(start_daemon, fault, 
         )
     assert d.proc.wait(timeout=10) != 0
     d.stop()
+    if then:
+        with pytest.raises(RuntimeError, match="injected abort"):
+            start_daemon(policy=RULES, env={"ESCROWD_FAULT": f"{then}:0:abort"})
+        subprocess.run(["fusermount3", "-u", "-z", d.mount], capture_output=True)
     d = start_daemon(policy=RULES)
     with client(d) as c, reviewer(d) as rv:
         held = [h.scope_id for h in rv.list_held()]

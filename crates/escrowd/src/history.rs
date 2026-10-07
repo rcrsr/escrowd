@@ -134,12 +134,25 @@ impl History {
     /// At start: settle each pending decision from what its scope shows (`fate`), or
     /// cancel it. Returns how many were settled.
     pub fn resolve(&self, fate: impl Fn(&str) -> Fate) -> io::Result<usize> {
+        self.resolve_where(None, fate)
+    }
+
+    /// `resolve` for scope `id` alone. Recovery settles a finished commit's decision
+    /// before it drops the scope: a start killed in between must not see it gone.
+    pub fn resolve_scope(&self, id: &str, fate: Fate) -> io::Result<usize> {
+        self.resolve_where(Some(id), |_| fate)
+    }
+
+    fn resolve_where(&self, scope: Option<&str>, fate: impl Fn(&str) -> Fate) -> io::Result<usize> {
         let pending: Vec<(u64, String, Vec<u8>)> = {
             let db = self.db.lock().unwrap();
             let mut st = db
-                .prepare("SELECT seq, scope, entry FROM decided WHERE pending = 1 ORDER BY seq")
+                .prepare(
+                    "SELECT seq, scope, entry FROM decided WHERE pending = 1 AND (?1 IS NULL OR scope = ?1)
+                     ORDER BY seq",
+                )
                 .map_err(sql)?;
-            st.query_map([], |r| Ok((r.get::<_, i64>(0)? as u64, r.get(1)?, r.get(2)?)))
+            st.query_map([scope], |r| Ok((r.get::<_, i64>(0)? as u64, r.get(1)?, r.get(2)?)))
                 .map_err(sql)?
                 .collect::<Result<_, _>>()
                 .map_err(sql)?

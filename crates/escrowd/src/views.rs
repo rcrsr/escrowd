@@ -381,6 +381,7 @@ impl Views {
         let lowers: Lowers = std::array::from_fn(|r| roots.get(r).and_then(|s| s.lower.as_ref()).map(|l| l.as_fd()));
         let mut finished = Vec::new();
         for (generation, id) in commits.recover(&lowers)? {
+            history.resolve_scope(&id, history::Fate::Committed)?;
             finished.push(id.clone());
             let mut found = false;
             for root in 0..roots::COUNT {
@@ -395,6 +396,7 @@ impl Views {
             }
             commits.scope_dropped(generation)?;
         }
+        crate::fault::hit("recovered", 0)?;
         let views = Views {
             roots,
             scopes_dir,
