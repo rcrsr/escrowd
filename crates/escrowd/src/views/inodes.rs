@@ -17,6 +17,9 @@ pub(super) struct Inodes {
     pub(super) cached: HashMap<u64, Version>,
     /// Inodes copied up from a base version other than the cached one: the next open drops the pages.
     pub(super) stale: std::collections::HashSet<u64>,
+    /// Inodes the table has seen under more than one name (hard links): only these
+    /// need a scan for their other names when the kernel forgets them.
+    linked: std::collections::HashSet<u64>,
 }
 
 impl Inodes {
@@ -67,6 +70,9 @@ impl Inodes {
     /// The kernel took one more reference to `ino`, found at `rel`.
     pub(super) fn looked_up(&mut self, rel: &Path, ino: u64) {
         if self.inos.get(rel) != Some(&ino) {
+            if self.paths.get(&ino).is_some_and(|p| p != rel) {
+                self.linked.insert(ino);
+            }
             self.inos.insert(rel.to_path_buf(), ino);
             self.paths.insert(ino, rel.to_path_buf());
         }
@@ -85,8 +91,14 @@ impl Inodes {
             return;
         }
         self.lookups.remove(&ino);
-        self.paths.remove(&ino);
-        self.inos.retain(|_, i| *i != ino);
+        if let Some(name) = self.paths.remove(&ino)
+            && self.inos.get(&name) == Some(&ino)
+        {
+            self.inos.remove(&name);
+        }
+        if self.linked.remove(&ino) {
+            self.inos.retain(|_, i| *i != ino);
+        }
         self.cached.remove(&ino);
         self.stale.remove(&ino);
     }
@@ -242,6 +254,18 @@ mod tests {
         assert!(t.paths.is_empty() && t.inos.is_empty() && t.lookups.is_empty());
         t.forget(7, 1); // a forget for an inode already gone changes nothing
         assert!(t.lookups.is_empty());
+    }
+
+    #[test]
+    fn a_hard_linked_inode_is_forgotten_under_every_name() {
+        let mut t = Inodes::default();
+        t.looked_up(Path::new("a"), 7);
+        t.looked_up(Path::new("b"), 7);
+        t.looked_up(Path::new("c"), 8);
+        t.forget(7, 2);
+        assert!(!t.inos.contains_key(Path::new("a")) && !t.inos.contains_key(Path::new("b")));
+        assert!(t.linked.is_empty());
+        assert_eq!(t.inos.get(Path::new("c")), Some(&8)); // another inode is untouched
     }
 
     #[test]

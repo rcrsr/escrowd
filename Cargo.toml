@@ -11,6 +11,7 @@ license = "Apache-2.0"
 publish = false
 
 [workspace.dependencies]
+parking_lot = "0.12.5"
 escrowd = { path = "crates/escrowd" }
 anyhow = "1"
 clap = { version = "4.6", features = ["derive", "env"] }

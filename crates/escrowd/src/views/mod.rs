@@ -283,7 +283,9 @@ impl Views {
             return Ok(());
         }
         let readonly = self.unscoped == Unscoped::Deny;
-        if let Some(h) = self.scopes.read().get(UNSCOPED).cloned() {
+        // Bound first: a guard in the `if let` scrutinee would live into `remove_scope`'s write lock.
+        let existing = self.scopes.read().get(UNSCOPED).cloned();
+        if let Some(h) = existing {
             if h.readonly == readonly {
                 return Ok(());
             }

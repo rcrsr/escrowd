@@ -138,13 +138,15 @@ struct Locks(Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>);
 impl Locks {
     async fn lock(&self, id: &str) -> ScopeLock<'_> {
         let lock = self.0.lock().entry(id.to_string()).or_default().clone();
-        let guard = lock.clone().lock_owned().await;
-        ScopeLock {
+        // Built before the wait: a cancelled waiter's drop still prunes the entry.
+        let mut held = ScopeLock {
             locks: self,
             id: id.to_string(),
-            lock,
-            guard: Some(guard),
-        }
+            lock: lock.clone(),
+            guard: None,
+        };
+        held.guard = Some(lock.lock_owned().await);
+        held
     }
 
     #[cfg(test)]
@@ -248,7 +250,8 @@ impl Decisions {
         tokio::pin!(expired);
         loop {
             changed.borrow_and_update();
-            let Some(held) = self.views.blocking_hold(&session) else {
+            let hold_of = session.clone();
+            let Some(held) = self.blocking(move |v| Ok(v.blocking_hold(&hold_of))).await? else {
                 break;
             };
             tokio::select! {
@@ -698,6 +701,23 @@ mod tests {
         drop(first);
         waiter.await.unwrap();
         drop(other);
+        assert_eq!(locks.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_waiter_leaves_no_entry() {
+        let locks = Arc::new(Locks::default());
+        let first = locks.lock("s1").await;
+        let waiter = {
+            let locks = locks.clone();
+            tokio::spawn(async move {
+                let _second = locks.lock("s1").await;
+            })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        drop(first); // the holder leaves while the waiter is queued
+        waiter.abort();
+        let _ = waiter.await;
         assert_eq!(locks.len(), 0);
     }
 }

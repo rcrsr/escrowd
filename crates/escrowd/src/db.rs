@@ -43,6 +43,9 @@ pub fn open(path: &Path, durability: Durability) -> io::Result<Connection> {
 pub fn migrate(db: &mut Connection, name: &str, steps: &[Step]) -> io::Result<()> {
     let have: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0)).map_err(sql)?;
     let want = steps.len() as i64;
+    if have < 0 {
+        return Err(io::Error::other(format!("{name}: schema version {have} is not valid")));
+    }
     if have > want {
         return Err(io::Error::other(format!(
             "{name}: schema version {have} is from a newer escrowd (this one knows {want})"
@@ -110,6 +113,17 @@ mod tests {
         assert_eq!(v, 2);
         let err = migrate(&mut db, "x", &[create_t]).unwrap_err();
         assert!(err.to_string().contains("newer escrowd"), "{err}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn migrate_refuses_a_negative_version() {
+        let dir = temp_dir("db-migrate-negative");
+        let mut db = open(&dir.join("x.sqlite"), Durability::Normal).unwrap();
+        db.pragma_update(None, "user_version", -1).unwrap();
+        let err = migrate(&mut db, "x", &[create_t]).unwrap_err();
+        assert!(err.to_string().contains("not valid"), "{err}");
+        drop(db);
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
