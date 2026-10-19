@@ -13,7 +13,9 @@
 //! during recovery). `race:<n>` plays an editor: just before apply step `n`
 //! re-checks its path, it appends to the live file (creating it if missing; not
 //! through a symlink, and not to a directory).
-//! Release builds without the feature ignore the variable.
+//! Release builds without the feature ignore the variable. Build one with it:
+//! `cargo build --release -p escrow-cli --features fault-injection` (the `ci:repeat`
+//! soak job does, then runs the suite and soaks with `ESCROW_BIN=target/release/escrow`).
 
 use std::io;
 use std::os::fd::BorrowedFd;

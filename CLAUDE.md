@@ -35,6 +35,7 @@ uv run --project sdk/python --frozen ruff check && uv run --project sdk/python -
 uv run --project sdk/python --frozen ty check --project sdk/python
 uv run --project sdk/python --frozen pytest -q tests/conformance  # needs target/debug/escrow (or ESCROW_BIN)
 tests/conformance/lima.sh ubuntu-24.04                             # suite in one host-matrix VM
+cargo build --release -p escrow-cli --features fault-injection     # release binary that honors ESCROWD_FAULT (soaks: ESCROW_BIN=target/release/escrow)
 ```
 
 On Ubuntu, run `packaging/ubuntu/install.sh` once before the suite.
