@@ -137,24 +137,62 @@ fn resolve_root(
     }))
 }
 
-/// Mount the views and load the scopes (rolling back an interrupted commit).
-pub fn start(config: Config) -> anyhow::Result<Daemon> {
+/// `path` made absolute with its longest existing prefix canonicalized: what
+/// `canonicalize` returns once the directory exists, without creating it.
+fn resolve_lexical(path: &Path) -> anyhow::Result<PathBuf> {
+    let abs = std::path::absolute(path).with_context(|| format!("resolving {}", path.display()))?;
+    let mut tail = Vec::new();
+    let mut head = abs.as_path();
+    loop {
+        match head.canonicalize() {
+            Ok(mut base) => {
+                base.extend(tail.iter().rev());
+                return Ok(base);
+            }
+            Err(_) => {
+                let (Some(parent), Some(name)) = (head.parent(), head.file_name()) else {
+                    return Ok(abs);
+                };
+                tail.push(name);
+                head = parent;
+            }
+        }
+    }
+}
+
+/// Everything the configuration and policy resolve to; built without touching the
+/// filesystem beyond reads, so `check` and `start` agree on what is valid.
+struct Validated {
+    project: PathBuf,
+    state: PathBuf,
+    mount: PathBuf,
+    policy: Policy,
+    gate: Gate,
+    review: review::Rules,
+    read: Vec<PathBuf>,
+    home_dir: Option<PathBuf>,
+    home: Option<Resolved>,
+    tmp: Option<Resolved>,
+    /// Writable binds, resolved but possibly not yet created.
+    write: Vec<PathBuf>,
+}
+
+/// Load and compile the policy and check the paths against one another. Creates no
+/// directory, takes no lock, opens no store and mounts nothing.
+fn validate(config: &Config) -> anyhow::Result<Validated> {
     let project = config
         .project
         .canonicalize()
         .with_context(|| format!("project {}", config.project.display()))?;
-    let state = match config.state {
-        Some(s) => s,
+    let state = match &config.state {
+        Some(s) => s.clone(),
         None => default_state_dir(&project)?,
     };
-    let mount = match config.mount {
-        Some(m) => m,
+    let mount = match &config.mount {
+        Some(m) => m.clone(),
         None => default_runtime_dir(&project)?.join("view"),
     };
-    std::fs::create_dir_all(&state).with_context(|| format!("state dir {}", state.display()))?;
-    std::fs::create_dir_all(&mount).with_context(|| format!("mount dir {}", mount.display()))?;
-    let (state, mount) = (state.canonicalize()?, mount.canonicalize()?);
-    let lock = lock_state(&state)?;
+    let (state, mount) = (resolve_lexical(&state)?, resolve_lexical(&mount)?);
     // The daemon must never touch its own view (deadlock), and staged files must not land in the project.
     if inside(&state, &project) || inside(&mount, &project) || inside(&project, &mount) || inside(&state, &mount) {
         bail!(
@@ -173,11 +211,11 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
     };
     let gate = Gate::new(&policy.read.deny).context("policy read.deny pattern")?;
     let mut read = policy.roots.other.read_paths()?;
-    for r in config.read {
+    for r in &config.read {
         if !r.is_absolute() {
             bail!("read path {} is not absolute", r.display());
         }
-        read.push(r);
+        read.push(r.clone());
     }
     let home_dir = std::env::home_dir().filter(|h| h.is_dir());
     let mut passthrough = policy.roots.other.passthrough_paths()?;
@@ -195,8 +233,7 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
     )?;
     let mut write = Vec::new();
     for w in passthrough {
-        std::fs::create_dir_all(&w).with_context(|| format!("passthrough {}", w.display()))?;
-        let w = w.canonicalize()?;
+        let w = resolve_lexical(&w)?;
         // A writable bind must never reach the project or escrowd's own state and views.
         for (name, p) in [("project", &project), ("state", &state), ("mount", &mount)] {
             if inside(&w, p) || inside(p, &w) {
@@ -204,6 +241,59 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
             }
         }
         write.push(w);
+    }
+    for resolved in [&home, &tmp].into_iter().flatten() {
+        let host = &resolved.host;
+        if inside(host, &project) || inside(host, &state) || inside(host, &mount) {
+            bail!(
+                "root {} must not lie inside the project, the state or the mount",
+                host.display()
+            );
+        }
+    }
+    let review = review::Rules::new(&policy.review, &policy.write).context("policy review: or write:")?;
+    Ok(Validated {
+        project,
+        state,
+        mount,
+        policy,
+        gate,
+        review,
+        read,
+        home_dir,
+        home,
+        tmp,
+        write,
+    })
+}
+
+/// Check that `config` would start: the policy loads and compiles and the paths do not
+/// overlap. Creates no directory, takes no lock, opens no store and mounts nothing.
+pub fn check(config: &Config) -> anyhow::Result<()> {
+    validate(config).map(drop)
+}
+
+/// Mount the views and load the scopes (rolling back an interrupted commit).
+pub fn start(config: Config) -> anyhow::Result<Daemon> {
+    let Validated {
+        project,
+        state,
+        mount,
+        policy,
+        gate,
+        review,
+        read,
+        home_dir,
+        home,
+        tmp,
+        write,
+    } = validate(&config)?;
+    std::fs::create_dir_all(&state).with_context(|| format!("state dir {}", state.display()))?;
+    std::fs::create_dir_all(&mount).with_context(|| format!("mount dir {}", mount.display()))?;
+    let (state, mount) = (state.canonicalize()?, mount.canonicalize()?);
+    let lock = lock_state(&state)?;
+    for w in &write {
+        std::fs::create_dir_all(w).with_context(|| format!("passthrough {}", w.display()))?;
     }
     let socket_dir = config.socket.parent().map(Path::to_path_buf).unwrap_or_default();
     let socket_dir = socket_dir.canonicalize().unwrap_or(socket_dir);
@@ -213,67 +303,8 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
         exec::exec_socket(&socket_dir.join(&socket_name)),
         rpc::review_socket(&socket_dir.join(&socket_name)),
     ];
-    // Open every base before anything is mounted, so reads of it never loop through a view.
-    // A root the policy does not serve is opened too: recovery may need it.
-    let open = |p: &Path| sys::open_dir(p).with_context(|| format!("opening {}", p.display()));
-    let mut specs = vec![RootSpec {
-        host: project.clone(),
-        lower: Some(open(&project)?),
-        served: true,
-        rules: None,
-        direct: Vec::new(),
-    }];
-    let fallback = [
-        home_dir.and_then(|h| h.canonicalize().ok()),
-        Path::new("/tmp").canonicalize().ok(),
-    ];
-    for (resolved, fallback) in [home, tmp].into_iter().zip(fallback) {
-        let Some(Resolved { host, rules }) = resolved else {
-            let lower = fallback.as_deref().and_then(|p| sys::open_dir(p).ok());
-            specs.push(RootSpec {
-                host: fallback.unwrap_or_default(),
-                lower,
-                served: false,
-                rules: None,
-                direct: Vec::new(),
-            });
-            continue;
-        };
-        if inside(&host, &project) || inside(&host, &state) || inside(&host, &mount) {
-            bail!(
-                "root {} must not lie inside the project, the state or the mount",
-                host.display()
-            );
-        }
-        // Read paths may be symlinks (bound as such): match them as given, else resolved.
-        let rel = |p: &PathBuf| {
-            let resolved = p.canonicalize().ok();
-            [Some(p), resolved.as_ref()]
-                .into_iter()
-                .flatten()
-                .find_map(|p| p.strip_prefix(&host).ok())
-                .filter(|r| !r.as_os_str().is_empty())
-                .map(Path::to_path_buf)
-        };
-        let direct: Vec<PathBuf> = write
-            .iter()
-            .chain(&read)
-            .filter(|p| rel(p).is_some())
-            .cloned()
-            .collect();
-        let stubs = std::iter::once(&project).chain(&direct).filter_map(rel).collect();
-        let hidden = [&state, &mount].into_iter().chain(&sockets).filter_map(rel).collect();
-        let (default, paths) = rules.expect("a resolved root has rules");
-        specs.push(RootSpec {
-            lower: Some(open(&host)?),
-            host,
-            served: true,
-            rules: Some(Arc::new(Rules::new(default, paths, stubs, hidden))),
-            direct,
-        });
-    }
+    let specs = open_roots(&project, &state, &mount, &sockets, home, tmp, home_dir, &read, &write)?;
     let home = specs[roots::HOME].served.then(|| specs[roots::HOME].host.clone());
-    let review = review::Rules::new(&policy.review, &policy.write).context("policy review: or write:")?;
     let views = Arc::new(
         Views::new(specs, &state, &mount, gate, config.unscoped, policy.conflict, review).context("loading scopes")?,
     );
@@ -301,6 +332,77 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
         session,
         _lock: lock,
     })
+}
+
+/// Open every base before anything is mounted, so reads of it never loop through a view.
+/// A root the policy does not serve is opened too: recovery may need it.
+#[allow(clippy::too_many_arguments)]
+fn open_roots(
+    project: &Path,
+    state: &Path,
+    mount: &Path,
+    sockets: &[PathBuf],
+    home: Option<Resolved>,
+    tmp: Option<Resolved>,
+    home_dir: Option<PathBuf>,
+    read: &[PathBuf],
+    write: &[PathBuf],
+) -> anyhow::Result<Vec<RootSpec>> {
+    let open = |p: &Path| sys::open_dir(p).with_context(|| format!("opening {}", p.display()));
+    let mut specs = vec![RootSpec {
+        host: project.to_path_buf(),
+        lower: Some(open(project)?),
+        served: true,
+        rules: None,
+        direct: Vec::new(),
+    }];
+    let fallback = [
+        home_dir.and_then(|h| h.canonicalize().ok()),
+        Path::new("/tmp").canonicalize().ok(),
+    ];
+    for (resolved, fallback) in [home, tmp].into_iter().zip(fallback) {
+        let Some(Resolved { host, rules }) = resolved else {
+            let lower = fallback.as_deref().and_then(|p| sys::open_dir(p).ok());
+            specs.push(RootSpec {
+                host: fallback.unwrap_or_default(),
+                lower,
+                served: false,
+                rules: None,
+                direct: Vec::new(),
+            });
+            continue;
+        };
+        // Read paths may be symlinks (bound as such): match them as given, else resolved.
+        let rel = |p: &PathBuf| {
+            let resolved = p.canonicalize().ok();
+            [Some(p), resolved.as_ref()]
+                .into_iter()
+                .flatten()
+                .find_map(|p| p.strip_prefix(&host).ok())
+                .filter(|r| !r.as_os_str().is_empty())
+                .map(Path::to_path_buf)
+        };
+        let direct: Vec<PathBuf> = write.iter().chain(read).filter(|p| rel(p).is_some()).cloned().collect();
+        let stubs = std::iter::once(&project.to_path_buf())
+            .chain(&direct)
+            .filter_map(rel)
+            .collect();
+        let hidden = [state, mount]
+            .into_iter()
+            .map(Path::to_path_buf)
+            .chain(sockets.iter().cloned())
+            .filter_map(|p| rel(&p))
+            .collect();
+        let (default, paths) = rules.expect("a resolved root has rules");
+        specs.push(RootSpec {
+            lower: Some(open(&host)?),
+            host,
+            served: true,
+            rules: Some(Arc::new(Rules::new(default, paths, stubs, hidden))),
+            direct,
+        });
+    }
+    Ok(specs)
 }
 
 /// Take `<state>/lock` (`flock`, exclusive) for as long as the file stays open: start-up

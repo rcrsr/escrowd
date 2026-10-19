@@ -81,8 +81,9 @@ pub struct ScopeStore {
     pub since: u64,
     /// Reads only (the unscoped root in `deny` mode): every change gets EROFS.
     pub readonly: bool,
-    /// SHA-256 of the scope's token, hex; None: no token (the unscoped scope, views
-    /// of other roots, scopes opened before protocol 6).
+    /// SHA-256 of the scope's token, hex; None: no token. Only the unscoped scope and
+    /// non-project views of a named scope have none; a named project scope stored
+    /// without one is discarded at daemon start (`Views::new`, `views/mod.rs`).
     token_sha256: Option<String>,
     dir: PathBuf,
     /// Shared lookups take the store's read lock; the connection has its own lock.
@@ -450,7 +451,9 @@ impl ScopeStore {
     }
 
     /// Whether `sha256` (hex, of a caller's token) matches the scope's token; a scope
-    /// without a token takes any.
+    /// without a token takes any. Only the unscoped scope and non-project views of a
+    /// named scope have none; a named project scope stored without one is discarded at
+    /// daemon start (`Views::new`, `views/mod.rs`).
     pub fn token_matches(&self, sha256: &str) -> bool {
         self.token_sha256.as_deref().is_none_or(|t| t == sha256)
     }
@@ -739,7 +742,8 @@ impl ScopeStore {
         let unwritten = self.unwritten_pins.len()
             + self.unwritten_reads.len()
             + self.added_writers.len()
-            + self.unwritten_writers.len();
+            + self.unwritten_writers.len()
+            + self.unwritten_procs.len();
         if now || unwritten >= PIN_BATCH {
             self.flush()
         } else {
@@ -858,15 +862,23 @@ impl ScopeStore {
 
     /// `p` changed `rel`; it and its ancestors are recorded once. Written behind.
     pub fn add_writer(&mut self, rel: &Path, p: &Arc<Proc>) -> io::Result<()> {
-        for a in p.chain() {
-            if self.procs.contains_key(&a.info.id) {
+        self.record_writer(rel, p.chain().map(|a| &a.info))
+    }
+
+    /// `add_writer` for a process given as its record and its ancestors' records, nearest first.
+    fn record_writer<'a>(&mut self, rel: &Path, chain: impl Iterator<Item = &'a Info>) -> io::Result<()> {
+        let mut writer = None;
+        for a in chain {
+            writer.get_or_insert(a.id);
+            if self.procs.contains_key(&a.id) {
                 break; // and so are its ancestors
             }
-            self.procs.insert(a.info.id, a.info.clone());
-            self.unwritten_procs.push(a.info.id);
+            self.procs.insert(a.id, a.clone());
+            self.unwritten_procs.push(a.id);
         }
-        if self.writers.entry(rel.to_path_buf()).or_default().insert(p.info.id) {
-            self.added_writers.push((rel.to_path_buf(), p.info.id));
+        let writer = writer.expect("a chain starts with the writer");
+        if self.writers.entry(rel.to_path_buf()).or_default().insert(writer) {
+            self.added_writers.push((rel.to_path_buf(), writer));
         }
         self.maybe_flush(false)
     }
@@ -907,5 +919,115 @@ impl ScopeStore {
 
     pub fn proc(&self, id: u64) -> Option<&Info> {
         self.procs.get(&id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writers_and_procs_count_toward_the_deferred_write_batch() {
+        let dir = crate::db::temp_dir("store-batch");
+        let scopes = dir.join("scopes");
+        fs::create_dir(&scopes).unwrap();
+        let mut store = ScopeStore::create(&scopes, "s1", "t", 1, 0, false, &HashMap::new(), None, "").unwrap();
+        // 2048 writers, each a fresh process: 4096 unwritten rows, so the batch writes itself.
+        for i in 1..=2048u64 {
+            let info = Info {
+                id: i,
+                pid: i as u32,
+                program: PathBuf::from("/bin/true"),
+                dev: 0,
+                ino: 0,
+                args: Vec::new(),
+                parent: 0,
+            };
+            store
+                .record_writer(Path::new(&format!("f{i}")), std::iter::once(&info))
+                .unwrap();
+        }
+        let loaded = ScopeStore::load(&scopes, "s1").unwrap();
+        assert!(loaded.writers(Path::new("f1")).is_some_and(|w| w.contains(&1)));
+        assert!(loaded.writers(Path::new("f2048")).is_some_and(|w| w.contains(&2048)));
+        assert_eq!(loaded.proc(2048).map(|p| p.pid), Some(2048));
+        drop((store, loaded));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn info(id: u64) -> Info {
+        Info {
+            id,
+            pid: id as u32,
+            program: PathBuf::from("/bin/true"),
+            dev: 0,
+            ino: 0,
+            args: vec!["true".to_string()],
+            parent: 0,
+        }
+    }
+
+    fn version(ino: u64) -> Version {
+        Version {
+            ino,
+            size: 7,
+            mtime_ns: 11,
+            ctime_ns: 13,
+        }
+    }
+
+    /// A store with an upper-only pin, a counter step, a first read, a changed path and a writer.
+    fn busy_store(scopes: &Path) -> ScopeStore {
+        let mut store = ScopeStore::create(scopes, "s1", "t", 1, 0, false, &HashMap::new(), None, "").unwrap();
+        let upper_ino = UPPER_BIT | store.alloc_upper_ino();
+        store.set_pin(Path::new("new.txt"), upper_ino).unwrap();
+        store
+            .record_version(Path::new("read.txt"), VersionKind::Read, version(5))
+            .unwrap();
+        store
+            .record_version(Path::new("changed.txt"), VersionKind::Changed, version(6))
+            .unwrap();
+        store
+            .record_writer(Path::new("new.txt"), std::iter::once(&info(9)))
+            .unwrap();
+        store
+    }
+
+    #[test]
+    fn a_flushed_store_reloads_its_pins_counter_reads_writers_and_procs() {
+        let dir = crate::db::temp_dir("store-roundtrip");
+        let scopes = dir.join("scopes");
+        fs::create_dir(&scopes).unwrap();
+        let mut store = busy_store(&scopes);
+        store.flush().unwrap();
+        let mut loaded = ScopeStore::load(&scopes, "s1").unwrap();
+        assert_eq!(loaded.pin(Path::new("new.txt")), Some(UPPER_BIT | 1));
+        assert_eq!(loaded.alloc_upper_ino(), 2);
+        assert!(loaded.has_version(Path::new("read.txt"), VersionKind::Read));
+        assert_eq!(loaded.base_version(Path::new("read.txt")).unwrap(), Some(version(5)));
+        assert!(loaded.reads().contains(&(PathBuf::from("read.txt"), true)));
+        assert!(loaded.has_writer(Path::new("new.txt"), 9));
+        assert_eq!(loaded.proc(9), Some(&info(9)));
+        drop((store, loaded));
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_unflushed_store_loses_upper_only_pins_and_first_reads_but_keeps_changed_versions() {
+        let dir = crate::db::temp_dir("store-unflushed");
+        let scopes = dir.join("scopes");
+        fs::create_dir(&scopes).unwrap();
+        let store = busy_store(&scopes);
+        let mut loaded = ScopeStore::load(&scopes, "s1").unwrap();
+        assert_eq!(loaded.pin(Path::new("new.txt")), None);
+        assert_eq!(loaded.alloc_upper_ino(), 1);
+        assert!(!loaded.has_version(Path::new("read.txt"), VersionKind::Read));
+        assert!(!loaded.reads().contains(&(PathBuf::from("read.txt"), true)));
+        assert!(!loaded.has_writer(Path::new("new.txt"), 9));
+        assert!(loaded.proc(9).is_none());
+        assert!(loaded.has_version(Path::new("changed.txt"), VersionKind::Changed));
+        assert_eq!(loaded.base_version(Path::new("changed.txt")).unwrap(), Some(version(6)));
+        drop((store, loaded));
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

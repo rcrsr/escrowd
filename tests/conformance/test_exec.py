@@ -203,6 +203,27 @@ def test_sandbox_read_paths_are_visible(contained):
     assert r.stdout == "readable\n", r.stderr
 
 
+def test_daemon_read_flag_makes_a_path_readable_to_children(escrow_bin, runtime_dir, tmp_path):
+    from conftest import Daemon
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    (shared / "canary.txt").write_text("from --read\n")
+    # Daemon builds its own command line, so a wrapper adds --read to the daemon's.
+    wrapper = runtime_dir / "escrow-with-read"
+    wrapper.write_text(
+        f'#!/bin/sh\nif [ "$1" = daemon ]; then set -- "$@" --read "{shared}"; fi\n'
+        f'exec "{escrow_bin}" "$@"\n'
+    )
+    wrapper.chmod(0o755)
+    d = Daemon(wrapper, runtime_dir)
+    try:
+        r = d.exec(open_scope(d), "cat", str(shared / "canary.txt"))
+        assert r.stdout == "from --read\n", r.stderr
+    finally:
+        d.stop()
+
+
 def test_child_cannot_find_another_scopes_files(contained):
     d, a, b = contained
     # Everything but /proc and the read-only system directories (large on CI runners).

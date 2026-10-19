@@ -15,14 +15,14 @@ use tokio_stream::{Stream, StreamExt};
 use tonic::{Request, Response, Status};
 
 use crate::convert;
-use crate::decision::{Closed, Decisions};
+use crate::decision::Decisions;
 use crate::diff;
 use crate::error::Error;
 use crate::exec::Children;
 use crate::proto::escrow_service_server::{EscrowService, EscrowServiceServer};
 use crate::proto::reviewer_service_server::{ReviewerService, ReviewerServiceServer};
 use crate::proto::*;
-use crate::views::{UNSCOPED, Views};
+use crate::views::{Frozen, UNSCOPED, Views};
 
 /// How long shutdown waits for clients to finish their calls before it unmounts anyway.
 const GRACE: std::time::Duration = std::time::Duration::from_secs(10);
@@ -36,8 +36,8 @@ impl Service {
         Service(Arc::new(Decisions::new(views, children, diff)))
     }
 
-    fn change_set(&self, id: String, c: Closed) -> ChangeSet {
-        convert::change_set(self.0.views(), id, c.change_set, c.diff)
+    fn change_set(&self, id: String, f: &Frozen) -> ChangeSet {
+        convert::change_set(self.0.views(), id, &f.change_set, &f.diff)
     }
 }
 
@@ -117,7 +117,7 @@ impl EscrowService for Service {
         let req = req.into_inner();
         let closed = self.0.close(req.scope_id.clone(), req.token).await.map_err(status)?;
         Ok(Response::new(CloseScopeResponse {
-            change_set: Some(self.change_set(req.scope_id, closed)),
+            change_set: Some(self.change_set(req.scope_id, &closed)),
         }))
     }
 
@@ -141,7 +141,7 @@ impl EscrowService for Service {
     ) -> Result<Response<SettleUnscopedResponse>, Status> {
         let closed = self.0.settle_unscoped().await.map_err(status)?;
         Ok(Response::new(SettleUnscopedResponse {
-            change_set: Some(self.change_set(UNSCOPED.to_string(), closed)),
+            change_set: Some(self.change_set(UNSCOPED.to_string(), &closed)),
         }))
     }
 
@@ -152,7 +152,7 @@ impl EscrowService for Service {
         let id = req.into_inner().scope_id;
         let closed = self.0.change_set(id.clone()).await.map_err(status)?;
         Ok(Response::new(GetChangeSetResponse {
-            change_set: Some(self.change_set(id, closed)),
+            change_set: Some(self.change_set(id, &closed)),
         }))
     }
 
@@ -189,7 +189,7 @@ impl ReviewerService for Service {
         let held = self.0.get_held(id.clone()).await.map_err(status)?;
         Ok(Response::new(GetHeldResponse {
             held: Some(convert::held(held.who)),
-            change_set: held.closed.map(|c| self.change_set(id, c)),
+            change_set: held.closed.map(|c| self.change_set(id, &c)),
             history: held
                 .history
                 .iter()

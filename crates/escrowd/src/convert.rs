@@ -15,7 +15,7 @@ pub fn path_str(p: &Path) -> String {
 }
 
 /// The change set with each path as the caller sees it (`~/x` in `$HOME`).
-pub fn change_set(views: &Views, scope_id: String, cs: changeset::ChangeSet, diff: String) -> proto::ChangeSet {
+pub fn change_set(views: &Views, scope_id: String, cs: &changeset::ChangeSet, diff: &str) -> proto::ChangeSet {
     let kind = |k| match k {
         changeset::Kind::Create => proto::ChangeKind::Create,
         changeset::Kind::Modify => proto::ChangeKind::Modify,
@@ -26,7 +26,7 @@ pub fn change_set(views: &Views, scope_id: String, cs: changeset::ChangeSet, dif
         scope_id,
         changes: cs
             .changes
-            .into_iter()
+            .iter()
             .map(|c| proto::Change {
                 kind: kind(c.kind).into(),
                 path: path_str(&views.shown(c.root, &c.path)),
@@ -35,15 +35,15 @@ pub fn change_set(views: &Views, scope_id: String, cs: changeset::ChangeSet, dif
                     .as_deref()
                     .map(|f| path_str(&views.shown(c.root, f)))
                     .unwrap_or_default(),
-                writers: c.writers,
+                writers: c.writers.clone(),
             })
             .collect(),
         reads: cs
             .reads
-            .into_iter()
+            .iter()
             .map(|(p, allowed)| proto::Read {
-                path: path_str(&p),
-                decision: if allowed {
+                path: path_str(p),
+                decision: if *allowed {
                     proto::ReadDecision::Allow
                 } else {
                     proto::ReadDecision::Deny
@@ -51,20 +51,20 @@ pub fn change_set(views: &Views, scope_id: String, cs: changeset::ChangeSet, dif
                 .into(),
             })
             .collect(),
-        labels: cs.labels,
-        diff,
+        labels: cs.labels.clone(),
+        diff: diff.to_string(),
         unscoped_ops: cs.unscoped,
-        review: Some(review(cs.review)),
+        review: Some(review(&cs.review)),
         processes: cs
             .procs
-            .into_values()
+            .values()
             .map(|p| proto::Process {
                 id: p.id,
                 pid: p.pid,
                 program: path_str(&p.program),
                 dev: p.dev,
                 ino: p.ino,
-                args: p.args,
+                args: p.args.clone(),
                 parent: p.parent,
             })
             .collect(),
@@ -135,11 +135,11 @@ pub fn held(i: Identity) -> proto::HeldScope {
     }
 }
 
-pub fn review(r: review::Review) -> proto::Review {
+pub fn review(r: &review::Review) -> proto::Review {
     proto::Review {
         verdict: verdict(r.verdict).into(),
         reasons: r.reasons(),
-        tiers: r.tiers.into_iter().map(|t| tier(t).into()).collect(),
+        tiers: r.tiers.iter().map(|t| tier(*t).into()).collect(),
         wait_required: r.wait,
     }
 }

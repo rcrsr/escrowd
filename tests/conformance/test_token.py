@@ -5,6 +5,8 @@ socket need it. Knowing a scope id (it is in every view path) is not enough to c
 decide or start children in that scope. The unscoped scope has no token.
 """
 
+import sqlite3
+
 import grpc
 import pytest
 from conftest import Daemon
@@ -97,3 +99,45 @@ def test_the_unscoped_scope_needs_no_token(start_daemon):
         assert cs.scope_id == "unscoped"
         assert c.commit("unscoped", token="").status == pb.OUTCOME_STATUS_COMMITTED
     assert (d.project / "u.txt").read_text() == "u\n"
+
+
+def test_a_scope_stored_without_a_token_is_discarded_at_start(escrow_bin, runtime_dir):
+    home = runtime_dir / "home"
+    home.mkdir()
+    config = {
+        "unscoped": "implicit",
+        "roots": "  home:\n    default: capture\n",
+        "env": {"HOME": str(home)},
+    }
+    d = Daemon(escrow_bin, runtime_dir, **config)
+    with client(d) as c:
+        a, b = c.open_scope(), c.open_scope()
+    (d.mount / a.scope_id / "f.txt").write_text("a\n")
+    (d.mount / f"{a.scope_id}.home" / "x").write_text("x\n")
+    (d.mount / "unscoped" / "u.txt").write_text("u\n")
+    d.stop()
+    # A scope an older daemon stored has no token hash.
+    meta = d.state / "scopes" / a.scope_id / "meta.sqlite"
+    db = sqlite3.connect(meta)
+    db.execute("DELETE FROM meta WHERE key = 'token_sha256'")
+    db.commit()
+    db.close()
+    d = Daemon(escrow_bin, runtime_dir, **config)
+    try:
+        with client(d) as c:
+            with pytest.raises(grpc.RpcError) as err:
+                c.close_scope(a.scope_id, token="")
+            assert err.value.code() == grpc.StatusCode.NOT_FOUND
+            scopes = d.state / "scopes"
+            assert not (scopes / a.scope_id).exists()
+            assert not (scopes / f"{a.scope_id}.home").exists()
+            assert not (d.project / "f.txt").exists()
+            line = f" scope={a.scope_id} op=decide path= decision=discard"
+            assert any(line in entry for entry in d.ledger)
+            denied(lambda: c.close_scope(b.scope_id, token=""))
+            denied(lambda: c.close_scope(b.scope_id, token="0" * 64))
+            c.close_scope(b.scope_id, token=b.token)
+            assert c.discard(b.scope_id, token=b.token).status == pb.OUTCOME_STATUS_DISCARDED
+            assert [ch.path for ch in c.settle_unscoped().changes] == ["u.txt"]
+    finally:
+        d.stop()

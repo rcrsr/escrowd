@@ -207,3 +207,24 @@ def test_escrow_diff_prints_a_closed_scope(daemon):
         with pytest.raises(grpc.RpcError) as e:
             c.get_change_set(sid)
         assert e.value.code() == grpc.StatusCode.NOT_FOUND
+
+
+FROZEN_RULES = """\
+review:
+  - {paths: ['src/**'], tier: llm}
+"""
+
+
+def test_unscoped_ops_is_the_close_time_count_on_every_read(start_daemon):
+    d = start_daemon(unscoped="implicit", policy=FROZEN_RULES)
+    with client(d) as c, escrow.connect_reviewer(str(d.socket)) as rv:
+        sid = c.open_scope(session="agent-1").scope_id
+        (d.mount / sid / "src").mkdir()
+        (d.mount / sid / "src" / "a.py").write_text("a\n")
+        for i in range(3):
+            (d.mount / "unscoped" / f"leak{i}.txt").write_text("x\n")
+        closed = c.close_scope(sid)
+        assert closed.unscoped_ops > 0
+        assert c.get_change_set(sid).unscoped_ops == closed.unscoped_ops
+        assert c.commit(sid).status == pb.OUTCOME_STATUS_HELD
+        assert rv.get_held(sid).change_set.unscoped_ops == closed.unscoped_ops

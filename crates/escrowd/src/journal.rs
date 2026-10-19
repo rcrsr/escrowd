@@ -465,4 +465,32 @@ mod tests {
         Journal::open(&path).unwrap(); // a second start migrates nothing
         std::fs::remove_dir_all(&dir).unwrap();
     }
+
+    #[test]
+    fn a_generation_moves_through_its_states_and_is_forgotten() {
+        let dir = db::temp_dir("journal-states");
+        let mut j = Journal::open(&dir.join("journal.sqlite")).unwrap();
+        let generation = j.next().unwrap();
+        let entries = [JournalEntry {
+            root: 0,
+            path: PathBuf::from("a.txt"),
+            pre: None,
+            tmp: None,
+        }];
+
+        j.begin(generation, "s1", &entries, &[]).unwrap();
+        assert_eq!(j.state(generation).unwrap(), Some(GenState::Journaled));
+
+        j.set_state(generation, GenState::Prepared).unwrap();
+        assert_eq!(j.state(generation).unwrap(), Some(GenState::Prepared));
+
+        j.set_state(generation, GenState::Done).unwrap();
+        assert_eq!(j.state(generation).unwrap(), Some(GenState::Done));
+        assert_eq!(j.gens().unwrap(), [(generation, "s1".to_string(), GenState::Done)]);
+
+        j.forget(generation).unwrap();
+        assert_eq!(j.state(generation).unwrap(), None);
+        assert!(j.gens().unwrap().is_empty());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 }

@@ -17,7 +17,6 @@ use parking_lot::Mutex;
 
 use tokio::sync::{OwnedMutexGuard, mpsc, watch};
 
-use crate::changeset::ChangeSet;
 use crate::commit;
 use crate::convert;
 use crate::diff;
@@ -28,7 +27,7 @@ use crate::proto;
 use crate::record;
 use crate::review::{Decision, TierReview};
 use crate::store::Hold;
-use crate::views::{Identity, Opened, Reviewed, RootView, UNSCOPED, Unscoped, Views};
+use crate::views::{Frozen, Identity, Opened, Reviewed, RootView, UNSCOPED, Unscoped, Views};
 
 /// The session's earlier decisions a reviewer gets.
 const HISTORY: usize = 20;
@@ -81,16 +80,10 @@ impl Outcome {
     }
 }
 
-/// A closed scope's change set and its diff against the snapshot.
-pub struct Closed {
-    pub change_set: ChangeSet,
-    pub diff: String,
-}
-
 /// A held scope as a reviewer reads it.
 pub struct HeldScope {
     pub who: Identity,
-    pub closed: Option<Closed>,
+    pub closed: Option<Arc<Frozen>>,
     /// The session's last decisions, oldest first, as `record` encodes them.
     pub history: Vec<Vec<u8>>,
 }
@@ -273,20 +266,18 @@ impl Decisions {
     }
 
     /// Stop the scope's children (their last writes flush on exit), then freeze it.
-    pub async fn close(&self, id: String, token: String) -> error::Result<Closed> {
+    pub async fn close(&self, id: String, token: String) -> error::Result<Arc<Frozen>> {
         let (children, caps) = (self.children.clone(), self.diff);
         self.blocking(move |v| {
             v.check_token(&id, &token)?;
             let stopped = children.stop(&id);
-            let change_set = v.close_scope_after(&id, &stopped)?;
-            let diff = v.diff(&id, &change_set, caps)?;
-            Ok(Closed { change_set, diff })
+            v.close_scope_after(&id, &stopped, caps)
         })
         .await
     }
 
     /// Close the implicit default scope; it is decided as scope `unscoped`.
-    pub async fn settle_unscoped(&self) -> error::Result<Closed> {
+    pub async fn settle_unscoped(&self) -> error::Result<Arc<Frozen>> {
         if self.views.unscoped() != Unscoped::Implicit {
             return Err(Error::State("settle_unscoped needs unscoped = implicit".into()));
         }
@@ -294,18 +285,13 @@ impl Decisions {
     }
 
     /// A closed scope's change set and diff (`State` if it is open).
-    pub async fn change_set(&self, id: String) -> error::Result<Closed> {
+    pub async fn change_set(&self, id: String) -> error::Result<Arc<Frozen>> {
         let caps = self.diff;
-        self.blocking(move |v| {
-            let change_set = v.closed_change_set(&id)?;
-            let diff = v.diff(&id, &change_set, caps)?;
-            Ok(Closed { change_set, diff })
-        })
-        .await
+        self.blocking(move |v| v.frozen(&id, caps)).await
     }
 
     /// A closed scope's change set and diff; None if it is open.
-    async fn closed(&self, id: &str) -> error::Result<Option<Closed>> {
+    async fn closed(&self, id: &str) -> error::Result<Option<Arc<Frozen>>> {
         match self.change_set(id.to_string()).await {
             Ok(c) => Ok(Some(c)),
             Err(Error::State(_)) => Ok(None),
@@ -318,7 +304,7 @@ impl Decisions {
         Ok(self
             .closed(id)
             .await?
-            .map(|c| convert::change_set(&self.views, id.to_string(), c.change_set, c.diff)))
+            .map(|c| convert::change_set(&self.views, id.to_string(), &c.change_set, &c.diff)))
     }
 
     /// The opener's decision (`verdict` None: unspecified). A commit runs the review
@@ -382,8 +368,9 @@ impl Decisions {
         let mut closed = None;
         if verdict != Decision::Discard && self.views.reviews() {
             let scope = id.clone();
-            let cs = self.blocking(move |v| v.closed_change_set(&scope)).await?;
-            let r = &cs.review;
+            let caps = self.diff;
+            let frozen = self.blocking(move |v| v.frozen(&scope, caps)).await?;
+            let r = &frozen.change_set.review;
             if r.verdict == Decision::Discard {
                 verdict = Decision::Discard;
                 reasons = r.reasons();
@@ -392,7 +379,7 @@ impl Decisions {
                 let hold = self.blocking(move |v| v.hold_scope(&scope, tiers, wait)).await?;
                 return Ok(Outcome::held(&id, &hold));
             }
-            closed = Some(cs);
+            closed = Some(frozen);
         }
         self.apply(id, verdict, reasons, closed, keep).await
     }
@@ -407,13 +394,13 @@ impl Decisions {
         id: String,
         verdict: Decision,
         reasons: Vec<String>,
-        closed: Option<ChangeSet>,
+        closed: Option<Arc<Frozen>>,
         keep: Option<Kept>,
     ) -> error::Result<Outcome> {
-        let children = self.children.clone();
+        let (children, caps) = (self.children.clone(), self.diff);
         self.blocking(move |v| {
             let Some(keep) = keep else {
-                return apply_now(v, &children, &id, verdict, reasons, closed, false).map(|(out, _)| out);
+                return apply_now(v, &children, caps, &id, verdict, reasons, closed, false).map(|(out, _)| out);
             };
             let seq = v.history.intend(
                 &keep.who.id,
@@ -422,7 +409,7 @@ impl Decisions {
                 &keep.entry(keep.intended(&id, verdict, &reasons)),
             )?;
             crate::fault::hit("intended", 0)?;
-            let (out, finish) = match apply_now(v, &children, &id, verdict, reasons, closed, true) {
+            let (out, finish) = match apply_now(v, &children, caps, &id, verdict, reasons, closed, true) {
                 Ok(r) => r,
                 Err(e) => {
                     if let Err(c) = v.history.cancel(seq) {
@@ -623,13 +610,15 @@ impl Decisions {
 
 /// `Decisions::apply` on the blocking pool. With `keep`, a committed scope stays until
 /// `finish_commit`, and the second value is the generation to finish it with.
+#[allow(clippy::too_many_arguments)]
 fn apply_now(
     v: &Views,
     children: &Children,
+    caps: diff::Caps,
     id: &str,
     verdict: Decision,
     reasons: Vec<String>,
-    closed: Option<ChangeSet>,
+    closed: Option<Arc<Frozen>>,
     keep: bool,
 ) -> error::Result<(Outcome, Option<Option<u64>>)> {
     let mut out = Outcome {
@@ -639,9 +628,14 @@ fn apply_now(
     let mut finish = None;
     match verdict {
         Decision::Commit => {
+            // A commit applies the frozen record: the one the review read, else the scope's.
+            let frozen = match closed {
+                Some(f) => f,
+                None => v.frozen(id, caps)?,
+            };
             let committed = match keep {
-                true => v.commit_kept(id, closed.as_ref()),
-                false => closed.map_or_else(|| v.commit_scope(id), |cs| v.commit_closed(id, &cs)),
+                true => v.commit_kept(id, &frozen.change_set),
+                false => v.commit_closed(id, &frozen.change_set),
             };
             match committed.inspect(|_| children.release(id))? {
                 commit::Outcome::Committed(generation, changed) => {

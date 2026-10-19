@@ -247,3 +247,39 @@ def test_escrow_log_filters_by_scope(daemon, escrow_bin):
     ).stdout.splitlines()
     assert out and all(f" scope={a} " in line for line in out)
     assert not any(f" scope={b} " in line for line in out)
+
+
+def _check(escrow_bin, runtime_dir, policy_text, env=None):
+    (runtime_dir / "proj").mkdir(exist_ok=True)
+    policy = runtime_dir / "check-policy.yaml"
+    policy.write_text(policy_text)
+    return subprocess.run(
+        [escrow_bin, "daemon", "--check", "--project", runtime_dir / "proj", "--policy", policy],
+        capture_output=True,
+        text=True,
+        timeout=10,
+        env=env,
+    )
+
+
+def test_daemon_check_accepts_valid_policy_and_creates_nothing(escrow_bin, runtime_dir):
+    state_home = runtime_dir / "state-home"
+    env = {**os.environ, "XDG_STATE_HOME": str(state_home), "XDG_RUNTIME_DIR": str(runtime_dir)}
+    r = _check(escrow_bin, runtime_dir, "version: 1\nread:\n  deny: ['**/.env']\n", env)
+    assert r.returncode == 0 and r.stdout == "" and r.stderr == ""
+    assert not state_home.exists()
+    assert not (runtime_dir / "escrowd").exists()
+
+
+def test_daemon_check_rejects_invalid_deny_glob(escrow_bin, runtime_dir):
+    r = _check(escrow_bin, runtime_dir, "version: 1\nread:\n  deny: ['[']\n")
+    assert r.returncode != 0 and "read.deny" in r.stderr
+
+
+def test_daemon_check_rejects_home_root_outside_home(escrow_bin, runtime_dir):
+    other = runtime_dir / "elsewhere"
+    other.mkdir()
+    env = {**os.environ, "HOME": str(other)}
+    policy = "version: 1\nroots:\n  home:\n    default: capture\n    capture: ['/usr/share']\n"
+    r = _check(escrow_bin, runtime_dir, policy, env)
+    assert r.returncode != 0 and "not inside" in r.stderr

@@ -32,6 +32,9 @@ pub struct ScopeHandle {
     pub(super) unscoped_seen: AtomicU64,
     pub(super) store: RwLock<ScopeStore>,
     pub(super) inodes: Mutex<Inodes>,
+    /// The project view's frozen change set while the scope is closed (the freeze lock).
+    /// Taken before any store lock, never while one is held; only `reopen_scope` clears it.
+    pub(super) frozen: Mutex<Option<Arc<Frozen>>>,
 }
 
 impl ScopeHandle {

@@ -32,6 +32,8 @@ use std::os::fd::{AsFd, OwnedFd};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::{Sender, SyncSender, sync_channel};
+use std::thread::JoinHandle;
 
 use parking_lot::{Condvar, Mutex, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
@@ -66,6 +68,7 @@ pub use hold::{Identity, Reviewed};
 use inodes::Inodes;
 pub use inodes::{Node, Pages};
 pub use overlay::{Loc, ScopeHandle};
+use scopes::cleaner_thread;
 
 pub const ROOT: u64 = 1;
 /// The default scope behind `<mount>/unscoped/` (unscoped = implicit or deny).
@@ -94,6 +97,12 @@ pub fn token_sha256(token: &str) -> String {
     use sha2::{Digest, Sha256};
     diff::hex(&Sha256::digest(token.as_bytes()))
 }
+
+/// The base directory fd of each root, None for a root without one.
+fn lowers_of(roots: &[RootSpec]) -> Lowers<'_> {
+    std::array::from_fn(|r| roots.get(r).and_then(|s| s.lower.as_ref()).map(|l| l.as_fd()))
+}
+
 pub fn errno(e: io::Error) -> Errno {
     Errno::from_i32(e.raw_os_error().unwrap_or(libc::EIO))
 }
@@ -119,12 +128,23 @@ pub struct RootView {
     pub direct: Vec<PathBuf>,
 }
 
+/// A closed scope's change set and its diff against the snapshot, built once at close
+/// (or at the first read after a restart) and shared until the scope is returned.
+pub struct Frozen {
+    pub change_set: ChangeSet,
+    pub diff: String,
+}
+
 pub struct Views {
     roots: Vec<RootSpec>,
     scopes_dir: PathBuf,
-    /// Dropped scopes' directories, deleted in the background (start empties it).
+    /// Dropped scopes' directories, deleted in the background (start empties it); the
+    /// directory is the backlog of the cleaner thread.
     trash: PathBuf,
-    cleaners: Mutex<Vec<std::thread::JoinHandle<()>>>,
+    /// Feeds the cleaner thread; None once `flush` closed it (removals then delete inline).
+    cleaner: Mutex<Option<Sender<PathBuf>>>,
+    /// The cleaner and writeback threads, joined by `flush`.
+    workers: Mutex<Vec<JoinHandle<()>>>,
     mount: PathBuf,
     gate: Gate,
     ledger: Ledger,
@@ -147,8 +167,9 @@ pub struct Views {
     last_settle: AtomicBool,
     /// Changes to captured paths the unscoped scope was asked for (allowed or EROFS), since start.
     unscoped_changes: AtomicU64,
-    /// Files whose writeback starts off the request threads (a slow disk must not stall them).
-    writeback: Mutex<std::sync::mpsc::Sender<Arc<File>>>,
+    /// Files whose writeback starts off the request threads (a slow disk must not stall
+    /// them); None once `flush` closed it.
+    writeback: Mutex<Option<SyncSender<Arc<File>>>>,
 }
 impl Views {
     /// `roots` (indexed by root) must be opened before the view is mounted anywhere over them.
@@ -172,7 +193,7 @@ impl Views {
         let commits = Commits::open(state_dir)?;
         let history = History::open(state_dir, crate::record::settled)?;
         // Roll back an interrupted commit before any scope sees the base.
-        let lowers: Lowers = std::array::from_fn(|r| roots.get(r).and_then(|s| s.lower.as_ref()).map(|l| l.as_fd()));
+        let lowers = lowers_of(&roots);
         let mut finished = Vec::new();
         for (generation, id) in commits.recover(&lowers)? {
             history.resolve_scope(&id, history::Fate::Committed)?;
@@ -191,11 +212,14 @@ impl Views {
             commits.scope_dropped(generation)?;
         }
         crate::fault::hit("recovered", 0)?;
+        let (cleaner, cleaner_worker) = cleaner_thread();
+        let (writeback, writeback_worker) = writeback_thread();
         let views = Views {
             roots,
             scopes_dir,
             trash,
-            cleaners: Mutex::new(Vec::new()),
+            cleaner: Mutex::new(Some(cleaner)),
+            workers: Mutex::new(vec![cleaner_worker, writeback_worker]),
             mount: mount.to_path_buf(),
             gate,
             ledger,
@@ -213,12 +237,22 @@ impl Views {
             released: Condvar::new(),
             last_settle: AtomicBool::new(false),
             unscoped_changes: AtomicU64::new(0),
-            writeback: Mutex::new(writeback_thread()),
+            writeback: Mutex::new(Some(writeback)),
         };
-        views.load_scopes()?;
+        let stale = views.load_scopes()?;
         views.ensure_unscoped()?;
         views.gc(None)?;
         views.history.resolve(|id| views.fate(id, &finished))?;
+        // Discard only after resolve: it must see the project view first, or a kept
+        // decision would settle as a conflict.
+        for group in &stale {
+            eprintln!("escrowd: load: discarding scope {group}: stored before protocol 6 with no token");
+            views.ledger.append(group, "decide", Path::new(""), None, "discard");
+            views.remove_scope(group)?;
+        }
+        if !stale.is_empty() {
+            views.gc(None)?;
+        }
         // IO outside a scope goes straight to the project, unseen: the ledger says so
         // once (logging each operation would route it through FUSE).
         if unscoped == Unscoped::Passthrough {
@@ -255,7 +289,7 @@ impl Views {
     }
 
     fn lowers(&self) -> Lowers<'_> {
-        std::array::from_fn(|r| self.roots.get(r).and_then(|s| s.lower.as_ref()).map(|l| l.as_fd()))
+        lowers_of(&self.roots)
     }
 
     /// The base directory of `h`'s root (served roots have one).
@@ -322,9 +356,11 @@ impl Views {
     }
 
     /// Reattach scopes left by a previous daemon run. A view of a root the policy
-    /// no longer serves is dropped with its changes.
-    fn load_scopes(&self) -> io::Result<()> {
+    /// no longer serves is dropped with its changes. Returns the named scopes whose
+    /// project view has no token (stored before protocol 6); the caller discards them.
+    fn load_scopes(&self) -> io::Result<Vec<String>> {
         let mut max_idx = 0;
+        let mut stale: Vec<String> = Vec::new();
         for e in fs::read_dir(&self.scopes_dir)? {
             let id = e?.file_name().to_string_lossy().into_owned();
             let store = ScopeStore::load(&self.scopes_dir, &id)?;
@@ -338,10 +374,17 @@ impl Views {
                 fs::remove_dir_all(gone)?;
                 continue;
             }
+            if root == PROJECT
+                && group != UNSCOPED
+                && store.token_sha256().is_none()
+                && !stale.iter().any(|g| g == group)
+            {
+                stale.push(group.to_string());
+            }
             self.attach(store)?;
         }
         *self.next_idx.lock() = max_idx;
-        Ok(())
+        Ok(stale)
     }
 
     fn attach(&self, store: ScopeStore) -> io::Result<Arc<ScopeHandle>> {
@@ -361,9 +404,75 @@ impl Views {
             unscoped_seen: AtomicU64::new(0),
             store: RwLock::new(store),
             inodes: Mutex::new(Inodes::default()),
+            frozen: Mutex::new(None),
         });
         self.scopes.write().insert(h.id.clone(), h.clone());
         self.by_idx.write().insert(h.idx, h.clone());
         Ok(h)
+    }
+}
+
+#[cfg(test)]
+impl Views {
+    /// A `Views` over an empty project in a fresh temp dir, serving only the project
+    /// root with the unscoped scope in passthrough; the state dir is returned too.
+    pub(crate) fn fixture(name: &str) -> (Views, PathBuf) {
+        let dir = crate::db::temp_dir(name);
+        let state = dir.join("state");
+        let project = dir.join("project");
+        let mount = dir.join("mount");
+        for d in [&state, &project, &mount] {
+            fs::create_dir(d).unwrap();
+        }
+        let unserved = |host: &Path| RootSpec {
+            host: host.to_path_buf(),
+            lower: None,
+            served: false,
+            rules: None,
+            direct: Vec::new(),
+        };
+        let mut specs = vec![
+            RootSpec {
+                lower: Some(sys::open_dir(&project).unwrap()),
+                served: true,
+                ..unserved(&project)
+            },
+            unserved(&dir),
+            unserved(&dir),
+        ];
+        specs.truncate(roots::COUNT);
+        let views = Views::new(
+            specs,
+            &state,
+            &mount,
+            Gate::new(&[]).unwrap(),
+            Unscoped::Passthrough,
+            ConflictRules::default(),
+            review::Rules::new(&[], &Default::default()).unwrap(),
+        )
+        .unwrap();
+        (views, dir)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn flush_leaves_the_trash_empty_after_scopes_are_dropped() {
+        let (views, dir) = Views::fixture("views-trash");
+        for i in 0..3 {
+            let opened = views.open_scope(&format!("t{i}"), &HashMap::new(), "").unwrap();
+            views.drop_scope(&opened.id).unwrap();
+        }
+        views.flush().unwrap();
+        assert_eq!(fs::read_dir(dir.join("state/trash")).unwrap().count(), 0);
+        // After flush a removal deletes inline.
+        let opened = views.open_scope("late", &HashMap::new(), "").unwrap();
+        views.drop_scope(&opened.id).unwrap();
+        assert_eq!(fs::read_dir(dir.join("state/trash")).unwrap().count(), 0);
+        drop(views);
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

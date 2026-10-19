@@ -173,3 +173,129 @@ impl Views {
         ids.first().map(|id| id.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CAPS: diff::Caps = diff::Caps {
+        file_bytes: 1 << 20,
+        max_bytes: 1 << 20,
+    };
+
+    /// A closed scope held for `tiers`.
+    fn held(name: &str, tiers: Vec<Tier>) -> (Views, PathBuf, String) {
+        let (views, dir) = Views::fixture(name);
+        let id = views.open_scope("t", &HashMap::new(), "").unwrap().id;
+        views.close_scope_after(&id, &[], CAPS).unwrap();
+        views.hold_scope(&id, tiers, false).unwrap();
+        (views, dir, id)
+    }
+
+    fn ledger(dir: &Path) -> String {
+        fs::read_to_string(dir.join("state/ledger.log")).unwrap()
+    }
+
+    fn review(views: &Views, id: &str, tier: Tier, verdict: Decision, over: bool) -> error::Result<Reviewed> {
+        views.review_scope(id, tier, verdict, Vec::new(), over)
+    }
+
+    #[test]
+    fn a_tier_that_is_not_pending_is_a_state_error() {
+        let (views, dir, id) = held("hold-not-pending", vec![Tier::Software]);
+        assert!(matches!(
+            review(&views, &id, Tier::Llm, Decision::Commit, false),
+            Err(Error::State(_))
+        ));
+        assert_eq!(views.held(&id).unwrap().unwrap().tiers, [Tier::Software]);
+        drop(views);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_llm_tier_before_the_software_tier_is_a_state_error() {
+        let (views, dir, id) = held("hold-order", vec![Tier::Software, Tier::Llm]);
+        assert!(matches!(
+            review(&views, &id, Tier::Llm, Decision::Commit, false),
+            Err(Error::State(_))
+        ));
+        assert_eq!(views.held(&id).unwrap().unwrap().tiers, [Tier::Software, Tier::Llm]);
+        drop(views);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_looser_verdict_without_a_human_override_is_denied() {
+        let (views, dir, id) = held("hold-denied", vec![Tier::Software, Tier::Llm, Tier::Human]);
+        assert!(matches!(
+            review(&views, &id, Tier::Software, Decision::Discard, false),
+            Ok(Reviewed::Held(_))
+        ));
+        // A machine tier cannot loosen, and a human without `over` cannot either.
+        assert!(matches!(
+            review(&views, &id, Tier::Llm, Decision::Commit, true),
+            Err(Error::Denied(_))
+        ));
+        assert!(matches!(
+            review(&views, &id, Tier::Human, Decision::Commit, false),
+            Err(Error::Denied(_))
+        ));
+        let hold = views.held(&id).unwrap().unwrap();
+        assert_eq!(hold.verdict, Decision::Discard);
+        assert_eq!(hold.tiers, [Tier::Llm, Tier::Human]);
+        drop(views);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_human_override_loosens_the_verdict_and_logs_it() {
+        let (views, dir, id) = held("hold-override", vec![Tier::Software, Tier::Human]);
+        review(&views, &id, Tier::Software, Decision::Discard, false).unwrap();
+        let Reviewed::Final(hold) = review(&views, &id, Tier::Human, Decision::Commit, true).unwrap() else {
+            panic!("the human is the last tier");
+        };
+        assert_eq!(hold.verdict, Decision::Commit);
+        assert!(hold.reviews.last().is_some_and(|r| r.over && r.tier == Tier::Human));
+        let log = ledger(&dir);
+        assert!(log.contains("op=override") && log.contains("decision=discard-to-commit"));
+        assert!(log.contains("op=review-human"));
+        drop(views);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_last_tier_is_final_and_writes_nothing() {
+        let (views, dir, id) = held("hold-final", vec![Tier::Software]);
+        let Reviewed::Final(hold) = review(&views, &id, Tier::Software, Decision::Return, false).unwrap() else {
+            panic!("software is the last tier");
+        };
+        assert_eq!(hold.verdict, Decision::Return);
+        assert!(hold.tiers.is_empty());
+        // The stored hold is as hold_scope left it.
+        let stored = views.held(&id).unwrap().unwrap();
+        assert_eq!(stored.tiers, [Tier::Software]);
+        assert_eq!(stored.verdict, Decision::Commit);
+        assert!(stored.reviews.is_empty());
+        drop(views);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_tier_before_the_last_leaves_the_scope_held_with_the_tiers_drained() {
+        let (views, dir, id) = held("hold-drain", vec![Tier::Software, Tier::Llm, Tier::Human]);
+        let Reviewed::Held(hold) = review(&views, &id, Tier::Software, Decision::Return, false).unwrap() else {
+            panic!("tiers remain");
+        };
+        assert_eq!(hold.tiers, [Tier::Llm, Tier::Human]);
+        assert_eq!(hold.verdict, Decision::Return);
+        assert_eq!(views.held(&id).unwrap().unwrap(), hold);
+        // A human's verdict also stands for the cheaper tiers pending before it.
+        let Reviewed::Final(done) = review(&views, &id, Tier::Human, Decision::Return, false).unwrap() else {
+            panic!("the human is last");
+        };
+        assert!(done.tiers.is_empty());
+        assert_eq!(done.reviews.len(), 2);
+        drop(views);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+}

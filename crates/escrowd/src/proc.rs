@@ -68,22 +68,36 @@ impl Proc {
     }
 }
 
-/// The fields of `/proc/<pid>/stat` the cache uses.
-struct Stat {
-    ppid: u32,
-    session: u32,
-    start: u64,
+/// The fields of `/proc/<pid>/stat` that the daemon uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Stat {
+    pub(crate) state: char,
+    pub(crate) ppid: u32,
+    pub(crate) pgrp: i32,
+    pub(crate) session: u32,
+    pub(crate) flags: u64,
+    pub(crate) start: u64,
 }
 
-fn stat(pid: u32) -> Option<Stat> {
-    let s = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // After the command name: state(3) ppid(4) pgrp(5) session(6) … starttime(22).
-    let f: Vec<&str> = s.get(s.rfind(')')? + 2..)?.split(' ').collect();
+/// Parse the text of a stat file. The command name may hold spaces and parentheses, so
+/// the fields resume after the last ')'.
+fn parse_stat(s: &str) -> Option<Stat> {
+    // After the command name: state(3) ppid(4) pgrp(5) session(6) tty_nr(7) tpgid(8)
+    // flags(9) … starttime(22).
+    let f: Vec<&str> = s.get(s.rfind(')')? + 1..)?.split_whitespace().collect();
     Some(Stat {
+        state: f.first()?.chars().next()?,
         ppid: f.get(1)?.parse().ok()?,
+        pgrp: f.get(2)?.parse().ok()?,
         session: f.get(3)?.parse().ok()?,
+        flags: f.get(6)?.parse().ok()?,
         start: f.get(19)?.parse().ok()?,
     })
+}
+
+/// The parsed `/proc/<pid>/stat` of process or thread `pid`; None if it is gone or unreadable.
+pub(crate) fn stat(pid: u32) -> Option<Stat> {
+    parse_stat(&fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)
 }
 
 fn args(pid: u32) -> Vec<String> {
@@ -326,6 +340,32 @@ mod tests {
         assert_ne!(sleep.info.id, sh.info.id);
         child.kill().unwrap();
         child.wait().unwrap();
+    }
+
+    #[test]
+    fn parses_a_stat_whose_command_holds_parens_and_spaces() {
+        // After the name: state ppid pgrp session tty tpgid flags, 12 more fields, starttime.
+        let text = "42 (a) (b c) S 7 8 9 0 0 4 0 0 0 0 0 0 0 0 0 0 0 0 55 0\n";
+        let st = parse_stat(text).unwrap();
+        assert_eq!(
+            st,
+            Stat {
+                state: 'S',
+                ppid: 7,
+                pgrp: 8,
+                session: 9,
+                flags: 4,
+                start: 55
+            }
+        );
+    }
+
+    #[test]
+    fn own_ppid_and_pgrp_match_the_kernel() {
+        let st = stat(std::process::id()).unwrap();
+        // SAFETY: getppid(2) and getpgrp(2) have no preconditions.
+        let (ppid, pgrp) = unsafe { (libc::getppid(), libc::getpgrp()) };
+        assert_eq!((st.ppid as i32, st.pgrp), (ppid, pgrp));
     }
 
     #[test]

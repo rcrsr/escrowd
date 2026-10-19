@@ -60,7 +60,7 @@ These were measured or decided; do not reopen them without new evidence. Phase 0
 - **No blocking calls on the runtime.** Filesystem and SQLite work in an async fn goes through the `blocking` helper in `decision.rs`.
 - **Calls go inward:** `rpc.rs`, then `decision.rs`, then `views/`, then storage, then `sys.rs`. New code adds no upward `use crate::` import, and `rpc.rs` holds no ordering, lock or policy logic.
 - **All SQLite goes through `db::open` and `db::migrate`.** Append a new migration step to change a schema; never edit an existing step or call `Connection::open` elsewhere.
-- **Commit is all or nothing.** A closed scope's change set applies through `commit.rs`; never write the project directly or best-effort.
+- **Commit is all or nothing.** A closed scope's change set applies through `commit/`; never write the project directly or best-effort.
 - **Base and upper access is fd-relative.** Use `sys.rs` directory-fd calls, never `std::fs` on a joined absolute path.
 - **FUSE ops only forward.** A `fuse.rs` method calls the same-named `Views` method in `views/overlay.rs`; no file operations in `fuse.rs`.
 - **Reviewer calls go on `ReviewerService`** (the separate 0600 review socket), never `EscrowService`.

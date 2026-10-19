@@ -129,3 +129,43 @@ impl Sandbox {
         cmd
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(cmd: &Command) -> Vec<String> {
+        cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect()
+    }
+
+    #[test]
+    fn command_disables_userns_and_hides_state_mount_and_sockets() {
+        let sandbox = Sandbox {
+            bwrap: PathBuf::from("bwrap"),
+            read: vec![PathBuf::from("/usr/share")],
+            write: Vec::new(),
+            hide_dirs: vec![
+                PathBuf::from("/usr/share/escrowd-state"),
+                PathBuf::from("/usr/share/escrowd-mount"),
+            ],
+            hide_files: vec![PathBuf::from("/usr/share/escrowd.sock")],
+            home: None,
+        };
+        let cmd = sandbox.command(&[], Path::new("/"), &[OsString::from("true")]);
+        let a = args(&cmd);
+        assert!(a.contains(&"--disable-userns".to_string()));
+        for dir in ["/usr/share/escrowd-state", "/usr/share/escrowd-mount"] {
+            let at = a.iter().position(|x| x == dir).expect("hidden dir is named");
+            assert_eq!(a[at - 1], "--tmpfs");
+        }
+        let at = a
+            .iter()
+            .position(|x| x == "/usr/share/escrowd.sock")
+            .expect("socket is named");
+        assert_eq!(&a[at - 2..at], ["--ro-bind", "/dev/null"]);
+        // The hides come after the read bind that exposes them.
+        let expose = a.iter().position(|x| x == "--ro-bind-try").unwrap();
+        assert!(expose < a.iter().position(|x| x == "/usr/share/escrowd-state").unwrap());
+        assert_eq!(a.last().map(String::as_str), Some("true"));
+    }
+}
