@@ -1,6 +1,52 @@
 {
   "environments": [
     {
+      "name": "conduct",
+      "paths": [
+        "conduct"
+      ],
+      "checks": {
+        ".md": [
+          {
+            "name": "conduct",
+            "command": "node",
+            "args": [
+              "conduct/resources/scripts/validate-documents.mjs",
+              "--file",
+              "$FILE",
+              "--json"
+            ],
+            "parser": "jsonl",
+            "_conduct": true
+          }
+        ]
+      },
+      "_conduct": true
+    },
+    {
+      "name": "codanna-settings",
+      "paths": [
+        ".codanna"
+      ],
+      "checks": {
+        ".toml": [
+          {
+            "name": "codanna-settings",
+            "command": "node",
+            "args": [
+              "conduct/resources/scripts/check-codanna-settings.mjs",
+              "--file",
+              "$FILE",
+              "--json"
+            ],
+            "parser": "jsonl",
+            "_conduct": true
+          }
+        ]
+      },
+      "_conduct": true
+    },
+    {
       "name": "python-sdk",
       "paths": [
         "sdk/python/src"
@@ -147,6 +193,22 @@
           }
         ]
       }
+    }
+  ],
+  "tasks": [
+    {
+      "name": "policy-reviewer",
+      "match": "conduct:policy-engineer",
+      "action": "review",
+      "message": "Invoke conduct:policy-reviewer to validate the policy file.",
+      "_conduct": true
+    },
+    {
+      "name": "escrowd-code-reviewer",
+      "match": "escrowd-engineer",
+      "action": "review",
+      "message": "Invoke escrowd-code-reviewer to validate the implementation.",
+      "_conduct": true
     }
   ]
 }
