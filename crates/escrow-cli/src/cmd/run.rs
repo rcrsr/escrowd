@@ -226,7 +226,7 @@ async fn drive(d: Drive) -> anyhow::Result<i32> {
         .env("ESCROW_EXE", &exe_path);
     let mut child = tokio::process::Command::from(app).spawn().context("starting bwrap")?;
     views.log_sandbox(UNSCOPED, &sandbox.write);
-    let pid = child.id().unwrap_or(0) as i32;
+    let pid = child.id().context("the sandboxed command has no pid")? as i32;
     // Ctrl-C reaches the app through the terminal; the launcher outlives it to settle and unmount.
     let mut int = signal(SignalKind::interrupt())?;
     let mut term = signal(SignalKind::terminate())?;

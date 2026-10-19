@@ -78,7 +78,6 @@ Status as of Oct 6, 2026: phase 3 complete (PR #34).
 | The diff shows no content for binary files and files over `diff.file_bytes` (size and SHA-256 only) or under `read.deny` (mode only); `git apply` cannot apply those sections. | By design (2.5). |
 | A permission change git's modes cannot show (0644 to 0600) is a `# escrow: mode of …` line at the end of the diff, not an `old mode`/`new mode` header. | By design (2.5). |
 | `escrow diff` and `GetChangeSet` need a closed, undecided scope; an open scope has no diff yet, and a decided scope's diff lives only in the caller's change set and outcome. | By design (2.5). |
-| `escrow run --on-exit` settles the default scope without building a diff. | By design (2.5): nothing reads it. |
 | A conflict under `conflict.verdict: return` reopens the scope on its old snapshot: a path that conflicted conflicts again while the scope still touches it (or, with `conflict.reads`, has read it). The agent drops that change or redoes the work in a new scope. | By design (2.7); rebase stays out of phase 2. |
 | `conflict.reads` is off by default: two concurrent scopes can each read a file the other changes and both commit (write skew). | By design, decided Oct 5, 2026: sessions that wait (phase 3) serialize one agent's scopes; hosts that need serializable scopes turn it on. |
 | `conflict.reads` checks files read through the scope's view; reads not yet written to the store when the daemon was killed drop out of the check, as they drop out of the change set. | By design (2.7, 2.3). |

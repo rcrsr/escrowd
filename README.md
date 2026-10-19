@@ -283,7 +283,7 @@ Unix socket paths are limited to 107 bytes, so keep `--socket` short.
 
 | Code | Meaning |
 | --- | --- |
-| 0 | Success. `escrow run --on-exit commit` exits 0 only when the command exited 0 and the unscoped changes were committed. A `review` verdict that leaves the scope held for another tier also exits 0. |
+| 0 | Success. `escrow run --unscoped implicit --on-exit commit` exits 0 only when the command exited 0 and the unscoped changes were committed (with `passthrough` or `deny` nothing is settled and the command's own code is returned). A `review` verdict that leaves the scope held for another tier also exits 0. |
 | the command's code | `escrow run` and `escrow exec` exit with the command's own nonzero code (128+n for a signal n). Nothing masks it, except 125. |
 | 1 | `daemon`, `diff`, `review` or `log` failed. The message reads `escrow <command>: <STATUS>: <reason>` when the daemon refused the call (for example `FAILED_PRECONDITION`). |
 | 2 | Usage error. |

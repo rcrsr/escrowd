@@ -151,6 +151,10 @@ fn resolve_lexical(path: &Path) -> anyhow::Result<PathBuf> {
             }
             Err(_) => {
                 let (Some(parent), Some(name)) = (head.parent(), head.file_name()) else {
+                    if head.parent().is_some() {
+                        // A `..` after a missing directory cannot be resolved without creating it.
+                        bail!("{} has `..` after a directory that does not exist", path.display());
+                    }
                     return Ok(abs);
                 };
                 tail.push(name);
@@ -303,7 +307,19 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
         exec::exec_socket(&socket_dir.join(&socket_name)),
         rpc::review_socket(&socket_dir.join(&socket_name)),
     ];
-    let specs = open_roots(&project, &state, &mount, &sockets, home, tmp, home_dir, &read, &write)?;
+    let specs = open_roots(
+        &Paths {
+            project: &project,
+            state: &state,
+            mount: &mount,
+            sockets: &sockets,
+        },
+        home,
+        tmp,
+        home_dir,
+        &read,
+        &write,
+    )?;
     let home = specs[roots::HOME].served.then(|| specs[roots::HOME].host.clone());
     let views = Arc::new(
         Views::new(specs, &state, &mount, gate, config.unscoped, policy.conflict, review).context("loading scopes")?,
@@ -334,20 +350,31 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
     })
 }
 
+/// The paths of the project, escrowd's state and views, and its sockets.
+#[derive(Clone, Copy)]
+struct Paths<'a> {
+    project: &'a Path,
+    state: &'a Path,
+    mount: &'a Path,
+    sockets: &'a [PathBuf],
+}
+
 /// Open every base before anything is mounted, so reads of it never loop through a view.
 /// A root the policy does not serve is opened too: recovery may need it.
-#[allow(clippy::too_many_arguments)]
 fn open_roots(
-    project: &Path,
-    state: &Path,
-    mount: &Path,
-    sockets: &[PathBuf],
+    paths: &Paths,
     home: Option<Resolved>,
     tmp: Option<Resolved>,
     home_dir: Option<PathBuf>,
     read: &[PathBuf],
     write: &[PathBuf],
 ) -> anyhow::Result<Vec<RootSpec>> {
+    let Paths {
+        project,
+        state,
+        mount,
+        sockets,
+    } = *paths;
     let open = |p: &Path| sys::open_dir(p).with_context(|| format!("opening {}", p.display()));
     let mut specs = vec![RootSpec {
         host: project.to_path_buf(),
@@ -499,4 +526,29 @@ impl Daemon {
 
 pub async fn run(config: Config, shutdown: impl Future<Output = ()>) -> anyhow::Result<()> {
     start(config)?.serve(shutdown).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_parent_component_after_a_missing_directory_is_refused() {
+        let err = resolve_lexical(Path::new("/escrowd-no-such-dir/missing/../sub")).unwrap_err();
+
+        assert!(err.to_string().contains("`..`"), "{err}");
+    }
+
+    #[test]
+    fn a_missing_tail_keeps_its_canonical_existing_prefix() {
+        let resolved = resolve_lexical(Path::new("/tmp/escrowd-no-such-dir/sub")).unwrap();
+
+        assert_eq!(
+            resolved,
+            Path::new("/tmp")
+                .canonicalize()
+                .unwrap()
+                .join("escrowd-no-such-dir/sub")
+        );
+    }
 }

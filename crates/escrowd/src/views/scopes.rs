@@ -439,18 +439,21 @@ impl Views {
     /// At shutdown: write every scope's deferred metadata and finish deleting dropped scopes and stop the
     /// background workers (later removals delete inline, later writeback hints are dropped).
     pub fn flush(&self) -> io::Result<()> {
+        let mut first = Ok(());
         for h in self.scopes.read().values() {
-            h.store().flush()?;
+            if let Err(e) = h.store().flush() {
+                first = first.and(Err(e));
+            }
         }
         // Closing both channels ends the workers once they drain what was queued.
         drop(self.cleaner.lock().take());
         drop(self.writeback.lock().take());
         for w in self.workers.lock().drain(..) {
             if w.join().is_err() {
-                return Err(io::Error::other("a background worker panicked"));
+                first = first.and(Err(io::Error::other("a background worker panicked")));
             }
         }
-        Ok(())
+        first
     }
 
     pub fn scope_ids(&self) -> Vec<String> {

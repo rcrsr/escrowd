@@ -399,8 +399,14 @@ impl Decisions {
     ) -> error::Result<Outcome> {
         let (children, caps) = (self.children.clone(), self.diff);
         self.blocking(move |v| {
+            // A commit applies the frozen record: the one the review read, else the scope's.
+            let frozen = match (verdict, closed) {
+                (Decision::Commit, Some(f)) => Some(f),
+                (Decision::Commit, None) => Some(v.frozen(&id, caps)?),
+                _ => None,
+            };
             let Some(keep) = keep else {
-                return apply_now(v, &children, caps, &id, verdict, reasons, closed, false).map(|(out, _)| out);
+                return apply_now(v, &children, &id, verdict, reasons, frozen, false).map(|(out, _)| out);
             };
             let seq = v.history.intend(
                 &keep.who.id,
@@ -409,7 +415,7 @@ impl Decisions {
                 &keep.entry(keep.intended(&id, verdict, &reasons)),
             )?;
             crate::fault::hit("intended", 0)?;
-            let (out, finish) = match apply_now(v, &children, caps, &id, verdict, reasons, closed, true) {
+            let (out, finish) = match apply_now(v, &children, &id, verdict, reasons, frozen, true) {
                 Ok(r) => r,
                 Err(e) => {
                     if let Err(c) = v.history.cancel(seq) {
@@ -610,15 +616,13 @@ impl Decisions {
 
 /// `Decisions::apply` on the blocking pool. With `keep`, a committed scope stays until
 /// `finish_commit`, and the second value is the generation to finish it with.
-#[allow(clippy::too_many_arguments)]
 fn apply_now(
     v: &Views,
     children: &Children,
-    caps: diff::Caps,
     id: &str,
     verdict: Decision,
     reasons: Vec<String>,
-    closed: Option<Arc<Frozen>>,
+    frozen: Option<Arc<Frozen>>,
     keep: bool,
 ) -> error::Result<(Outcome, Option<Option<u64>>)> {
     let mut out = Outcome {
@@ -628,11 +632,7 @@ fn apply_now(
     let mut finish = None;
     match verdict {
         Decision::Commit => {
-            // A commit applies the frozen record: the one the review read, else the scope's.
-            let frozen = match closed {
-                Some(f) => f,
-                None => v.frozen(id, caps)?,
-            };
+            let frozen = frozen.expect("apply resolves the frozen record for a commit");
             let committed = match keep {
                 true => v.commit_kept(id, &frozen.change_set),
                 false => v.commit_closed(id, &frozen.change_set),
