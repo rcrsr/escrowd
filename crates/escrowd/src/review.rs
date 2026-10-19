@@ -30,13 +30,6 @@ pub struct Rules {
     only_by: Vec<(Globs, Vec<(u64, u64)>)>,
 }
 
-/// The software tier's verdict on a change set.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Verdict {
-    Commit,
-    Discard,
-}
-
 /// A tier's verdict on a held scope, loosest first: verdicts only tighten.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Decision {
@@ -110,15 +103,29 @@ impl Hit {
     }
 }
 
+/// The close-time review of a change set. The default is a change set no rule
+/// touched: commit, nothing needed above software.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Review {
-    pub verdict: Verdict,
+    /// The software tier's verdict: commit, or discard when a write rule broke.
+    pub verdict: Decision,
     /// The write rules broken; empty when the verdict is commit.
     pub hits: Vec<Hit>,
     /// The tiers above software the change set needs, cheapest first; empty after a discard.
     pub tiers: Vec<Tier>,
     /// A path that needs a tier above software has a rule that requires the agent to wait.
     pub wait: bool,
+}
+
+impl Default for Review {
+    fn default() -> Self {
+        Review {
+            verdict: Decision::Commit,
+            hits: Vec::new(),
+            tiers: Vec::new(),
+            wait: false,
+        }
+    }
 }
 
 impl Review {
@@ -233,7 +240,7 @@ impl Rules {
     pub fn review<'a>(&self, paths: impl IntoIterator<Item = &'a Path>, hits: Vec<Hit>) -> Review {
         if !hits.is_empty() {
             return Review {
-                verdict: Verdict::Discard,
+                verdict: Decision::Discard,
                 hits,
                 tiers: Vec::new(),
                 wait: false,
@@ -247,7 +254,7 @@ impl Rules {
         }
         let tiers = [Tier::Llm, Tier::Human].into_iter().filter(|t| *t <= top).collect();
         Review {
-            verdict: Verdict::Commit,
+            verdict: Decision::Commit,
             hits,
             tiers,
             wait,
@@ -275,7 +282,7 @@ mod tests {
             "{}",
         );
         let v = r.review(paths(&["README.md"]), vec![]);
-        assert_eq!((v.verdict, v.tiers.clone(), v.wait), (Verdict::Commit, vec![], false));
+        assert_eq!((v.verdict, v.tiers.clone(), v.wait), (Decision::Commit, vec![], false));
         let v = r.review(paths(&["src/util.py"]), vec![]);
         assert_eq!((v.tiers.clone(), v.wait), (vec![Tier::Llm], false));
         // First match wins: src/auth/ is human (wait required) although src/** matches too.
@@ -292,7 +299,7 @@ mod tests {
             rule: Broken::Deny,
         };
         let v = r.review(paths(&["keys/a.pem"]), vec![hit]);
-        assert_eq!((v.verdict, v.tiers.len()), (Verdict::Discard, 0));
+        assert_eq!((v.verdict, v.tiers.len()), (Decision::Discard, 0));
         assert_eq!(v.reasons(), ["write.deny: keys/a.pem"]);
     }
 

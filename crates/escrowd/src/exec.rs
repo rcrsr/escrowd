@@ -21,8 +21,10 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+
+use parking_lot::{Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use prost::Message;
@@ -141,7 +143,7 @@ impl Children {
     }
 
     fn remove(&self, scope: &str, pgid: i32) {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock();
         if let Some(v) = g.running.get_mut(scope) {
             v.retain(|p| *p != pgid);
             if v.is_empty() {
@@ -157,7 +159,7 @@ impl Children {
     /// Returns the sandboxes' process groups: their last processes may still be
     /// exiting, writing back dirty pages (`Views::close_scope_after`).
     pub fn stop(&self, scope: &str) -> Vec<i32> {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock();
         g.closing.insert(scope.to_string());
         let pgids = g.running.get(scope).cloned().unwrap_or_default();
         if pgids.is_empty() {
@@ -176,27 +178,27 @@ impl Children {
 
     fn wait_gone<'a>(
         &self,
-        mut g: std::sync::MutexGuard<'a, Registry>,
+        mut g: MutexGuard<'a, Registry>,
         scope: &str,
         within: Duration,
-    ) -> std::sync::MutexGuard<'a, Registry> {
+    ) -> MutexGuard<'a, Registry> {
         let deadline = Instant::now() + within;
         while g.running.contains_key(scope) && Instant::now() < deadline {
             let left = deadline
                 .saturating_duration_since(Instant::now())
                 .min(Duration::from_millis(100));
-            g = self.gone.wait_timeout(g, left).unwrap().0;
+            self.gone.wait_for(&mut g, left);
         }
         g
     }
 
     /// The scope accepts children again (return to agent), or is gone.
     pub fn release(&self, scope: &str) {
-        self.inner.lock().unwrap().closing.remove(scope);
+        self.inner.lock().closing.remove(scope);
     }
 
     pub fn stop_all(&self) {
-        let scopes: Vec<String> = self.inner.lock().unwrap().running.keys().cloned().collect();
+        let scopes: Vec<String> = self.inner.lock().running.keys().cloned().collect();
         for s in scopes {
             self.stop(&s);
         }
@@ -306,7 +308,7 @@ impl ExecServer {
             .map_err(|_| invalid("expected stdin, stdout and stderr".into()))?;
         let id = &req.scope_id;
         // Held while checking and spawning, so close never misses a child.
-        let mut g = self.children.inner.lock().unwrap();
+        let mut g = self.children.inner.lock();
         let h = self.views.scope(id).map_err(|_| invalid(format!("no scope {id}")))?;
         self.views.check_token(id, &req.token)?;
         if h.is_closed() || g.closing.contains(id) {
@@ -410,6 +412,6 @@ pub struct Signaller(Mutex<UnixStream>);
 
 impl Signaller {
     pub fn send(&self, signal: i32) -> io::Result<()> {
-        write_frame(&mut *self.0.lock().unwrap(), &SpawnSignal { signal })
+        write_frame(&mut *self.0.lock(), &SpawnSignal { signal })
     }
 }

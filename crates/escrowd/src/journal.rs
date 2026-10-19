@@ -17,7 +17,9 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
+
+use crate::db::{self, Durability, sql};
 
 use crate::snapshot::{Entry, Meta};
 use crate::sys::{self, Version};
@@ -72,12 +74,6 @@ pub struct Journal {
     db: Connection,
 }
 
-// synchronous first, so the switch of a new journal to WAL runs under it.
-const PRAGMAS: &str = "
-PRAGMA synchronous = FULL;
-PRAGMA journal_mode = WAL;
-";
-
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL) STRICT;
 CREATE TABLE IF NOT EXISTS gens (gen INTEGER PRIMARY KEY, scope TEXT NOT NULL, state TEXT NOT NULL) STRICT;
@@ -118,7 +114,6 @@ CREATE TABLE IF NOT EXISTS restored (
     new_ctime_ns INTEGER NOT NULL,
     PRIMARY KEY (root, path, old_ino, old_size, old_mtime_ns, old_ctime_ns)
 ) STRICT;
-PRAGMA user_version = 1;
 ";
 
 /// A journal from before roots (user_version 0) gets a root column (every row is the project's).
@@ -136,8 +131,18 @@ DROP TABLE dirs0;
 DROP TABLE restored0;
 ";
 
-fn sql(e: rusqlite::Error) -> io::Error {
-    io::Error::other(e)
+/// Version 1: every entry names its root. A journal from before roots has the
+/// tables without the column; each of its rows is the project's.
+fn v1_roots(tx: &Transaction) -> rusqlite::Result<()> {
+    let old = db::has_table(tx, "entries")?;
+    if old {
+        tx.execute_batch(MIGRATE_ROOTS)?;
+    }
+    tx.execute_batch(SCHEMA)?;
+    if old {
+        tx.execute_batch(MIGRATE_ROOTS_COPY)?;
+    }
+    Ok(())
 }
 
 fn version(r: &rusqlite::Row, at: usize) -> rusqlite::Result<Version> {
@@ -151,22 +156,8 @@ fn version(r: &rusqlite::Row, at: usize) -> rusqlite::Result<Version> {
 
 impl Journal {
     pub fn open(path: &Path) -> io::Result<Self> {
-        let db = Connection::open(path).map_err(sql)?;
-        db.execute_batch(PRAGMAS).map_err(sql)?;
-        let version: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0)).map_err(sql)?;
-        let old: bool = db
-            .query_row("SELECT count(*) FROM sqlite_master WHERE name = 'entries'", [], |r| {
-                r.get::<_, i64>(0)
-            })
-            .map_err(sql)?
-            > 0;
-        // One transaction: a new journal costs one sync, not one per table.
-        let batch = if old && version == 0 {
-            format!("BEGIN; {MIGRATE_ROOTS} {SCHEMA} {MIGRATE_ROOTS_COPY} COMMIT;")
-        } else {
-            format!("BEGIN; {SCHEMA} COMMIT;")
-        };
-        db.execute_batch(&batch).map_err(sql)?;
+        let mut db = db::open(path, Durability::Full)?;
+        db::migrate(&mut db, "journal.sqlite", &[v1_roots])?;
         Ok(Journal { db })
     }
 
@@ -425,5 +416,53 @@ impl Journal {
             })
             .map_err(sql)?;
         rows.collect::<Result<_, _>>().map_err(sql)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_journal_from_before_roots_gets_a_root_column() {
+        let dir = db::temp_dir("journal-v0");
+        let path = dir.join("journal.sqlite");
+        {
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL) STRICT;
+                 CREATE TABLE gens (gen INTEGER PRIMARY KEY, scope TEXT NOT NULL, state TEXT NOT NULL) STRICT;
+                 CREATE TABLE entries (gen INTEGER NOT NULL, path BLOB NOT NULL, present INTEGER NOT NULL,
+                     mode INTEGER NOT NULL, ino INTEGER NOT NULL, size INTEGER NOT NULL, uid INTEGER NOT NULL,
+                     gid INTEGER NOT NULL, atime_ns INTEGER NOT NULL, mtime_ns INTEGER NOT NULL,
+                     ctime_ns INTEGER NOT NULL, tmp BLOB, PRIMARY KEY (gen, path)) STRICT;
+                 CREATE TABLE dirs (gen INTEGER NOT NULL, path BLOB NOT NULL, atime_ns INTEGER NOT NULL,
+                     mtime_ns INTEGER NOT NULL, PRIMARY KEY (gen, path)) STRICT;
+                 CREATE TABLE restored (path BLOB NOT NULL, old_ino INTEGER NOT NULL, old_size INTEGER NOT NULL,
+                     old_mtime_ns INTEGER NOT NULL, old_ctime_ns INTEGER NOT NULL, new_ino INTEGER NOT NULL,
+                     new_size INTEGER NOT NULL, new_mtime_ns INTEGER NOT NULL, new_ctime_ns INTEGER NOT NULL,
+                     PRIMARY KEY (path, old_ino, old_size, old_mtime_ns, old_ctime_ns)) STRICT;
+                 INSERT INTO gens VALUES (3, 's1', 'done');
+                 INSERT INTO entries VALUES (3, CAST('a.txt' AS BLOB), 1, 33188, 7, 1, 0, 0, 0, 0, 0, NULL);
+                 INSERT INTO dirs VALUES (3, CAST('' AS BLOB), 0, 0);",
+            )
+            .unwrap();
+        }
+        let j = Journal::open(&path).unwrap();
+        let (root, p): (i64, Vec<u8>) =
+            j.db.query_row("SELECT root, path FROM entries WHERE gen = 3", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!((root, p), (0, b"a.txt".to_vec()));
+        let dirs: i64 =
+            j.db.query_row("SELECT count(*) FROM dirs WHERE root = 0", [], |r| r.get(0))
+                .unwrap();
+        assert_eq!(dirs, 1);
+        let v: i64 = j.db.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 1);
+        drop(j);
+        Journal::open(&path).unwrap(); // a second start migrates nothing
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

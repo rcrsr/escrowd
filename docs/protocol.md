@@ -80,11 +80,11 @@ The daemon fails a call with one of these codes. An SDK maps each one to the sam
 | `PERMISSION_DENIED` | A missing or wrong token; the opener's commit or return of a held scope; a looser verdict without a human override | `EscrowPermissionError` | No |
 | `FAILED_PRECONDITION` | The scope is not in the state the call needs (open, closed, held, this tier's turn); the daemon's mode does not serve the call; a session's next scope hit its deadline behind a held one | `EscrowStateError` | After the state changes |
 | `INVALID_ARGUMENT` | A request field is missing or out of range: verdict unset, tier not `llm` or `human` | `EscrowInvalidArgumentError` | No |
-| `ABORTED` | A commit failed and was rolled back. Nothing reached the project; the scope stays closed | `EscrowAbortedError` | Yes: decide again |
+| `ABORTED` | `Commits::commit` failed and rolled back. Nothing reached the project; the scope stays closed | `EscrowAbortedError` | Yes: decide again |
 | `UNAVAILABLE` | No daemon on the socket, or it stopped during the call | `EscrowUnavailableError` | When a daemon runs |
 | `DEADLINE_EXCEEDED` | The client's deadline passed; a decision may still have run | `EscrowTimeoutError` | Read the state first |
 | `UNIMPLEMENTED` | The socket does not serve the call (the other service), or the daemon predates it | `EscrowUnsupportedError` | No |
-| `INTERNAL`, other codes | A daemon fault; the message says which | `EscrowRpcError` | No |
+| `INTERNAL`, other codes | A daemon fault; the message says which. Includes a failure building the change set for a commit (before anything applies, so nothing was written) and a commit whose rollback failed too (the base may be partly applied until the next start rolls it back from the journal): neither is `ABORTED`; only the rollback-failed case cannot be decided again before a restart | `EscrowRpcError` | No |
 
 The message (`details()`) is for people. Clients branch on the code, never on the text.
 

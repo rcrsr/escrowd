@@ -345,6 +345,29 @@ impl Policy {
     }
 }
 
+/// IO outside any scope: what the app's sandbox sees at the project path.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Unscoped {
+    /// The real project, bound directly: real IO, not captured.
+    Passthrough,
+    /// A default scope, decided at exit or by `settle_unscoped`, then replaced by a fresh one.
+    Implicit,
+    /// A read-only view of the live project: reads pass (through the gate), changes get EROFS.
+    Deny,
+}
+
+impl std::str::FromStr for Unscoped {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, String> {
+        match s {
+            "passthrough" => Ok(Unscoped::Passthrough),
+            "implicit" => Ok(Unscoped::Implicit),
+            "deny" => Ok(Unscoped::Deny),
+            _ => Err(format!("unscoped mode {s}: expected passthrough, implicit or deny")),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

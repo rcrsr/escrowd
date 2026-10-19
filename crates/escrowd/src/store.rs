@@ -27,9 +27,13 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use rusqlite::{Connection, OptionalExtension, params};
+use parking_lot::Mutex;
+
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
+
+use crate::db::{self, Durability, sql};
 
 use crate::policy::Tier;
 use crate::proc::{Info, Proc};
@@ -110,12 +114,6 @@ pub struct ScopeStore {
 
 const PIN_BATCH: usize = 4096;
 
-// synchronous first, so the switch of a new database to WAL runs under it.
-const PRAGMAS: &str = "
-PRAGMA synchronous = NORMAL;
-PRAGMA journal_mode = WAL;
-";
-
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value ANY) STRICT;
 CREATE TABLE IF NOT EXISTS whiteouts (path BLOB PRIMARY KEY) STRICT;
@@ -165,8 +163,18 @@ fn split_nul(b: &[u8]) -> Vec<String> {
         .collect()
 }
 
-fn sql(e: rusqlite::Error) -> io::Error {
-    io::Error::other(e)
+/// Version 1: the tables as of protocol 7. Stores from before kept no version;
+/// every table they lack is created.
+fn v1(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(SCHEMA)
+}
+
+/// Normal: a store's rows survive a crash of the daemon; a scope does not survive
+/// a crash of the host it runs on, and its writes are the hot path.
+fn open_db(dir: &Path) -> io::Result<Connection> {
+    let mut db = db::open(&dir.join("meta.sqlite"), Durability::Normal)?;
+    db::migrate(&mut db, "meta.sqlite", &[v1])?;
+    Ok(db)
 }
 
 fn write_version(db: &Connection, rel: &Path, seen: Seen, v: Version) -> io::Result<()> {
@@ -231,11 +239,8 @@ impl ScopeStore {
         let dir = scopes_dir.join(id);
         fs::create_dir(&dir)?;
         fs::create_dir(dir.join("upper"))?;
-        let mut db = Connection::open(dir.join("meta.sqlite")).map_err(sql)?;
-        db.execute_batch(PRAGMAS).map_err(sql)?;
-        // One transaction: a scope opens with one write.
+        let mut db = open_db(&dir)?;
         let tx = db.transaction().map_err(sql)?;
-        tx.execute_batch(SCHEMA).map_err(sql)?;
         tx.execute(
             "INSERT INTO meta VALUES ('name', ?1), ('idx', ?2), ('since', ?3), ('readonly', ?4), ('next_upper_ino', 0), ('state', 'open')",
             params![name, idx as i64, since as i64, readonly as i64],
@@ -260,9 +265,7 @@ impl ScopeStore {
     /// Reopen an existing scope directory, e.g. after a daemon restart.
     pub fn load(scopes_dir: &Path, id: &str) -> io::Result<Self> {
         let dir = scopes_dir.join(id);
-        let db = Connection::open(dir.join("meta.sqlite")).map_err(sql)?;
-        db.execute_batch(PRAGMAS).map_err(sql)?;
-        db.execute_batch(SCHEMA).map_err(sql)?;
+        let db = open_db(&dir)?;
         Self::from_db(dir, id, db)
     }
 
@@ -433,14 +436,14 @@ impl ScopeStore {
 
     /// Run `f`'s changes in one transaction (the store's own groups nest as savepoints).
     pub fn batch<T>(&mut self, f: impl FnOnce(&mut Self) -> io::Result<T>) -> io::Result<T> {
-        self.db.get_mut().unwrap().execute_batch("BEGIN").map_err(sql)?;
+        self.db.get_mut().execute_batch("BEGIN").map_err(sql)?;
         match f(self) {
             Ok(v) => {
-                self.db.get_mut().unwrap().execute_batch("COMMIT").map_err(sql)?;
+                self.db.get_mut().execute_batch("COMMIT").map_err(sql)?;
                 Ok(v)
             }
             Err(e) => {
-                let _ = self.db.get_mut().unwrap().execute_batch("ROLLBACK");
+                let _ = self.db.get_mut().execute_batch("ROLLBACK");
                 Err(e)
             }
         }
@@ -486,11 +489,7 @@ impl ScopeStore {
     pub fn set_state(&mut self, state: ScopeState) -> io::Result<()> {
         self.flush()?;
         let v = if state == ScopeState::Closed { "closed" } else { "open" };
-        exec(
-            self.db.get_mut().unwrap(),
-            "UPDATE meta SET value = ?1 WHERE key = 'state'",
-            [v],
-        )?;
+        exec(self.db.get_mut(), "UPDATE meta SET value = ?1 WHERE key = 'state'", [v])?;
         self.state = state;
         Ok(())
     }
@@ -501,7 +500,7 @@ impl ScopeStore {
 
     /// Hold the scope for reviewers, or (None) release it; written at once.
     pub fn set_hold(&mut self, hold: Option<Hold>) -> io::Result<()> {
-        let db = self.db.get_mut().unwrap();
+        let db = self.db.get_mut();
         let tx = db.transaction().map_err(sql)?;
         tx.execute(
             "DELETE FROM meta WHERE key IN ('hold_tiers', 'hold_wait', 'hold_at', 'hold_verdict')",
@@ -545,7 +544,7 @@ impl ScopeStore {
     }
 
     pub fn labels(&self) -> io::Result<HashMap<String, String>> {
-        let db = self.db.lock().unwrap();
+        let db = self.db.lock();
         let mut st = db.prepare("SELECT key, value FROM labels").map_err(sql)?;
         let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?))).map_err(sql)?;
         rows.collect::<Result<_, _>>().map_err(sql)
@@ -577,7 +576,7 @@ impl ScopeStore {
             return Ok(());
         }
         exec(
-            self.db.get_mut().unwrap(),
+            self.db.get_mut(),
             "INSERT OR IGNORE INTO denied VALUES (?1)",
             [sys::path_bytes(rel)],
         )?;
@@ -591,7 +590,7 @@ impl ScopeStore {
 
     pub fn add_whiteout(&mut self, rel: &Path) -> io::Result<()> {
         exec(
-            self.db.get_mut().unwrap(),
+            self.db.get_mut(),
             "INSERT OR IGNORE INTO whiteouts VALUES (?1)",
             [sys::path_bytes(rel)],
         )?;
@@ -605,7 +604,7 @@ impl ScopeStore {
             return Ok(false);
         }
         exec(
-            self.db.get_mut().unwrap(),
+            self.db.get_mut(),
             "DELETE FROM whiteouts WHERE path = ?1",
             [sys::path_bytes(rel)],
         )?;
@@ -615,7 +614,7 @@ impl ScopeStore {
 
     pub fn add_opaque(&mut self, rel: &Path) -> io::Result<()> {
         exec(
-            self.db.get_mut().unwrap(),
+            self.db.get_mut(),
             "INSERT OR IGNORE INTO opaque VALUES (?1)",
             [sys::path_bytes(rel)],
         )?;
@@ -626,7 +625,7 @@ impl ScopeStore {
     /// A directory at `rel` was removed: forget whiteouts below it and opaque marks at or below it.
     pub fn clear_below(&mut self, rel: &Path) -> io::Result<()> {
         let (exact, lo, hi) = under_params(rel);
-        let tx = self.db.get_mut().unwrap().savepoint().map_err(sql)?;
+        let tx = self.db.get_mut().savepoint().map_err(sql)?;
         exec(
             &tx,
             "DELETE FROM whiteouts WHERE path >= ?1 AND path < ?2",
@@ -658,7 +657,7 @@ impl ScopeStore {
         {
             return Ok(());
         }
-        let tx = self.db.get_mut().unwrap().savepoint().map_err(sql)?;
+        let tx = self.db.get_mut().savepoint().map_err(sql)?;
         for p in &self.unwritten_pins {
             match self.pins.get(p) {
                 Some(ino) => exec(
@@ -807,7 +806,6 @@ impl ScopeStore {
         }
         self.db
             .lock()
-            .unwrap()
             .prepare_cached("SELECT ino, size, mtime_ns, ctime_ns FROM versions WHERE path = ?1")
             .and_then(|mut st| {
                 st.query_row([sys::path_bytes(rel)], |r| {
@@ -850,7 +848,7 @@ impl ScopeStore {
         }
         // A change keeps the version of a first read not written yet.
         let first = self.unwritten_reads.remove(rel).unwrap_or(v);
-        write_version(self.db.get_mut().unwrap(), rel, seen, first)
+        write_version(self.db.get_mut(), rel, seen, first)
     }
 
     /// Whether `proc` is already a writer of `rel` (a shared lock suffices to check).

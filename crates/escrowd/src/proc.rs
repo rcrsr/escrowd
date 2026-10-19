@@ -27,7 +27,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 use std::time::{Duration, Instant};
 
 const MAX_PARENTS: usize = 16;
@@ -161,14 +163,14 @@ impl Default for Procs {
 
 /// The cached process of `id` if it started at `start`; marks it checked.
 fn cached(c: &Mutex<Cache>, id: u32, start: u64) -> Option<Arc<Proc>> {
-    let mut c = c.lock().unwrap();
+    let mut c = c.lock();
     let e = c.get_mut(&id).filter(|e| e.start == start)?;
     e.checked = Instant::now();
     Some(e.proc.clone())
 }
 
 fn insert(c: &Mutex<Cache>, id: u32, start: u64, p: &Arc<Proc>) {
-    let mut c = c.lock().unwrap();
+    let mut c = c.lock();
     if c.len() >= CACHE {
         c.retain(|id, e| stat(*id).is_some_and(|st| st.start == e.start));
         if c.len() >= CACHE {
@@ -194,7 +196,6 @@ impl Procs {
         let hit = self
             .tasks
             .lock()
-            .unwrap()
             .get(&tid)
             .map(|e| (e.proc.clone(), e.checked.elapsed() < RECHECK));
         let st = match hit {
@@ -207,7 +208,7 @@ impl Procs {
             return Some((p, Vec::new()));
         }
         let pid = tgid(tid)?;
-        let _one = self.lookup.lock().unwrap();
+        let _one = self.lookup.lock();
         let mut fresh = Vec::new();
         let p = self.process(pid, MAX_PARENTS, &mut fresh)?;
         insert(&self.tasks, tid, st.start, &p);
