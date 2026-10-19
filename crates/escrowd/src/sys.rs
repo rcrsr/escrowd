@@ -380,9 +380,13 @@ pub struct Version {
     pub ctime_ns: i64,
 }
 
+/// Seconds and nanoseconds since the epoch as nanoseconds, saturating at the `i64` range.
+pub fn ns(secs: i64, nsecs: i64) -> i64 {
+    secs.saturating_mul(1_000_000_000).saturating_add(nsecs)
+}
+
 impl Version {
     pub fn of(st: &Stat) -> Self {
-        let ns = |s: i64, n: i64| s.saturating_mul(1_000_000_000).saturating_add(n);
         Version {
             ino: st.st_ino,
             size: st.st_size,
@@ -408,4 +412,16 @@ pub fn path_bytes(p: &Path) -> &[u8] {
 
 pub fn path_from(bytes: Vec<u8>) -> PathBuf {
     PathBuf::from(OsString::from_vec(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ns;
+
+    #[test]
+    fn nanosecond_conversion_saturates_at_i64_max() {
+        assert_eq!(ns(i64::MAX, 999_999_999), i64::MAX);
+        assert_eq!(ns(i64::MAX / 1_000_000_000 + 1, 0), i64::MAX);
+        assert_eq!(ns(2, 5), 2_000_000_005);
+    }
 }

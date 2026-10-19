@@ -10,13 +10,14 @@
 //! it cannot reach the daemon. The request carries the scope's token; the child's
 //! environment gets neither the socket nor the token (`ESCROW_SCOPE_TOKEN`).
 //!
-//! Frames: a little-endian u32 length, then one protobuf message.
+//! Frames: a little-endian u32 length, then one protobuf message, at most 16 MiB.
+//! `write_frame` and `read_frame` are the one codec; the daemon and `escrow exec` both use them.
 
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
-use std::io::{self, IoSlice, IoSliceMut, Read, Write};
+use std::io::{self, IoSliceMut, Read, Write};
 use std::mem::MaybeUninit;
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::fd::OwnedFd;
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -28,9 +29,7 @@ use parking_lot::{Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use prost::Message;
-use rustix::net::{
-    RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags, SendAncillaryBuffer, SendAncillaryMessage, SendFlags,
-};
+use rustix::net::{RecvAncillaryBuffer, RecvAncillaryMessage, RecvFlags};
 
 use crate::proto::{SpawnEvent, SpawnRequest, SpawnSignal, spawn_event::Event};
 use crate::sandbox::{Mount, Sandbox};
@@ -48,7 +47,8 @@ pub fn exec_socket(socket: &Path) -> PathBuf {
     s.into()
 }
 
-fn write_frame(w: &mut impl Write, msg: &impl Message) -> io::Result<()> {
+/// Write one frame: a little-endian u32 length, then the message.
+pub fn write_frame(w: &mut impl Write, msg: &impl Message) -> io::Result<()> {
     let body = msg.encode_to_vec();
     let mut buf = (body.len() as u32).to_le_bytes().to_vec();
     buf.extend(body);
@@ -65,7 +65,7 @@ fn read_body<M: Message + Default>(r: &mut impl Read, len: usize) -> io::Result<
 }
 
 /// The next frame, or None at a clean end of stream.
-fn read_frame<M: Message + Default>(r: &mut impl Read) -> io::Result<Option<M>> {
+pub fn read_frame<M: Message + Default>(r: &mut impl Read) -> io::Result<Option<M>> {
     let mut len = [0u8; 4];
     match r.read_exact(&mut len) {
         Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
@@ -77,14 +77,6 @@ fn read_frame<M: Message + Default>(r: &mut impl Read) -> io::Result<Option<M>> 
 fn kill_group(pgid: i32, signal: i32) {
     // SAFETY: kill(2) has no memory-safety preconditions.
     unsafe { libc::kill(-pgid, signal) };
-}
-
-/// (parent pid, process group) of `pid`, from `/proc/<pid>/stat`.
-fn ppid_pgrp(pid: i32) -> Option<(i32, i32)> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    // The command name may hold spaces and parentheses; fields resume after the last ')'.
-    let mut fields = stat[stat.rfind(')')? + 1..].split_whitespace().skip(1);
-    Some((fields.next()?.parse().ok()?, fields.next()?.parse().ok()?))
 }
 
 /// Deliver a relayed signal to the sandboxed command and its descendants, not to
@@ -100,9 +92,9 @@ fn signal_command(pgid: i32, signal: i32) {
         if pid == pgid {
             continue;
         }
-        if let Some((ppid, pgrp)) = ppid_pgrp(pid)
-            && pgrp == pgid
-            && ppid != pgid
+        if let Some(st) = crate::proc::stat(pid as u32)
+            && st.pgrp == pgid
+            && st.ppid as i32 != pgid
         {
             // SAFETY: kill(2) has no memory-safety preconditions.
             unsafe { libc::kill(pid, signal) };
@@ -366,52 +358,23 @@ fn recv_len_with_fds(stream: &UnixStream) -> io::Result<(usize, Vec<OwnedFd>)> {
     Ok((u32::from_le_bytes(len) as usize, fds))
 }
 
-/// Client side, used by `escrow exec`.
-pub struct ExecConn {
-    stream: UnixStream,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl ExecConn {
-    /// Connect to `<socket>.exec` and send the request with this process's stdin, stdout and stderr.
-    pub fn start(socket: &Path, req: &SpawnRequest) -> io::Result<Self> {
-        let stream = UnixStream::connect(exec_socket(socket))?;
-        let body = req.encode_to_vec();
-        let len = (body.len() as u32).to_le_bytes();
-        // SAFETY: fds 0, 1 and 2 stay open for the whole call.
-        let stdio = unsafe { [0, 1, 2].map(|fd| BorrowedFd::borrow_raw(fd)) };
-        let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(3))];
-        let mut cmsg = SendAncillaryBuffer::new(&mut space);
-        cmsg.push(SendAncillaryMessage::ScmRights(&stdio));
-        let n = rustix::net::sendmsg(stream.as_fd(), &[IoSlice::new(&len)], &mut cmsg, SendFlags::empty())?;
-        let mut w = &stream;
-        w.write_all(&len[n..])?;
-        w.write_all(&body)?;
-        Ok(ExecConn { stream })
+    #[test]
+    fn frame_round_trips_through_the_codec() {
+        let sent = SpawnSignal { signal: 15 };
+        let mut buf = Vec::new();
+        write_frame(&mut buf, &sent).unwrap();
+        let got = read_frame::<SpawnSignal>(&mut buf.as_slice()).unwrap();
+        assert_eq!(got, Some(sent));
     }
 
-    /// A handle that delivers signals to the child while `wait` runs.
-    pub fn signaller(&self) -> io::Result<Signaller> {
-        Ok(Signaller(Mutex::new(self.stream.try_clone()?)))
-    }
-
-    /// Wait for the child; returns its exit code.
-    pub fn wait(&self) -> io::Result<i32> {
-        let mut r = &self.stream;
-        loop {
-            match read_frame::<SpawnEvent>(&mut r)?.and_then(|e| e.event) {
-                Some(Event::Pid(_)) => {}
-                Some(Event::ExitCode(c)) => return Ok(c),
-                Some(Event::Error(m)) => return Err(io::Error::other(m)),
-                None => return Err(io::Error::other("daemon closed the exec connection")),
-            }
-        }
-    }
-}
-
-pub struct Signaller(Mutex<UnixStream>);
-
-impl Signaller {
-    pub fn send(&self, signal: i32) -> io::Result<()> {
-        write_frame(&mut *self.0.lock(), &SpawnSignal { signal })
+    #[test]
+    fn frame_over_16_mib_is_rejected() {
+        let buf = ((MAX_FRAME + 1) as u32).to_le_bytes();
+        let err = read_frame::<SpawnSignal>(&mut buf.as_slice()).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }
 }

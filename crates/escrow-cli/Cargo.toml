@@ -11,12 +11,18 @@ publish.workspace = true
 name = "escrow"
 path = "src/main.rs"
 
+[features]
+fault-injection = ["escrowd/fault-injection"]
+
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
 escrowd.workspace = true
 hyper-util.workspace = true
 libc.workspace = true
+parking_lot.workspace = true
+prost.workspace = true
+rustix.workspace = true
 tokio.workspace = true
 tonic.workspace = true
 tower.workspace = true

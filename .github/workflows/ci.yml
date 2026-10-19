@@ -57,7 +57,7 @@ jobs:
             # The commit path and held decisions: run the crash and held soaks (50 random
             # kills each) after the suite.
             soak:
-              - 'crates/escrowd/src/commit.rs'
+              - 'crates/escrowd/src/commit/**'
               - 'crates/escrowd/src/history.rs'
               - 'crates/escrowd/src/journal.rs'
               - 'crates/escrowd/src/snapshot.rs'

@@ -3,6 +3,11 @@
 
 use super::*;
 
+/// How often a settle wait rechecks its handles when no release wakes it.
+const SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+/// Pending writeback hints; a full channel drops the hint (writeback is advisory).
+const WRITEBACK_QUEUE: usize = 256;
+
 /// The open files of every view, by file handle.
 pub(super) struct Files {
     files: HashMap<u64, (Arc<ScopeHandle>, Arc<File>)>,
@@ -60,8 +65,7 @@ impl Views {
                 return;
             }
             let mut t = self.files.lock();
-            self.released
-                .wait_for(&mut t, left.min(std::time::Duration::from_millis(20)));
+            self.released.wait_for(&mut t, left.min(SETTLE_POLL));
         }
     }
 
@@ -96,7 +100,10 @@ impl Views {
         if let Some((_, f)) = f
             && rustix::fs::fcntl_getfl(&*f).is_ok_and(|fl| fl.contains(OFlags::RDWR))
         {
-            let _ = self.writeback.lock().send(f);
+            // A FUSE thread must never block here: a full channel drops the hint.
+            if let Some(tx) = self.writeback.lock().as_ref() {
+                let _ = tx.try_send(f);
+            }
         }
     }
 
@@ -105,30 +112,23 @@ impl Views {
     }
 }
 
-/// A thread that starts the writeback of each file it is sent.
-pub(super) fn writeback_thread() -> std::sync::mpsc::Sender<Arc<File>> {
-    let (tx, rx) = std::sync::mpsc::channel::<Arc<File>>();
-    std::thread::spawn(move || {
+/// A thread that starts the writeback of each file it is sent, and the bounded
+/// channel that feeds it. The thread ends when the sender is dropped.
+pub(super) fn writeback_thread() -> (SyncSender<Arc<File>>, JoinHandle<()>) {
+    let (tx, rx) = sync_channel::<Arc<File>>(WRITEBACK_QUEUE);
+    let worker = std::thread::spawn(move || {
         for f in rx {
             sys::start_writeback(&f);
         }
     });
-    tx
+    (tx, worker)
 }
 
 /// Process (or thread) `pid` is gone, exiting, or in one of the `stopped` process groups.
 pub(super) fn finishing(pid: u32, stopped: &[i32]) -> bool {
     const PF_EXITING: u64 = 0x4;
-    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+    let Some(st) = crate::proc::stat(pid) else {
         return true;
     };
-    // Fields after the command name: state ppid pgrp session tty_nr tpgid flags …
-    let Some(rest) = stat.rfind(')').and_then(|i| stat.get(i + 2..)) else {
-        return true;
-    };
-    let f: Vec<&str> = rest.split_whitespace().collect();
-    let state = f.first().and_then(|s| s.chars().next()).unwrap_or('X');
-    let pgrp = f.get(2).and_then(|s| s.parse::<i32>().ok());
-    let flags = f.get(6).and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
-    matches!(state, 'Z' | 'X' | 'x') || flags & PF_EXITING != 0 || pgrp.is_some_and(|g| stopped.contains(&g))
+    matches!(st.state, 'Z' | 'X' | 'x') || st.flags & PF_EXITING != 0 || stopped.contains(&st.pgrp)
 }

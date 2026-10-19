@@ -32,6 +32,7 @@ class App:
         env=None,
         roots="",
         policy="",
+        extra_args=(),
     ):
         self.work = work
         self.project = work / "proj"
@@ -42,6 +43,7 @@ class App:
         args += ["--state", self.state, "--mount", self.mount, "--socket", self.socket]
         if on_exit:
             args += ["--on-exit", on_exit]
+        args += [str(a) for a in extra_args]
         self.proc = subprocess.Popen(
             [*args, "--", "sh", "-c", script],
             stdin=subprocess.PIPE,
@@ -107,7 +109,7 @@ def test_implicit_captures_and_discards_at_exit(app):
 
 def test_implicit_commits_at_exit_when_asked(app):
     a, code, _, err = run(app, "implicit", "echo new > g.txt", on_exit="commit")
-    assert code == 0 and "1 unscoped change(s) committed" in err
+    assert code == 0 and "escrow run: 1 unscoped change(s) committed" in err
     assert (a.project / "g.txt").read_text() == "new\n"
 
 
@@ -117,10 +119,30 @@ def test_commit_at_exit_obeys_write_deny(app):
     a, code, _, err = run(
         app, "implicit", "echo k > key.pem; echo ok > g.txt", on_exit="commit", policy=policy
     )
-    assert code == 0, err
-    assert "2 unscoped change(s) discarded: " in err and "key.pem" in err
+    assert code == 124, err
+    assert "escrow run: 2 unscoped change(s) discarded: " in err and "key.pem" in err
     assert not (a.project / "key.pem").exists()
     assert not (a.project / "g.txt").exists()
+
+
+def test_a_childs_nonzero_code_is_never_masked_by_a_discarded_commit(app):
+    policy = "write:\n  deny: ['*.pem']\n"
+    a, code, _, err = run(
+        app, "implicit", "echo k > key.pem; exit 7", on_exit="commit", policy=policy
+    )
+    assert code == 7, err
+    assert "unscoped change(s) discarded: " in err
+    assert not (a.project / "key.pem").exists()
+
+
+def test_run_failing_to_start_the_sandbox_exits_125_and_leaves_nothing_behind(app):
+    a, code, _, err = run(app, "implicit", "true", extra_args=["--bwrap", "/nonexistent"])
+    assert code == 125, err
+    assert err.startswith("escrow run: ") or "\nescrow run: " in err, err
+    assert not os.path.ismount(a.mount)
+    # The state lock is released: a second run on the same state starts.
+    b, code, _, err = run(app, "implicit", "echo ok > g.txt")
+    assert code == 0, err
 
 
 def test_commit_at_exit_holds_for_review(app):
@@ -128,12 +150,12 @@ def test_commit_at_exit_holds_for_review(app):
     a, code, _, err = run(
         app, "implicit", "mkdir src; echo x > src/a.py", on_exit="commit", policy=policy
     )
-    assert code == 0, err
+    assert code == 124, err
     assert "2 unscoped change(s) held for review (llm,human)" in err
     assert not (a.project / "src").exists()
     # The next run would get a frozen project: it refuses until the reviewers decide.
     a2, code, _, err = run(app, "implicit", "true", on_exit="commit", policy=policy)
-    assert code != 0 and "held for llm review" in err
+    assert code == 125 and "escrow run: " in err and "held for llm review" in err
 
 
 def test_settle_unscoped_mid_run_and_keep_writing(app):
@@ -234,3 +256,59 @@ def test_unscoped_modes_with_roots(app, runtime_dir):
     script = "ls -A ~ /tmp | grep -c . ; echo t > /tmp/x && cat /tmp/x"
     _, code, out, err = run(app, "passthrough", script, env={"HOME": str(home)}, roots=roots)
     assert (code, out) == (0, "2\nt\n"), err
+
+
+REVIEW_RULES = """\
+review:
+  - {paths: ['src/auth/**'], tier: human}
+  - {paths: ['src/**'], tier: llm}
+"""
+
+
+def held_scope(c, d, path):
+    """A scope that wrote `path`, closed and committed: held for review."""
+    sid = c.open_scope(name="t").scope_id
+    f = d.mount / sid / path
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text("change\n")
+    c.close_scope(sid)
+    assert c.commit(sid).status == pb.OUTCOME_STATUS_HELD
+    return sid
+
+
+def test_review_commit_exits_124_on_a_conflict_and_0_while_still_held(start_daemon):
+    d = start_daemon(policy=REVIEW_RULES)
+    (d.project / "src").mkdir()
+    (d.project / "src" / "util.py").write_text("base\n")
+    with escrow.connect(str(d.socket)) as c:
+        conflicted = held_scope(c, d, "src/util.py")
+        (d.project / "src" / "util.py").write_text("changed under the hold\n")
+        needs_human = held_scope(c, d, "src/auth/login.py")
+    r = subprocess.run(
+        [d.bin, "review", "--socket", d.socket, "commit", conflicted, "--tier", "llm"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert r.returncode == 124, r.stderr
+    assert f"{conflicted} conflict" in r.stdout
+    r = subprocess.run(
+        [d.bin, "review", "--socket", d.socket, "commit", needs_human, "--tier", "llm"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert r.returncode == 0, r.stderr
+    assert f"{needs_human} held for human" in r.stdout
+
+
+def test_diff_of_an_open_scope_exits_1_naming_the_status(daemon):
+    d = daemon
+    with escrow.connect(str(d.socket)) as c:
+        sid = c.open_scope().scope_id
+        r = subprocess.run(
+            [d.bin, "diff", "--socket", d.socket, sid], capture_output=True, text=True, timeout=30
+        )
+        c.discard(sid)
+    assert r.returncode == 1
+    assert "escrow diff: FAILED_PRECONDITION:" in r.stderr

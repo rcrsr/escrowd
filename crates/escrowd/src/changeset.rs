@@ -63,7 +63,7 @@ pub struct ChangeSet {
     pub procs: BTreeMap<u64, Info>,
     /// Changes the unscoped mode saw while the scope was open (set by close).
     pub unscoped: u64,
-    /// The close-time review (set by close and by `closed_change_set`; the default before).
+    /// The close-time review (set when the scope is frozen; the default before).
     pub review: Review,
 }
 

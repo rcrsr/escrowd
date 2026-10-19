@@ -14,7 +14,7 @@ on:
         type: number
         default: 1
       soak:
-        description: Run the crash soak (50 random kills mid-commit) and the held soak (50 kills mid-review) after the suite.
+        description: Run the crash soak (50 random kills mid-commit) and the held soak (50 kills mid-review) after the suite, then the suite and both soaks (20 kills each) on a release build with the fault-injection feature.
         type: boolean
         default: false
 
@@ -78,3 +78,27 @@ jobs:
       - name: Held soak, 50 random kills mid-review
         if: inputs.soak
         run: uv run --project sdk/python --frozen python tests/soak/held.py 50
+
+      # Release builds compile fault injection out unless the `fault-injection` feature
+      # is on; this checks the optimized commit and recovery paths under the same faults.
+      - name: Release build with fault injection
+        if: inputs.soak
+        run: cargo build --locked --release -p escrow-cli --features fault-injection
+
+      - name: Conformance suite, release build
+        if: inputs.soak
+        env:
+          ESCROW_BIN: ${{ github.workspace }}/target/release/escrow
+        run: uv run --project sdk/python --frozen pytest -v tests/conformance
+
+      - name: Crash soak, release build, 20 random kills mid-commit
+        if: inputs.soak
+        env:
+          ESCROW_BIN: ${{ github.workspace }}/target/release/escrow
+        run: uv run --project sdk/python --frozen python tests/soak/crash.py 20
+
+      - name: Held soak, release build, 20 random kills mid-review
+        if: inputs.soak
+        env:
+          ESCROW_BIN: ${{ github.workspace }}/target/release/escrow
+        run: uv run --project sdk/python --frozen python tests/soak/held.py 20

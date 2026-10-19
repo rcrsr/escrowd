@@ -100,7 +100,7 @@ mkdir -p demo && echo base > demo/README.md
 
 escrow run --project demo --unscoped implicit -- sh -c 'echo changed > README.md; cat README.md'
 # changed
-# escrow: 1 unscoped change(s) discarded
+# escrow run: 1 unscoped change(s) discarded
 
 cat demo/README.md
 # base
@@ -110,7 +110,7 @@ The command saw its own write, but the project kept the original. Add `--on-exit
 
 ```bash
 escrow run --project demo --unscoped implicit --on-exit commit -- sh -c 'echo changed > README.md'
-# escrow: 1 unscoped change(s) committed
+# escrow run: 1 unscoped change(s) committed
 ```
 
 `--unscoped` sets what happens to writes made outside any scope:
@@ -272,10 +272,24 @@ Unix socket paths are limited to 107 bytes, so keep `--socket` short.
 | --- | --- |
 | `escrow run --project P --unscoped MODE -- CMD` | Start a daemon for project `P`, run `CMD` in the sandbox, settle at exit. |
 | `escrow daemon --socket S --project P` | Run a long-lived daemon in the foreground, for clients that connect to socket `S`. |
+| `escrow daemon --check --policy F --project P` | Validate the policy and paths and exit: 0 and no output if valid. Creates, locks and mounts nothing, and needs no `--socket`. |
+| `escrow daemon --read PATH ...` | Let every sandbox read the absolute host path `PATH` (repeatable), besides the policy's `roots.other.read`. `escrow run` takes it too. |
 | `escrow exec --scope ID -- CMD` | Run `CMD` in a scope's sandbox. Needs the scope's token in `ESCROW_SCOPE_TOKEN`. |
 | `escrow diff SCOPE` | Print a closed, undecided scope's diff in git format. |
 | `escrow review list\|show\|commit\|return\|discard` | Review held scopes. |
 | `escrow log [SCOPE]` | Print the ledger, optionally for one scope. |
+
+### Exit codes
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Success. `escrow run --unscoped implicit --on-exit commit` exits 0 only when the command exited 0 and the unscoped changes were committed (with `passthrough` or `deny` nothing is settled and the command's own code is returned). A `review` verdict that leaves the scope held for another tier also exits 0. |
+| the command's code | `escrow run` and `escrow exec` exit with the command's own nonzero code (128+n for a signal n). Nothing masks it, except 125. |
+| 1 | `daemon`, `diff`, `review` or `log` failed. The message reads `escrow <command>: <STATUS>: <reason>` when the daemon refused the call (for example `FAILED_PRECONDITION`). |
+| 2 | Usage error. |
+| 124 | Not committed. `escrow run --on-exit commit` with a command that exited 0, but the unscoped changes were discarded, returned, held for review or conflicted. `escrow review commit` when the scope ended conflicted, discarded or returned. |
+| 125 | `escrow run` or `escrow exec` itself failed (start, a held scope refusing the run, spawning the sandbox, settling the changes, serving, unmounting). It wins over the command's code. |
+| 127 | `escrow exec`: the daemon could not wait for the command. |
 
 Commands that talk to a daemon take `--project P` (to find the socket of `escrow run`) or `--socket S`. Run `escrow <command> --help` for every option.
 

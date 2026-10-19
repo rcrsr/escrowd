@@ -65,7 +65,7 @@ Sessions order an agent's scopes. While a scope of a session is held with a wait
 | `GetHeld` | A held scope: change set with writers and diff, its tiers' verdicts so far, its session's last 20 decisions | `NOT_FOUND`, `FAILED_PRECONDITION` |
 | `Review` | A tier's verdict; after the last pending tier, the scope is decided | `NOT_FOUND`, `FAILED_PRECONDITION`, `INVALID_ARGUMENT`, `PERMISSION_DENIED`, `ABORTED` |
 
-- **Tokens.** `OpenScopeResponse.token` is the scope's capability. Only the opener gets it; the scope id alone, which a path reveals, is not enough. The daemon keeps its SHA-256. The unscoped scope has no token.
+- **Tokens.** `OpenScopeResponse.token` is the scope's capability. Only the opener gets it; the scope id alone, which a path reveals, is not enough. The daemon keeps its SHA-256. The unscoped scope has no token. At start, the daemon discards a named scope stored before protocol 6 (no token hash), with its changes.
 - **Deadlines.** `OpenScope` in a session reads the call's `grpc-timeout`. 100 ms before it, the call fails with `FAILED_PRECONDITION` and the held scope stays held; a client can also see its own `DEADLINE_EXCEEDED` first. With no deadline, the call waits for the verdict, or until the daemon shuts down (`UNAVAILABLE`). The Python SDK opens with none.
 - **Verdicts.** They only tighten: commit < return < discard. `Decide` cannot loosen the software tier's verdict (`ChangeSet.review`), and a reviewer cannot loosen an earlier tier's, unless the tier is human and `override` is set. The ledger records each override.
 - **Arguments in change sets.** `Process.args` holds each writer's whole command line. Command lines can carry secrets (`curl -H "Authorization: …"`). Reviewers get them in full; the ledger keeps the first 4 KiB.

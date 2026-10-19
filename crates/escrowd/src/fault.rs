@@ -1,4 +1,4 @@
-//! Fault injection for the commit path, debug builds only.
+//! Fault injection for the commit path, in debug builds and builds with the `fault-injection` feature.
 //!
 //! `ESCROWD_FAULT=<point>:<n>[:abort]` fails the commit when it reaches step `n`
 //! of `point` (`journal`, `preimage`, `apply`, `done`): with an I/O error, which
@@ -13,13 +13,15 @@
 //! during recovery). `race:<n>` plays an editor: just before apply step `n`
 //! re-checks its path, it appends to the live file (creating it if missing; not
 //! through a symlink, and not to a directory).
-//! Release builds ignore the variable.
+//! Release builds without the feature ignore the variable. Build one with it:
+//! `cargo build --release -p escrow-cli --features fault-injection` (the `ci:repeat`
+//! soak job does, then runs the suite and soaks with `ESCROW_BIN=target/release/escrow`).
 
 use std::io;
 use std::os::fd::BorrowedFd;
 use std::path::Path;
 
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "fault-injection"))]
 fn spec() -> &'static Option<(String, usize, bool)> {
     use std::sync::OnceLock;
     static SPEC: OnceLock<Option<(String, usize, bool)>> = OnceLock::new();
@@ -33,7 +35,7 @@ fn spec() -> &'static Option<(String, usize, bool)> {
 }
 
 pub fn hit(point: &str, n: usize) -> io::Result<()> {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "fault-injection"))]
     if let Some((p, at, abort)) = spec()
         && p == point
         && *at == n
@@ -50,7 +52,7 @@ pub fn hit(point: &str, n: usize) -> io::Result<()> {
 
 /// `ESCROWD_FAULT=race:<n>`: write to `rel` under `dir` before apply step `n` re-checks it.
 pub fn race(n: usize, dir: BorrowedFd, rel: &Path) {
-    #[cfg(debug_assertions)]
+    #[cfg(any(debug_assertions, feature = "fault-injection"))]
     if let Some((p, at, _)) = spec()
         && p == "race"
         && *at == n

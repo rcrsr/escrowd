@@ -3,6 +3,27 @@
 
 use super::*;
 
+/// How long a close waits for the handles of dead or stopped processes to release.
+const SETTLE_WITHIN: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// The thread that deletes each directory it is sent, and the channel that feeds it.
+/// It ends when the sender is dropped, after deleting what was queued.
+pub(super) fn cleaner_thread() -> (Sender<PathBuf>, JoinHandle<()>) {
+    let (tx, rx) = std::sync::mpsc::channel::<PathBuf>();
+    let worker = std::thread::spawn(move || {
+        for dir in rx {
+            delete_trash(&dir);
+        }
+    });
+    (tx, worker)
+}
+
+fn delete_trash(dir: &Path) {
+    if let Err(e) = fs::remove_dir_all(dir) {
+        eprintln!("escrowd: trash: {e}");
+    }
+}
+
 /// `rel` in `dir` opened for reading if it is a regular file; None for anything else.
 pub(super) fn regular_file(dir: std::os::fd::BorrowedFd, rel: &Path) -> io::Result<Option<File>> {
     let f = match sys::open(dir, rel, OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK, 0) {
@@ -113,13 +134,32 @@ impl Views {
         Ok(out)
     }
 
-    /// The change set of a closed scope, with its review; an open scope is an error
-    /// (`State`).
-    pub fn closed_change_set(&self, id: &str) -> error::Result<ChangeSet> {
+    /// A closed scope's frozen change set, review and diff (built at close, or on the
+    /// first read after a restart); an open scope is an error (`State`).
+    pub fn frozen(&self, id: &str, caps: diff::Caps) -> error::Result<Arc<Frozen>> {
         let hs = self.closed_handles(id)?;
-        let mut cs = self.change_set(&hs)?;
-        cs.review = self.review(id, &hs, &cs, false)?;
-        Ok(cs)
+        // The freeze lock comes before any store lock and is not held across a decision step.
+        let mut slot = hs[0].frozen.lock();
+        if let Some(f) = slot.as_ref() {
+            return Ok(f.clone());
+        }
+        // Returned between the check above and the lock.
+        if !hs[0].is_closed() {
+            return Err(Error::State(format!("scope {id} is not closed")));
+        }
+        let f = Arc::new(self.build_frozen(id, &hs, caps, false)?);
+        *slot = Some(f.clone());
+        Ok(f)
+    }
+
+    /// The change set of every view with the close-time unscoped count and review
+    /// (`log`: write each broken rule to the ledger), and its diff.
+    fn build_frozen(&self, id: &str, hs: &[Arc<ScopeHandle>], caps: diff::Caps, log: bool) -> error::Result<Frozen> {
+        let mut change_set = self.change_set(hs)?;
+        change_set.unscoped = hs[0].unscoped_seen.load(Ordering::Relaxed);
+        change_set.review = self.review(id, hs, &change_set, log)?;
+        let diff = self.diff(hs, &change_set, caps)?;
+        Ok(Frozen { change_set, diff })
     }
 
     /// Whether the policy has `review:` or `write:` rules.
@@ -175,10 +215,9 @@ impl Views {
     }
 
     /// The content diff of a closed scope's change set `cs`, against its snapshot.
-    pub fn diff(&self, id: &str, cs: &ChangeSet, caps: diff::Caps) -> error::Result<String> {
-        let hs = self.closed_handles(id)?;
+    fn diff(&self, hs: &[Arc<ScopeHandle>], cs: &ChangeSet, caps: diff::Caps) -> error::Result<String> {
         let mut out = diff::Diff::new(caps);
-        for h in &hs {
+        for h in hs {
             let changes: Vec<_> = cs.changes.iter().filter(|c| c.root == h.root).cloned().collect();
             if changes.is_empty() {
                 continue;
@@ -195,14 +234,19 @@ impl Views {
         Ok(out.finish())
     }
 
-    /// Freeze the scope and return its change set, after its sandboxes (process groups
-    /// `stopped`) were stopped. The caller has fsynced its open files (syncfs is not a
-    /// barrier on plain FUSE). Closing a closed scope returns the same change set.
-    pub fn close_scope_after(&self, id: &str, stopped: &[i32]) -> error::Result<ChangeSet> {
+    /// Freeze the scope and return its frozen change set, after its sandboxes (process
+    /// groups `stopped`) were stopped. The caller has fsynced its open files (syncfs is
+    /// not a barrier on plain FUSE). Closing a closed scope returns the same record.
+    pub fn close_scope_after(&self, id: &str, stopped: &[i32], caps: diff::Caps) -> error::Result<Arc<Frozen>> {
         let hs = self.handles(id)?;
+        // Held to the end: a second close waits for the first and finds its record.
+        let mut slot = hs[0].frozen.lock();
+        if let Some(f) = slot.as_ref() {
+            return Ok(f.clone());
+        }
         let first = !hs[0].is_closed();
         if first {
-            self.settle_dead_handles(id, stopped, std::time::Duration::from_secs(5));
+            self.settle_dead_handles(id, stopped, SETTLE_WITHIN);
             if id != UNSCOPED {
                 let now = self.unscoped_changes.load(Ordering::Relaxed);
                 let at = hs[0].unscoped_at.load(Ordering::Relaxed);
@@ -214,14 +258,16 @@ impl Views {
             }
             self.ledger.append(id, "close", Path::new(""), None, "allow");
         }
-        let mut cs = self.change_set(&hs)?;
-        cs.unscoped = hs[0].unscoped_seen.load(Ordering::Relaxed);
-        cs.review = self.review(id, &hs, &cs, first)?;
-        Ok(cs)
+        let f = Arc::new(self.build_frozen(id, &hs, caps, first)?);
+        *slot = Some(f.clone());
+        Ok(f)
     }
+
     /// Return to agent: the decision's reasons go back and the scope accepts IO again.
+    /// The only place the frozen change set is cleared.
     pub fn reopen_scope(&self, id: &str) -> error::Result<()> {
         let hs = self.closed_handles(id)?;
+        let mut frozen = hs[0].frozen.lock();
         let now = self.unscoped_changes.load(Ordering::Relaxed);
         if hs[0].store_read().hold().is_some() {
             hs[0].store().set_hold(None)?;
@@ -231,6 +277,7 @@ impl Views {
             h.unscoped_at.store(now, Ordering::Relaxed);
             h.closed.store(false, Ordering::Release);
         }
+        *frozen = None;
         self.ledger.append(id, "decide", Path::new(""), None, "return");
         Ok(())
     }
@@ -254,31 +301,21 @@ impl Views {
         history::Fate::Open
     }
 
-    /// Commit a closed scope's change set to the project, all or nothing, and drop the
-    /// scope. On a conflict nothing is written and the policy's `conflict.verdict`
-    /// drops the scope (discard) or reopens it (return); on a failure the commit is
-    /// rolled back and the scope stays closed (`Aborted`).
-    pub fn commit_scope(&self, id: &str) -> error::Result<Outcome> {
-        let hs = self.closed_handles(id)?;
-        let cs = self.change_set(&hs)?;
-        self.commit_change_set(id, &hs, &cs, false)
-    }
-
-    /// `commit_scope` with the change set `close_scope` returned (the scope is frozen since).
+    /// Commit a closed scope's frozen change set `cs` to the project, all or nothing,
+    /// and drop the scope. On a conflict nothing is written and the policy's
+    /// `conflict.verdict` drops the scope (discard) or reopens it (return); on a failure
+    /// the commit is rolled back and the scope stays closed (`Aborted`).
     pub fn commit_closed(&self, id: &str, cs: &ChangeSet) -> error::Result<Outcome> {
         let hs = self.closed_handles(id)?;
         self.commit_change_set(id, &hs, cs, false)
     }
 
-    /// `commit_scope` (with `cs`, if given) that keeps a committed scope until
-    /// `finish_commit`: the caller settles the decision in the history in between, so
-    /// a scope gone at the next start was never committed (`history::Fate`).
-    pub fn commit_kept(&self, id: &str, cs: Option<&ChangeSet>) -> error::Result<Outcome> {
+    /// `commit_closed` that keeps a committed scope until `finish_commit`: the caller
+    /// settles the decision in the history in between, so a scope gone at the next start
+    /// was never committed (`history::Fate`).
+    pub fn commit_kept(&self, id: &str, cs: &ChangeSet) -> error::Result<Outcome> {
         let hs = self.closed_handles(id)?;
-        match cs {
-            Some(cs) => self.commit_change_set(id, &hs, cs, true),
-            None => self.commit_change_set(id, &hs, &self.change_set(&hs)?, true),
-        }
+        self.commit_change_set(id, &hs, cs, true)
     }
 
     /// Drop a scope `commit_kept` committed.
@@ -387,29 +424,93 @@ impl Views {
             }
             // FUSE calls in flight may still hold the handle; they fail once the directory is gone.
             let gone = h.store().discard_to(&self.trash)?;
-            let mut cleaners = self.cleaners.lock();
-            cleaners.retain(|c| !c.is_finished());
-            cleaners.push(std::thread::spawn(move || {
-                let _ = fs::remove_dir_all(gone);
-            }));
+            // Queued for the cleaner; after `flush` there is none, so delete here.
+            let unqueued = match self.cleaner.lock().as_ref() {
+                Some(tx) => tx.send(gone).err().map(|e| e.0),
+                None => Some(gone),
+            };
+            if let Some(dir) = unqueued {
+                delete_trash(&dir);
+            }
         }
         Ok(())
     }
 
-    /// At shutdown: write every scope's deferred metadata and finish deleting dropped scopes.
+    /// At shutdown: write every scope's deferred metadata and finish deleting dropped scopes and stop the
+    /// background workers (later removals delete inline, later writeback hints are dropped).
     pub fn flush(&self) -> io::Result<()> {
+        let mut first = Ok(());
         for h in self.scopes.read().values() {
-            h.store().flush()?;
+            if let Err(e) = h.store().flush() {
+                first = first.and(Err(e));
+            }
         }
-        for c in self.cleaners.lock().drain(..) {
-            let _ = c.join();
+        // Closing both channels ends the workers once they drain what was queued.
+        drop(self.cleaner.lock().take());
+        drop(self.writeback.lock().take());
+        for w in self.workers.lock().drain(..) {
+            if w.join().is_err() {
+                first = first.and(Err(io::Error::other("a background worker panicked")));
+            }
         }
-        Ok(())
+        first
     }
 
     pub fn scope_ids(&self) -> Vec<String> {
         let mut ids: Vec<String> = self.scopes.read().keys().cloned().collect();
         ids.sort();
         ids
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const CAPS: diff::Caps = diff::Caps {
+        file_bytes: 1 << 20,
+        max_bytes: 1 << 20,
+    };
+
+    fn changed(f: &Frozen) -> Vec<String> {
+        f.change_set
+            .changes
+            .iter()
+            .map(|c| c.path.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn a_closed_scope_keeps_its_change_set_frozen_until_it_is_returned() {
+        let (views, dir) = Views::fixture("views-frozen");
+        let id = views.open_scope("t", &HashMap::new(), "").unwrap().id;
+        let upper = dir.join("state/scopes").join(&id).join("upper");
+        fs::write(upper.join("first.txt"), "1\n").unwrap();
+        let closed = views.close_scope_after(&id, &[], CAPS).unwrap();
+        assert_eq!(changed(&closed), ["first.txt"]);
+
+        // A file that appears in the upper after the close is not in the record.
+        fs::write(upper.join("late.txt"), "2\n").unwrap();
+        let again = views.frozen(&id, CAPS).unwrap();
+        assert!(Arc::ptr_eq(&closed, &again));
+        assert_eq!(changed(&again), ["first.txt"]);
+        assert!(Arc::ptr_eq(&closed, &views.close_scope_after(&id, &[], CAPS).unwrap()));
+
+        // Returned and closed again: the record is built anew and sees the file.
+        views.reopen_scope(&id).unwrap();
+        let second = views.close_scope_after(&id, &[], CAPS).unwrap();
+        assert_eq!(changed(&second), ["first.txt", "late.txt"]);
+        drop(views);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_frozen_change_set_of_an_open_scope_is_a_state_error() {
+        let (views, dir) = Views::fixture("views-frozen-open");
+        let id = views.open_scope("t", &HashMap::new(), "").unwrap().id;
+        assert!(matches!(views.frozen(&id, CAPS), Err(Error::State(_))));
+        assert!(matches!(views.frozen("nope", CAPS), Err(Error::NoScope(_))));
+        drop(views);
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use fuser::FileType;
 use rustix::fs::{OFlags, Stat};
 
-use crate::sys::{self, Version, parent};
+use crate::sys::{self, Version, ns, parent};
 
 /// What a pre-image records of the original entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,7 +43,6 @@ fn split(ns: i64) -> (i64, i64) {
 
 impl Meta {
     pub fn of(st: &Stat) -> Self {
-        let ns = |s: i64, n: i64| s.saturating_mul(NS).saturating_add(n);
         Meta {
             mode: st.st_mode,
             ino: st.st_ino,
@@ -167,7 +166,6 @@ impl Generations {
             .unwrap_or(0);
     }
 
-    /// Delete a generation's pre-image files.
     /// Remove generation directories the journal no longer names: a crash between
     /// forgetting a generation and removing its files leaves them behind.
     pub fn sweep(&self, keep: &std::collections::HashSet<u64>) -> io::Result<()> {
@@ -281,5 +279,70 @@ impl<'a> Base<'a> {
                 Some((n, sys::kind(st.st_mode)))
             })
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn meta(ino: u64) -> Entry {
+        Some(Meta {
+            mode: libc::S_IFREG,
+            ino,
+            size: 0,
+            uid: 0,
+            gid: 0,
+            atime_ns: 0,
+            mtime_ns: 0,
+            ctime_ns: 0,
+        })
+    }
+
+    fn generations(name: &str) -> (Generations, PathBuf) {
+        let dir = crate::db::temp_dir(name);
+        (Generations::open(&dir.join("generations")).unwrap(), dir)
+    }
+
+    #[test]
+    fn resolve_returns_the_first_generation_after_since() {
+        let (gens, dir) = generations("snap-first");
+        let p = PathBuf::from("a.txt");
+        gens.register(2, [(p.clone(), meta(20))]);
+        gens.register(4, [(p.clone(), None)]);
+        assert_eq!(gens.resolve(0, &p), Some((2, meta(20))));
+        assert_eq!(gens.resolve(1, &p), Some((2, meta(20))));
+        assert_eq!(gens.resolve(2, &p), Some((4, None)));
+        assert_eq!(gens.resolve(0, Path::new("other")), None);
+        drop(gens);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn resolve_returns_none_when_since_is_at_or_past_the_latest_generation() {
+        let (gens, dir) = generations("snap-latest");
+        let p = PathBuf::from("a.txt");
+        gens.register(3, [(p.clone(), meta(30))]);
+        assert_eq!(gens.resolve(3, &p), None);
+        assert_eq!(gens.resolve(9, &p), None);
+        drop(gens);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn unregister_recomputes_the_latest_generation() {
+        let (gens, dir) = generations("snap-unregister");
+        let p = PathBuf::from("a.txt");
+        gens.register(2, [(p.clone(), meta(20))]);
+        gens.register(5, [(PathBuf::from("b.txt"), meta(50))]);
+        assert_eq!(gens.index.read().latest, 5);
+        gens.unregister(5);
+        assert_eq!(gens.index.read().latest, 2);
+        assert_eq!(gens.resolve(1, &p), Some((2, meta(20))));
+        gens.unregister(2);
+        assert_eq!(gens.index.read().latest, 0);
+        assert_eq!(gens.resolve(0, &p), None);
+        drop(gens);
+        fs::remove_dir_all(&dir).unwrap();
     }
 }
