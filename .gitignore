@@ -4,3 +4,7 @@ __pycache__/
 .pytest_cache/
 .claude/transcripts/
 /internal/
+/.codanna/*
+!/.codanna/settings.toml
+conduct
+.fastembed_cache
