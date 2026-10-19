@@ -3,6 +3,7 @@
 escrowd captures every filesystem write a program makes inside a **scope**, holds it in escrow, and applies or discards the whole change set when the scope closes. It is built for LLM agent harnesses. Users start at `README.md`; the design is `docs/escrowd-proposal.md`.
 
 ## Where things stand
+<!-- rule-level: operational -->
 
 - **Active plan:** `docs/phase-4-reviewers.md` (policy reviewers). Next: `docs/phase-5-typescript-sdk.md`. Phases 0 to 3 are complete; their plans in `docs/phase-*.md` hold the as-built notes.
 - When a decision is made or an open question closes, tick it in the active plan with the date.
@@ -48,13 +49,27 @@ These were measured or decided; do not reopen them without new evidence. Phase 0
 - **The daemon must never touch its own FUSE view.** It deadlocks.
 - **Views live under `$XDG_RUNTIME_DIR`.** Ubuntu 26.04 confines `fusermount3` to a few roots.
 - **Flush with `fsync`, not `syncfs`.** On FUSE, `syncfs` does not wait for the daemon.
-- **Inode numbers are per scope** (`views.rs` explains the scheme). Sharing them between scopes shares page cache.
+- **Inode numbers are per scope** (`views/mod.rs` explains the scheme). Sharing them between scopes shares page cache.
 - **grpcio clients must set `grpc.default_authority`** (the SDK uses `localhost`). Otherwise tonic rejects the call.
 - **The Python SDK supports 3.11.** No newer syntax or APIs.
 - **Decided against:** AgentFS (stale inode maps break git), copy snapshots at scope open (pre-images at commit instead).
 - **Kernel 6.8 minimum.** WSL2 is the dev host only; targets are Linux, then macOS.
+- **Library errors are typed.** Return `crate::error::Result<T>`, never `io::ErrorKind` as a status code; `anyhow` is only for policy parsing, the CLI and daemon start-up, bind and serve.
+- **Locks never poison.** Use `parking_lot::Mutex` for sync locks; never `std::sync::Mutex` or `.lock().unwrap()`.
+- **Every `unsafe` block in `crates/escrowd` has a one-line `// SAFETY:` comment** above it stating its precondition.
+- **No blocking calls on the runtime.** Filesystem and SQLite work in an async fn goes through the `blocking` helper in `decision.rs`.
+- **Calls go inward:** `rpc.rs`, then `decision.rs`, then `views/`, then storage, then `sys.rs`. New code adds no upward `use crate::` import, and `rpc.rs` holds no ordering, lock or policy logic.
+- **All SQLite goes through `db::open` and `db::migrate`.** Append a new migration step to change a schema; never edit an existing step or call `Connection::open` elsewhere.
+- **Commit is all or nothing.** A closed scope's change set applies through `commit.rs`; never write the project directly or best-effort.
+- **Base and upper access is fd-relative.** Use `sys.rs` directory-fd calls, never `std::fs` on a joined absolute path.
+- **FUSE ops only forward.** A `fuse.rs` method calls the same-named `Views` method in `views/overlay.rs`; no file operations in `fuse.rs`.
+- **Reviewer calls go on `ReviewerService`** (the separate 0600 review socket), never `EscrowService`.
+- **Policy keys parse only in `policy.rs`.** Enforce `read:` in `gate.rs`, `write:`/`review:` in `review.rs`, `roots:` in `roots.rs`.
+- **Diagnostics use `eprintln!("escrowd: <area>: {e}")`.** No `println!`, `dbg!` or logging crate in the daemon.
+- **Only `#[allow(clippy::too_many_arguments)]` is permitted.** New dependencies go in `[workspace.dependencies]` with `dep.workspace = true`.
 
 ## CI and pull requests
+<!-- rule-level: operational -->
 
 - `main` takes squash-merged PRs only. CI (`.github/workflows/ci.yml`) runs on PRs, not on pushes to `main`; the `CI Gate` job is the required check.
 - Add the `ci:repeat` label (10 consecutive suite runs plus the crash and held soaks) when a PR touches the commit path, FUSE, the sandbox or concurrency, or ends a sub-phase whose exit needs 10 passes. Re-add it after each new push. Never on docs-only or tooling PRs.
@@ -62,6 +77,7 @@ These were measured or decided; do not reopen them without new evidence. Phase 0
 - Lint workflows with `actionlint`.
 
 ## Environment
+<!-- rule-level: operational -->
 
 - Every tool is pinned in `mise.toml`; run `mise install`. Keep `rust-toolchain.toml` and `.python-version` in sync with it.
 - Use pnpm (not npm) and uv (not pip).
@@ -69,6 +85,7 @@ These were measured or decided; do not reopen them without new evidence. Phase 0
 - Run `lefthook install` once per clone. Hooks format staged files and lint on push; the suite runs only in CI.
 
 ## Lima VMs
+<!-- rule-level: operational -->
 
 Host-matrix VMs come from `spikes/lima/*.yaml` (`limactl start --name=escrow-ubuntu-24.04 spikes/lima/ubuntu-24.04.yaml`; also `ubuntu-26.04`, `debian-13`, `fedora-44`, `bench-ubuntu-24.04`).
 
