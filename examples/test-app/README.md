@@ -24,5 +24,5 @@ path and replays the `mutate` ops with plain file calls; the suite seeds the pro
 `symlink`; `{dir}` in a path or text is the check's directory and `{path}` in text is the
 op's own path. An unknown op raises `ValueError`.
 
-`tests/conformance/test_app.py` seeds the project, runs each check and fails on any ledger
+`tests/conformance/sdk/test_app.py` seeds the project, runs each check and fails on any ledger
 entry that names a scope for an operation it did not perform.

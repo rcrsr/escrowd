@@ -34,6 +34,8 @@ def _shared_client() -> Client:
     `escrow.connect()` are the caller's and never come from here."""
     with _client_lock:
         if _cfg.client is None:
+            if not _cfg.socket:
+                raise EscrowError("call escrow.init() first")
             _cfg.client = Client(_cfg.socket)
         return _cfg.client
 

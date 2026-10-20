@@ -7,7 +7,7 @@ import grpc
 import pytest
 
 import escrow
-from escrow import _patch, lowlevel
+from escrow import _config, _patch, lowlevel
 
 
 def test_connect_without_socket_raises_escrow_error(monkeypatch):
@@ -15,6 +15,21 @@ def test_connect_without_socket_raises_escrow_error(monkeypatch):
     for connect in (lowlevel.connect, lowlevel.connect_reviewer):
         with pytest.raises(escrow.EscrowError, match="no escrowd socket"):
             connect()
+
+
+def test_public_connect_without_socket_raises_escrow_error(monkeypatch):
+    monkeypatch.delenv("ESCROW_SOCKET", raising=False)
+    for connect in (escrow.connect, escrow.connect_reviewer):
+        with pytest.raises(escrow.EscrowError, match="no escrowd socket"):
+            connect()
+
+
+def test_settle_unscoped_before_init_asks_for_init(monkeypatch):
+    monkeypatch.setattr(_config._cfg, "socket", "")
+    monkeypatch.setattr(_config._cfg, "client", None)
+    with pytest.raises(escrow.EscrowError, match="escrow.init"):
+        escrow.settle_unscoped()
+    assert _config._cfg.client is None
 
 
 @pytest.fixture

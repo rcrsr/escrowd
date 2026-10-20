@@ -3,11 +3,9 @@ and tiers as strings. A failed call raises the typed error of its status code.""
 
 from __future__ import annotations
 
-import os
 from collections.abc import Iterator, MutableMapping
 
 from escrow import lowlevel
-from escrow._errors import EscrowError
 from escrow._model import (
     ChangeSet,
     DaemonInfo,
@@ -152,18 +150,11 @@ class Reviewer:
         self.close()
 
 
-def _path(socket: str | None) -> str:
-    path = socket or os.environ.get("ESCROW_SOCKET")
-    if not path:
-        raise EscrowError("no escrowd socket: pass one or set ESCROW_SOCKET")
-    return path
-
-
 def connect(socket: str | None = None) -> Client:
     """Connect to the daemon at `socket`, or at $ESCROW_SOCKET."""
-    return Client(_path(socket))
+    return Client(lowlevel.socket_path(socket))
 
 
 def connect_reviewer(socket: str | None = None) -> Reviewer:
     """Connect to the review socket of the daemon at `socket`, or at $ESCROW_SOCKET."""
-    return Reviewer(_path(socket) + ".review")
+    return Reviewer(lowlevel.socket_path(socket) + ".review")

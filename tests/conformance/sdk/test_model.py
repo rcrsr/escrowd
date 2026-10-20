@@ -7,7 +7,7 @@ import pytest
 from google.protobuf.message import Message
 
 import escrow
-from escrow import _model
+from escrow import _launch, _model
 from escrow.v1 import escrow_pb2 as pb
 
 RULES = "review:\n  - {paths: ['src/**'], tier: llm}\n"
@@ -84,7 +84,7 @@ def test_each_public_call_returns_a_model_type(start_daemon):
         a = c.open_scope("a")
         write(d, a.scope_id)
         decided = c.decide(c.close_scope(a.scope_id).scope_id, "discard")
-    assert type(info) is escrow.DaemonInfo and info.protocol_version == 7
+    assert type(info) is escrow.DaemonInfo and info.protocol_version >= _launch._MIN_PROTOCOL
     assert type(opened) is escrow.OpenedScope and opened.token
     assert type(closed_cs) is type(fetched) is escrow.ChangeSet
     assert type(decided) is escrow.Result

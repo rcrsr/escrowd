@@ -223,7 +223,8 @@ class OpenedScope:
     scope_id: str
     root: str  # the project's view
     roots: list[ScopeRoot]
-    token: str  # the scope's capability; keep it out of paths, labels and child environments
+    # the scope's capability; keep it out of paths, labels, child environments and repr
+    token: str = field(repr=False)
 
     @classmethod
     def from_proto(cls, r: pb.OpenScopeResponse) -> OpenedScope:

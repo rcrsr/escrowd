@@ -219,17 +219,19 @@ class Reviewer:
         self.close()
 
 
-def connect_reviewer(socket: str | None = None) -> Reviewer:
-    """Connect to the review socket of the daemon at `socket`, or at $ESCROW_SOCKET."""
+def socket_path(socket: str | None = None) -> str:
+    """`socket`, or $ESCROW_SOCKET; EscrowError when neither is set."""
     path = socket or os.environ.get("ESCROW_SOCKET")
     if not path:
         raise EscrowError("no escrowd socket: pass one or set ESCROW_SOCKET")
-    return Reviewer(path + ".review")
+    return path
+
+
+def connect_reviewer(socket: str | None = None) -> Reviewer:
+    """Connect to the review socket of the daemon at `socket`, or at $ESCROW_SOCKET."""
+    return Reviewer(socket_path(socket) + ".review")
 
 
 def connect(socket: str | None = None) -> Client:
     """Connect to the daemon at `socket`, or at $ESCROW_SOCKET."""
-    path = socket or os.environ.get("ESCROW_SOCKET")
-    if not path:
-        raise EscrowError("no escrowd socket: pass one or set ESCROW_SOCKET")
-    return Client(path)
+    return Client(socket_path(socket))
