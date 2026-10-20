@@ -368,6 +368,9 @@ def test_a_kill_during_the_final_review_keeps_its_decision(start_daemon, fault, 
         with pytest.raises(RuntimeError, match="injected abort"):
             d.restart(env={"ESCROWD_FAULT": f"{then}:0:abort"})
     d.restart(env={})
+    # The ledger shows the decision once, however late in it the kill came.
+    decides = [x for x in d.ledger if f" scope={s} op=decide " in x]
+    assert len(decides) == (0 if want == "held" else 1), decides
     with d.client() as c, d.reviewer() as rv:
         held = [h.scope_id for h in rv.list_held()]
         out = next(c.await_decision(s, token=token, timeout=5))

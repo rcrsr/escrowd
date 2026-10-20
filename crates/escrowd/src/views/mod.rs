@@ -208,7 +208,9 @@ impl Views {
                     found = true;
                 }
             }
-            if found {
+            // A kill after the commit's ledger line, before the scope was dropped,
+            // leaves the line written: log the commit once.
+            if found && !ledger.shows_commit(&id)? {
                 ledger.append(&id, "decide", Path::new(""), None, "commit");
             }
             commits.scope_dropped(generation)?;

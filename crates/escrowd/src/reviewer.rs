@@ -493,7 +493,13 @@ mod tests {
             took < Duration::from_millis(300) + KILL_GRACE + Duration::from_secs(2),
             "{took:?}"
         );
+        // SIGKILL went to the whole group; its last member (the shell's `sleep`, now
+        // an orphan) is gone once init reaps it, which a busy host may take a moment for.
         let pgid = Pid::from_raw(report.pid.unwrap() as i32).unwrap();
+        let reaped_by = Instant::now() + Duration::from_secs(5);
+        while rustix::process::test_kill_process_group(pgid).is_ok() && Instant::now() < reaped_by {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         assert!(
             rustix::process::test_kill_process_group(pgid).is_err(),
             "the group is gone"
