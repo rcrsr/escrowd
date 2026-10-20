@@ -1,0 +1,82 @@
+{
+  "seed": [
+    {
+      "op": "mkdir",
+      "path": "{dir}"
+    },
+    {
+      "op": "write",
+      "path": "{dir}/edit.txt",
+      "text": "edit\n"
+    },
+    {
+      "op": "write",
+      "path": "{dir}/old.txt",
+      "text": "old\n"
+    },
+    {
+      "op": "write",
+      "path": "{dir}/gone.txt",
+      "text": "gone\n"
+    },
+    {
+      "op": "write",
+      "path": "{dir}/mode.txt",
+      "text": "mode\n"
+    },
+    {
+      "op": "chmod",
+      "path": "{dir}/mode.txt",
+      "mode": "644"
+    },
+    {
+      "op": "symlink",
+      "target": "old.txt",
+      "path": "{dir}/link"
+    }
+  ],
+  "mutate": [
+    {
+      "op": "write",
+      "path": "{dir}/edit.txt",
+      "text": "{dir}:{path}\n"
+    },
+    {
+      "op": "write",
+      "path": "{dir}/new.txt",
+      "text": "{dir}:{path}\n"
+    },
+    {
+      "op": "rename",
+      "from": "{dir}/old.txt",
+      "to": "{dir}/renamed.txt"
+    },
+    {
+      "op": "remove",
+      "path": "{dir}/gone.txt"
+    },
+    {
+      "op": "chmod",
+      "path": "{dir}/mode.txt",
+      "mode": "600"
+    },
+    {
+      "op": "remove",
+      "path": "{dir}/link"
+    },
+    {
+      "op": "symlink",
+      "target": "edit.txt",
+      "path": "{dir}/link"
+    },
+    {
+      "op": "mkdir",
+      "path": "{dir}/sub/deep"
+    },
+    {
+      "op": "write",
+      "path": "{dir}/sub/deep/f.txt",
+      "text": "{dir}:{path}\n"
+    }
+  ]
+}

@@ -20,17 +20,14 @@ import threading
 import time
 from pathlib import Path
 
+from escrow_testkit import WRITER, Daemon, isolate_git_env, make_runtime_dir, spawn, wait_for
+
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tests" / "conformance"))
-
-from conftest import Daemon, make_runtime_dir  # noqa: E402
-from test_exec import WRITER, spawn, wait_for  # noqa: E402
-
-import escrow  # noqa: E402
+isolate_git_env()
 
 
 def loss_run(d: Daemon) -> tuple[bool, int, int]:
-    with escrow.connect(str(d.socket)) as c:
+    with d.client() as c:
         sid = c.open_scope().scope_id
     p = spawn(d, sid, f"python3 -c '{WRITER}'; true")
     acked: list[str] = []
@@ -38,7 +35,7 @@ def loss_run(d: Daemon) -> tuple[bool, int, int]:
     drain.start()
     wait_for(d.mount / sid / "log")
     time.sleep(random.uniform(0, 0.2))
-    with escrow.connect(str(d.socket)) as c:
+    with d.client() as c:
         c.close_scope(sid)
         p.wait(timeout=10)
         drain.join(timeout=10)
@@ -51,13 +48,13 @@ def loss_run(d: Daemon) -> tuple[bool, int, int]:
 def latency(d: Daemon, children: int, n: int) -> list[float]:
     out = []
     for _ in range(n):
-        with escrow.connect(str(d.socket)) as c:
+        with d.client() as c:
             sid = c.open_scope().scope_id
         procs = [spawn(d, sid, f"touch ready{k}; exec sleep 600") for k in range(children)]
         for k in range(children):
             wait_for(d.mount / sid / f"ready{k}")
         start = time.monotonic()
-        with escrow.connect(str(d.socket)) as c:
+        with d.client() as c:
             c.close_scope(sid)
         out.append(time.monotonic() - start)
         for p in procs:

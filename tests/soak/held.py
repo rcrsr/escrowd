@@ -32,15 +32,13 @@ import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
+import escrow
+from escrow import lowlevel
+from escrow.v1 import escrow_pb2 as pb
+from escrow_testkit import Daemon, isolate_git_env, leftovers, make_runtime_dir, umount
+
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tests" / "conformance"))
-sys.path.insert(0, str(ROOT / "tests" / "soak"))
-
-from conftest import Daemon, make_runtime_dir  # noqa: E402
-from crash import leftovers, spawn_daemon, umount  # noqa: E402
-
-import escrow  # noqa: E402
-from escrow.v1 import escrow_pb2 as pb  # noqa: E402
+isolate_git_env()
 
 POLICY = """\
 review:
@@ -102,7 +100,7 @@ def after_review(s: State, tier: int, verdict: int, over: bool) -> State:
     return State(final=FINAL[v])
 
 
-def hold_all(d: Daemon, c: escrow.Client) -> list[Scope]:
+def hold_all(d: Daemon, c: lowlevel.Client) -> list[Scope]:
     # Open every scope before holding any: a held scope with a wait blocks its session.
     opened = [(c.open_scope(session=session), dir, session, wait) for dir, session, wait in SCOPES]
     out = []
@@ -117,7 +115,7 @@ def hold_all(d: Daemon, c: escrow.Client) -> list[Scope]:
         st = State(tiers=tuple(r.tiers), wait=r.wait)
         out.append(Scope(o.scope_id, dir, session, o.token, st))
     # Some auth scopes start with the llm's commit, waiting for the human.
-    rv = escrow.connect_reviewer(str(d.socket))
+    rv = d.reviewer()
     with rv:
         for s in out:
             if s.state.tiers == (LLM, HUMAN) and random.random() < 0.5:
@@ -129,7 +127,7 @@ def hold_all(d: Daemon, c: escrow.Client) -> list[Scope]:
 def decide_all(d: Daemon, scopes: list[Scope], rng: random.Random, stop: threading.Event):
     """Review or withdraw held scopes at random until none is held or the daemon dies."""
     try:
-        with escrow.connect_reviewer(str(d.socket)) as rv, escrow.connect(str(d.socket)) as c:
+        with d.reviewer() as rv, d.client() as c:
             while not stop.is_set():
                 held = [s for s in scopes if not s.state.final]
                 if not held:
@@ -158,7 +156,7 @@ def decide_all(d: Daemon, scopes: list[Scope], rng: random.Random, stop: threadi
 def observe(d: Daemon, scopes: list[Scope]) -> dict[str, State | str]:
     """Each scope's state after the restart, or an error string."""
     seen: dict[str, State | str] = {}
-    with escrow.connect_reviewer(str(d.socket)) as rv, escrow.connect(str(d.socket)) as c:
+    with d.reviewer() as rv, d.client() as c:
         held = {h.scope_id: h for h in rv.list_held()}
         for s in scopes:
             want = files(d.project, s.dir)
@@ -216,7 +214,7 @@ def check(d: Daemon, scopes: list[Scope]) -> tuple[list[str], str]:
     if leftovers(d.project):
         bad.append(f"leftovers {leftovers(d.project)}")
     # A session behind a scope held with a wait still waits.
-    with escrow.connect(str(d.socket)) as c:
+    with d.client() as c:
         for session in ("a", "b"):
             blocking = [
                 s
@@ -235,7 +233,7 @@ def check(d: Daemon, scopes: list[Scope]) -> tuple[list[str], str]:
                 if not blocking:
                     bad.append(f"session {session} blocked with nothing held: {e.code().name}")
         # Every scope still held can still be decided: its last tier keeps the verdict.
-        with escrow.connect_reviewer(str(d.socket)) as rv:
+        with d.reviewer() as rv:
             for h in rv.list_held():
                 o = rv.review(h.scope_id, h.tiers[-1], h.verdict, timeout=60)
                 s = next(s for s in scopes if s.id == h.scope_id)
@@ -253,7 +251,7 @@ def one(bin: Path, kill_after: float | None, double: bool, rng_seed: int):
     for top in ("src/auth", "docs"):
         (d.project / top).mkdir(parents=True)
         (d.project / top / "base.txt").write_text("base\n")
-    with escrow.connect(str(d.socket)) as c:
+    with d.client() as c:
         scopes = hold_all(d, c)
     stop = threading.Event()
     t = threading.Thread(target=decide_all, args=(d, scopes, random.Random(rng_seed), stop))
@@ -261,18 +259,15 @@ def one(bin: Path, kill_after: float | None, double: bool, rng_seed: int):
     t.start()
     if kill_after is not None:
         time.sleep(kill_after)
-        d.proc.send_signal(signal.SIGKILL)
-        d.proc.wait()
-        d.log.close()
-        umount(d)
+        d.kill()
         t.join()
         if double:
-            p = spawn_daemon(d)
+            p = d.spawn()
             time.sleep(random.uniform(0, 0.05))
             p.send_signal(signal.SIGKILL)
             p.wait()
             umount(d)
-        d = Daemon(bin, work, policy=POLICY)
+        d.restart()
     else:
         t.join()
     took = time.monotonic() - start

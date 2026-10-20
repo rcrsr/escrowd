@@ -1,61 +1,46 @@
-"""gRPC client for the escrowd Unix socket. A failed call raises the typed error of its
-status code (`escrow._errors`), a grpc.RpcError too."""
+"""The public client: `lowlevel`'s calls returning the SDK's model types, with verdicts
+and tiers as strings. A failed call raises the typed error of its status code."""
 
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Iterator
-from typing import TypeVar
+from collections.abc import Iterator, MutableMapping
 
-import grpc
-
-from escrow._errors import typed
-from escrow.v1 import escrow_pb2, escrow_pb2_grpc
-
-T = TypeVar("T")
-
-
-def _channel(socket: str) -> grpc.Channel:
-    # grpcio sends the socket path as :authority, which tonic's HTTP/2 stack rejects
-    # (RST_STREAM PROTOCOL_ERROR); any valid host name works. A change set's diff
-    # can pass grpcio's 4 MiB receive limit (policy diff.max_bytes): no limit.
-    return grpc.insecure_channel(
-        f"unix:{socket}",
-        options=[
-            ("grpc.default_authority", "localhost"),
-            ("grpc.max_receive_message_length", -1),
-        ],
-    )
-
-
-def _call(method: Callable[..., T], req, timeout: float | None) -> T:
-    try:
-        return method(req, timeout=timeout)
-    except grpc.RpcError as e:
-        raise typed(e) from e
-
-
-def _stream(responses) -> Iterator[escrow_pb2.Outcome]:
-    try:
-        for r in responses:
-            yield r.outcome
-    except grpc.RpcError as e:
-        raise typed(e) from e
+from escrow import lowlevel
+from escrow._errors import EscrowError
+from escrow._model import (
+    ChangeSet,
+    DaemonInfo,
+    HeldDetail,
+    HeldScope,
+    OpenedScope,
+    Result,
+    Tier,
+    Verdict,
+    tier_value,
+    verdict_value,
+)
 
 
 class Client:
     """One connection. Closing, deciding and spawning in a scope take the scope's token
-    (`OpenScopeResponse.token`); a client remembers the tokens of the scopes it opened
-    and sends them when no `token` is passed. The unscoped scope needs none."""
+    (`OpenedScope.token`); a client remembers the tokens of the scopes it opened and
+    sends them when no `token` is passed. The unscoped scope needs none. Clients given
+    the same `tokens` mapping share their tokens: it is read and recorded into."""
 
-    def __init__(self, socket: str):
-        self.socket = socket
-        self.tokens: dict[str, str] = {}
-        self._channel = _channel(socket)
-        self._stub = escrow_pb2_grpc.EscrowServiceStub(self._channel)
+    def __init__(self, socket: str, tokens: MutableMapping[str, str] | None = None):
+        self._low = lowlevel.Client(socket, tokens)
 
-    def ping(self, timeout: float = 5.0) -> escrow_pb2.PingResponse:
-        return _call(self._stub.Ping, escrow_pb2.PingRequest(), timeout)
+    @property
+    def socket(self) -> str:
+        return self._low.socket
+
+    @property
+    def tokens(self) -> MutableMapping[str, str]:
+        return self._low.tokens
+
+    def ping(self, timeout: float = 5.0) -> DaemonInfo:
+        return DaemonInfo.from_proto(self._low.ping(timeout))
 
     def open_scope(
         self,
@@ -63,80 +48,62 @@ class Client:
         labels: dict[str, str] | None = None,
         timeout: float | None = 5.0,
         session: str = "",
-    ) -> escrow_pb2.OpenScopeResponse:
+    ) -> OpenedScope:
         """In a `session` with a scope held with a wait, the call waits for its verdict
-        up to `timeout` (None: no limit), then fails with FAILED_PRECONDITION."""
-        req = escrow_pb2.OpenScopeRequest(name=name, labels=labels or {}, session=session)
-        resp = _call(self._stub.OpenScope, req, timeout)
-        self.tokens[resp.scope_id] = resp.token
-        return resp
-
-    def _token(self, scope_id: str, token: str | None) -> str:
-        return self.tokens.get(scope_id, "") if token is None else token
+        up to `timeout` (None: no limit), then fails with `EscrowStateError`."""
+        return OpenedScope.from_proto(self._low.open_scope(name, labels, timeout, session))
 
     def close_scope(
         self, scope_id: str, token: str | None = None, timeout: float = 30.0
-    ) -> escrow_pb2.ChangeSet:
+    ) -> ChangeSet:
         """Freeze the scope and return its change set. Fsync the scope's open files first."""
-        req = escrow_pb2.CloseScopeRequest(scope_id=scope_id, token=self._token(scope_id, token))
-        return _call(self._stub.CloseScope, req, timeout).change_set
+        return ChangeSet.from_proto(self._low.close_scope(scope_id, token, timeout))
 
     def decide(
         self,
         scope_id: str,
-        verdict: escrow_pb2.Verdict,
+        verdict: Verdict,
         reasons: list[str] | None = None,
         token: str | None = None,
         timeout: float = 30.0,
         wait: bool = False,
-    ) -> escrow_pb2.Outcome:
-        """A commit that needs reviewers returns OUTCOME_STATUS_HELD; `wait`: the
-        session's next scope waits for the verdict."""
-        req = escrow_pb2.DecideRequest(
-            scope_id=scope_id,
-            verdict=verdict,
-            reasons=reasons or [],
-            token=self._token(scope_id, token),
-            wait=wait,
+    ) -> Result:
+        """A commit that needs reviewers returns status "held"; `wait`: the session's
+        next scope waits for the verdict. An unknown `verdict` raises ValueError."""
+        value = verdict_value(verdict)
+        return Result.from_proto(
+            self._low.decide(scope_id, value, reasons, token, timeout=timeout, wait=wait)
         )
-        return _call(self._stub.Decide, req, timeout).outcome
 
     def commit(
         self, scope_id: str, token: str | None = None, timeout: float = 60.0, wait: bool = False
-    ) -> escrow_pb2.Outcome:
+    ) -> Result:
         """Apply a closed scope's change set, all or nothing. A conflict drops the scope,
         or reopens it under the policy's `conflict.verdict: return`; a change set that
         needs reviewers is held."""
-        return self.decide(
-            scope_id, escrow_pb2.VERDICT_COMMIT, token=token, timeout=timeout, wait=wait
-        )
+        return Result.from_proto(self._low.commit(scope_id, token, timeout, wait))
 
-    def settle_unscoped(self, timeout: float = 30.0) -> escrow_pb2.ChangeSet:
+    def settle_unscoped(self, timeout: float = 30.0) -> ChangeSet:
         """Close the implicit default scope and return its change set (scope id "unscoped")."""
-        return _call(
-            self._stub.SettleUnscoped, escrow_pb2.SettleUnscopedRequest(), timeout
-        ).change_set
+        return ChangeSet.from_proto(self._low.settle_unscoped(timeout))
 
-    def get_change_set(self, scope_id: str, timeout: float = 30.0) -> escrow_pb2.ChangeSet:
+    def get_change_set(self, scope_id: str, timeout: float = 30.0) -> ChangeSet:
         """A closed, undecided scope's change set and diff; an open scope fails."""
-        req = escrow_pb2.GetChangeSetRequest(scope_id=scope_id)
-        return _call(self._stub.GetChangeSet, req, timeout).change_set
+        return ChangeSet.from_proto(self._low.get_change_set(scope_id, timeout))
 
-    def discard(
-        self, scope_id: str, token: str | None = None, timeout: float = 30.0
-    ) -> escrow_pb2.Outcome:
-        return self.decide(scope_id, escrow_pb2.VERDICT_DISCARD, token=token, timeout=timeout)
+    def discard(self, scope_id: str, token: str | None = None, timeout: float = 30.0) -> Result:
+        return Result.from_proto(self._low.discard(scope_id, token, timeout))
 
     def await_decision(
         self, scope_id: str, token: str | None = None, timeout: float | None = None
-    ) -> Iterator[escrow_pb2.Outcome]:
-        """Follow a held scope: OUTCOME_STATUS_HELD after each tier's review, then the
-        final outcome. A scope decided already yields its last outcome."""
-        req = escrow_pb2.AwaitDecisionRequest(scope_id=scope_id, token=self._token(scope_id, token))
-        return _stream(self._stub.AwaitDecision(req, timeout=timeout))
+    ) -> Iterator[Result]:
+        """Follow a held scope: status "held" after each tier's review, then the final
+        result. A scope decided already yields its last result."""
+        for o in self._low.await_decision(scope_id, token, timeout):
+            yield Result.from_proto(o)
 
     def close(self) -> None:
-        self._channel.close()
+        self._low.close()
 
     def __enter__(self) -> Client:
         return self
@@ -149,37 +116,34 @@ class Reviewer:
     """A reviewer's connection, on the daemon's review socket (`<socket>.review`)."""
 
     def __init__(self, socket: str):
-        self.socket = socket
-        self._channel = _channel(socket)
-        self._stub = escrow_pb2_grpc.ReviewerServiceStub(self._channel)
+        self._low = lowlevel.Reviewer(socket)
 
-    def list_held(self, timeout: float = 5.0) -> list[escrow_pb2.HeldScope]:
-        return list(_call(self._stub.ListHeld, escrow_pb2.ListHeldRequest(), timeout).scopes)
+    @property
+    def socket(self) -> str:
+        return self._low.socket
 
-    def get_held(self, scope_id: str, timeout: float = 30.0) -> escrow_pb2.GetHeldResponse:
-        return _call(self._stub.GetHeld, escrow_pb2.GetHeldRequest(scope_id=scope_id), timeout)
+    def list_held(self, timeout: float = 5.0) -> list[HeldScope]:
+        return [HeldScope.from_proto(h) for h in self._low.list_held(timeout)]
+
+    def get_held(self, scope_id: str, timeout: float = 30.0) -> HeldDetail:
+        return HeldDetail.from_proto(self._low.get_held(scope_id, timeout))
 
     def review(
         self,
         scope_id: str,
-        tier: escrow_pb2.Tier,
-        verdict: escrow_pb2.Verdict,
+        tier: Tier,
+        verdict: Verdict,
         reasons: list[str] | None = None,
         override: bool = False,
         timeout: float = 60.0,
-    ) -> escrow_pb2.Outcome:
-        """`tier`'s verdict; after the last pending tier the scope is decided."""
-        req = escrow_pb2.ReviewRequest(
-            scope_id=scope_id,
-            tier=tier,
-            verdict=verdict,
-            reasons=reasons or [],
-            override=override,
-        )
-        return _call(self._stub.Review, req, timeout).outcome
+    ) -> Result:
+        """`tier`'s verdict; after the last pending tier the scope is decided. An unknown
+        `tier` or `verdict` raises ValueError."""
+        t, v = tier_value(tier), verdict_value(verdict)
+        return Result.from_proto(self._low.review(scope_id, t, v, reasons, override, timeout))
 
     def close(self) -> None:
-        self._channel.close()
+        self._low.close()
 
     def __enter__(self) -> Reviewer:
         return self
@@ -188,17 +152,18 @@ class Reviewer:
         self.close()
 
 
-def connect_reviewer(socket: str | None = None) -> Reviewer:
-    """Connect to the review socket of the daemon at `socket`, or at $ESCROW_SOCKET."""
+def _path(socket: str | None) -> str:
     path = socket or os.environ.get("ESCROW_SOCKET")
     if not path:
-        raise RuntimeError("no escrowd socket: pass one or set ESCROW_SOCKET")
-    return Reviewer(path + ".review")
+        raise EscrowError("no escrowd socket: pass one or set ESCROW_SOCKET")
+    return path
 
 
 def connect(socket: str | None = None) -> Client:
     """Connect to the daemon at `socket`, or at $ESCROW_SOCKET."""
-    path = socket or os.environ.get("ESCROW_SOCKET")
-    if not path:
-        raise RuntimeError("no escrowd socket: pass one or set ESCROW_SOCKET")
-    return Client(path)
+    return Client(_path(socket))
+
+
+def connect_reviewer(socket: str | None = None) -> Reviewer:
+    """Connect to the review socket of the daemon at `socket`, or at $ESCROW_SOCKET."""
+    return Reviewer(_path(socket) + ".review")

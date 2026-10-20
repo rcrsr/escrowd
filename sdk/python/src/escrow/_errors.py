@@ -12,6 +12,19 @@ class EscrowError(Exception):
     pass
 
 
+class EscrowUnscopedError(EscrowError, PermissionError):
+    """A project write outside any scope in `deny` mode (EROFS): open a scope for it."""
+
+
+class EscrowStaleHandleError(EscrowError, OSError):
+    """A write on a file opened in a scope that has closed (EBADF): reopen the file in a
+    new scope."""
+
+
+class EscrowUnscopedWarning(UserWarning):
+    """Changes reached the unscoped mode while a scope was open: IO that escaped it."""
+
+
 class EscrowRpcError(EscrowError, grpc.RpcError):
     """A call to the daemon failed. `code()` and `details()` as on a grpc.RpcError; a
     code without a class of its own (INTERNAL, UNKNOWN, CANCELLED) raises this class."""

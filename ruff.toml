@@ -15,7 +15,7 @@ select = [
 ]
 
 [lint.isort]
-known-first-party = ["escrow"]
+known-first-party = ["escrow", "escrow_testkit"]
 
 [format]
 quote-style = "double"

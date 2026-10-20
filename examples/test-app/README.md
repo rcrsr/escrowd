@@ -4,7 +4,7 @@ The phase 1 test app: each exit test's IO with ordinary Python file and subproce
 run under escrowd through the Python SDK (`docs/phase-1-poc.md`, sub-phase 1.7).
 
 ```bash
-python app.py PROJECT MODE POLICY CHECK
+python app.py PROJECT MODE POLICY CHECK SCENARIO
 ```
 
 `escrow.init()` re-executes the app under `escrow run` with PROJECT in the unscoped MODE
@@ -16,6 +16,13 @@ mode; an agent host should use `deny`, where a write outside a scope raises
 with a policy that sends `h/` and `n/` to reviewers; the suite reviews on the review
 socket while the app runs). The app prints one JSON object: what it saw, each scope's
 outcome and, under `scopes`, the path prefixes each scope id may touch.
+
+SCENARIO is a JSON file, `{"seed": [Op], "mutate": [Op]}`
+(`tests/fixtures/scenarios/app.json`). The app passes it to `escrow.init` as a readable
+path and replays the `mutate` ops with plain file calls; the suite seeds the project from
+`seed`. An Op is `mkdir`, `write`, `rename`, `remove`, `chmod` (octal-string `mode`) or
+`symlink`; `{dir}` in a path or text is the check's directory and `{path}` in text is the
+op's own path. An unknown op raises `ValueError`.
 
 `tests/conformance/test_app.py` seeds the project, runs each check and fails on any ledger
 entry that names a scope for an operation it did not perform.

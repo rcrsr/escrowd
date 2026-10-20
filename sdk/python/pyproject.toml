@@ -1,25 +1,50 @@
 [project]
-name = "escrow"
+name = "escrowd"
 version = "0.1.0"
 description = "Python SDK for escrowd: scopes over escrowed filesystem IO"
+readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
-    "grpcio==1.84.0",
-    "protobuf==7.36.2",
+    "grpcio>=1.84,<2",
+    "protobuf>=7.36.2,<8",
 ]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/rcrsr/escrowd"
+Repository = "https://github.com/rcrsr/escrowd"
+Issues = "https://github.com/rcrsr/escrowd/issues"
 
 [dependency-groups]
 dev = [
+    "escrow-testkit",
     "grpcio-tools==1.84.0",
     "pytest==9.1.1",
     "ruff==0.16.10",
     "ty==0.0.84",
 ]
 
+[tool.uv.sources]
+escrow-testkit = { path = "../../tests/support", editable = true }
+
 [build-system]
 requires = ["uv_build>=0.12.21,<0.13"]
 build-backend = "uv_build"
+
+# The distribution is `escrowd` (the name `escrow` is taken on PyPI); the package stays `escrow`.
+[tool.uv.build-backend]
+module-name = "escrow"
 
 [tool.pytest]
 testpaths = ["../../tests/conformance"]

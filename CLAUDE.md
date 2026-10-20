@@ -18,7 +18,9 @@ escrowd captures every filesystem write a program makes inside a **scope**, hold
 | `crates/escrow-cli/` | The `escrow` binary: `run`, `daemon`, `exec`, `diff`, `review`, `log`. |
 | `proto/escrow/v1/escrow.proto` | The one protocol schema, gRPC over a Unix socket. |
 | `sdk/python/` | Python SDK (uv project, package `escrow`). Generated stubs in `src/escrow/v1/` are committed. |
-| `tests/conformance/` | pytest suite against the built binary. Every SDK must pass it. |
+| `tests/conformance/` | pytest suite against the built binary. `daemon/` is Python only and drives escrowd through `escrow.lowlevel`; `sdk/` runs per SDK. One shared `conftest.py`. |
+| `tests/support/` | `escrow_testkit`: the daemon harness, project trees, scenarios, and the SDK app harnesses (`apps.py`). |
+| `tests/fixtures/` | Declarative scenarios (`scenarios/*.json`) that the testkit and the test apps apply. |
 | `tests/soak/` | Crash, held-decision and close soaks (`crash.py N`, `held.py N`, `close.py N`). |
 | `bench/` | Real-repo benchmark (`run.sh`, `lima.sh`, `summarize.py`). |
 | `packaging/ubuntu/` | escrowd's bwrap copy and AppArmor profile. |
@@ -34,6 +36,7 @@ buf lint && buf format --diff --exit-code                          # CI also run
 uv run --project sdk/python --frozen ruff check && uv run --project sdk/python --frozen ruff format --check
 uv run --project sdk/python --frozen ty check --project sdk/python
 uv run --project sdk/python --frozen pytest -q tests/conformance  # needs target/debug/escrow (or ESCROW_BIN)
+uv build --project sdk/python                                        # builds the SDK sdist and wheel
 tests/conformance/lima.sh ubuntu-24.04                             # suite in one host-matrix VM
 cargo build --release -p escrow-cli --features fault-injection     # release binary that honors ESCROWD_FAULT (soaks: ESCROW_BIN=target/release/escrow)
 ```
