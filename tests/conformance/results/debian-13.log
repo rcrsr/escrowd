@@ -1,9 +1,9 @@
-host: Debian GNU/Linux 13 (trixie), kernel 6.12.111+deb13-cloud-amd64, 2026-10-20T04:59:47Z
-commit: 5b8e620
+host: Debian GNU/Linux 13 (trixie), kernel 6.12.111+deb13-cloud-amd64, 2026-10-20T23:51:56Z
+commit: cce34fa
    Building escrowd @ file:///home/andre/projects/escrowd/sdk/python
       Built escrowd @ file:///home/andre/projects/escrowd/sdk/python
-Uninstalled 1 package in 0.61ms
-Installed 1 package in 0.60ms
+Uninstalled 1 package in 0.83ms
+Installed 1 package in 0.58ms
 ============================= test session starts ==============================
 platform linux -- Python 3.14.8, pytest-9.1.1, pluggy-1.6.0 -- /var/tmp/escrow-venv/bin/python
 rootdir: /home/andre/projects/escrowd/tests/conformance
@@ -359,8 +359,8 @@ tests/conformance/sdk/test_sdk_held.py::test_the_sdk_sees_the_review_and_the_tig
 
 =============================== warnings summary ===============================
 sdk/test_client.py::test_fork_child_drops_the_shared_client_without_a_call
-  /home/andre/projects/escrowd/tests/conformance/sdk/test_client.py:75: DeprecationWarning: This process (pid=1496) is multi-threaded, use of fork() may lead to deadlocks in the child.
+  /home/andre/projects/escrowd/tests/conformance/sdk/test_client.py:75: DeprecationWarning: This process (pid=1335) is multi-threaded, use of fork() may lead to deadlocks in the child.
     pid = os.fork()
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-================== 347 passed, 1 warning in 255.62s (0:04:15) ==================
+================== 347 passed, 1 warning in 248.38s (0:04:08) ==================

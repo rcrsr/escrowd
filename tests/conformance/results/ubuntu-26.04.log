@@ -1,17 +1,9 @@
-host: Ubuntu 26.04 LTS, kernel 7.0.0-34-generic, 2026-10-20T04:52:52Z
-commit: 5b8e620
+host: Ubuntu 26.04 LTS, kernel 7.0.0-34-generic, 2026-10-20T23:48:19Z
+commit: cce34fa
 installed /usr/lib/escrowd/bwrap with profile escrowd_bwrap
-Using CPython 3.14.8 interpreter at: /home/andre/.local/share/uv/python/cpython-3.14.8-linux-x86_64-gnu/bin/python3.14
-Removed virtual environment at: /var/tmp/escrow-venv
-Creating virtual environment at: /var/tmp/escrow-venv
-   Building escrowd @ file:///home/andre/projects/escrowd/sdk/python
-   Building escrow-testkit @ file:///home/andre/projects/escrowd/tests/support
-      Built escrow-testkit @ file:///home/andre/projects/escrowd/tests/support
-      Built escrowd @ file:///home/andre/projects/escrowd/sdk/python
-Installed 14 packages in 36ms
 ============================= test session starts ==============================
 platform linux -- Python 3.14.8, pytest-9.1.1, pluggy-1.6.0 -- /var/tmp/escrow-venv/bin/python
-rootdir: /home/andre/projects/escrowd
+rootdir: /home/andre/projects/escrowd/tests/conformance
 collecting ... collected 347 items
 
 tests/conformance/daemon/test_attribution.py::test_a_sandboxed_command_is_the_writer PASSED [  0%]
@@ -363,9 +355,9 @@ tests/conformance/sdk/test_sdk_held.py::test_settling_unscoped_io_waits_for_the_
 tests/conformance/sdk/test_sdk_held.py::test_the_sdk_sees_the_review_and_the_tightened_outcome PASSED [100%]
 
 =============================== warnings summary ===============================
-tests/conformance/sdk/test_client.py::test_fork_child_drops_the_shared_client_without_a_call
-  /home/andre/projects/escrowd/tests/conformance/sdk/test_client.py:75: DeprecationWarning: This process (pid=1943) is multi-threaded, use of fork() may lead to deadlocks in the child.
+sdk/test_client.py::test_fork_child_drops_the_shared_client_without_a_call
+  /home/andre/projects/escrowd/tests/conformance/sdk/test_client.py:75: DeprecationWarning: This process (pid=1954) is multi-threaded, use of fork() may lead to deadlocks in the child.
     pid = os.fork()
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-================== 347 passed, 1 warning in 179.22s (0:02:59) ==================
+================== 347 passed, 1 warning in 176.30s (0:02:56) ==================
