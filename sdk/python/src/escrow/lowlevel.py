@@ -198,14 +198,20 @@ class Reviewer:
         reasons: list[str] | None = None,
         override: bool = False,
         timeout: float = 60.0,
+        reviewer: str = "",
+        token: str = "",
     ) -> escrow_pb2.Outcome:
-        """`tier`'s verdict; after the last pending tier the scope is decided."""
+        """`tier`'s verdict, or `reviewer`'s when named (then `tier` may be unspecified);
+        after the last pending reviewer the scope is decided. `token` is a delegated
+        reviewer's one-time token."""
         req = escrow_pb2.ReviewRequest(
             scope_id=scope_id,
             tier=tier,
             verdict=verdict,
             reasons=reasons or [],
             override=override,
+            reviewer=reviewer,
+            token=token,
         )
         return _call(self._stub.Review, req, timeout).outcome
 

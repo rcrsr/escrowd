@@ -47,10 +47,10 @@ use crate::error::{self, Error};
 use crate::gate::Gate;
 use crate::history::{self, History};
 use crate::ledger::Ledger;
-use crate::policy::{ConflictRules, ConflictVerdict, Tier};
+use crate::policy::{ConflictRules, ConflictVerdict};
 use crate::proc::{Proc, Procs};
 use crate::review::{self, Decision, TierReview};
-use crate::roots::{self, Access, PROJECT, Rules};
+use crate::roots::{self, Access, PROJECT, Protected, Rules};
 use crate::snapshot::Base;
 use crate::store::{Hold, ScopeState, ScopeStore, VersionKind, moved};
 use crate::sys::{self, Version, parent};
@@ -64,7 +64,7 @@ mod scopes;
 pub use crate::policy::Unscoped;
 use files::Files;
 use files::writeback_thread;
-pub use hold::{Identity, Reviewed};
+pub use hold::{Giver, Identity, Reviewed, RunTicket};
 use inodes::Inodes;
 pub use inodes::{Node, Pages};
 pub use overlay::{Loc, ScopeHandle};
@@ -117,6 +117,8 @@ pub struct RootSpec {
     pub served: bool,
     /// None for the project.
     pub rules: Option<Arc<Rules>>,
+    /// The policy file and reviewer programs inside the root; None costs nothing.
+    pub protected: Option<Arc<Protected>>,
     /// Host paths in the root bound directly into sandboxes (passthrough and read paths).
     pub direct: Vec<PathBuf>,
 }
@@ -395,6 +397,7 @@ impl Views {
             group: group.to_string(),
             root,
             rules: self.roots[root].rules.clone(),
+            protected: self.roots[root].protected.clone(),
             idx: store.idx,
             since: store.since,
             readonly: store.readonly,
@@ -417,6 +420,12 @@ impl Views {
     /// A `Views` over an empty project in a fresh temp dir, serving only the project
     /// root with the unscoped scope in passthrough; the state dir is returned too.
     pub(crate) fn fixture(name: &str) -> (Views, PathBuf) {
+        Views::fixture_with(name, "{}")
+    }
+
+    /// `fixture` with the policy's `reviewers:` (a YAML map) declared.
+    pub(crate) fn fixture_with(name: &str, reviewers: &str) -> (Views, PathBuf) {
+        let policy = crate::policy::Policy::parse(&format!("version: 1\nreviewers: {reviewers}\n")).unwrap();
         let dir = crate::db::temp_dir(name);
         let state = dir.join("state");
         let project = dir.join("project");
@@ -429,6 +438,7 @@ impl Views {
             lower: None,
             served: false,
             rules: None,
+            protected: None,
             direct: Vec::new(),
         };
         let mut specs = vec![
@@ -448,7 +458,7 @@ impl Views {
             Gate::new(&[]).unwrap(),
             Unscoped::Passthrough,
             ConflictRules::default(),
-            review::Rules::new(&[], &Default::default()).unwrap(),
+            review::Rules::new(&[], &policy.reviewers, &Default::default()).unwrap(),
         )
         .unwrap();
         (views, dir)

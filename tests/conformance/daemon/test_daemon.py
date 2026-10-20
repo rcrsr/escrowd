@@ -13,14 +13,14 @@ from escrow import lowlevel
 def test_ping_round_trip(daemon):
     with daemon.client() as client:
         reply = client.ping()
-    assert reply.protocol_version == 7
+    assert reply.protocol_version == 8
     assert reply.daemon_version == "0.1.0"
 
 
 def test_connect_reads_escrow_socket(daemon, monkeypatch):
     monkeypatch.setenv("ESCROW_SOCKET", str(daemon.socket))
     with lowlevel.connect() as client:
-        assert client.ping().protocol_version == 7
+        assert client.ping().protocol_version == 8
 
 
 def test_settle_unscoped_needs_the_implicit_mode(daemon):
@@ -45,7 +45,7 @@ def test_stale_socket_is_replaced(start_daemon):
     for _ in range(100):
         try:
             with second.client() as client:
-                assert client.ping(timeout=0.5).protocol_version == 7
+                assert client.ping(timeout=0.5).protocol_version == 8
             return
         except grpc.RpcError:
             time.sleep(0.05)
@@ -63,7 +63,7 @@ def test_second_daemon_on_one_state_is_refused(daemon):
     assert "another escrowd" in run.stderr
     assert str(os.getpid()) not in run.stderr  # the holder's pid, not ours
     with daemon.client() as client:
-        assert client.ping(timeout=5).protocol_version == 7
+        assert client.ping(timeout=5).protocol_version == 8
 
 
 def test_live_socket_is_not_taken_over(daemon):
@@ -73,4 +73,4 @@ def test_live_socket_is_not_taken_over(daemon):
     assert run.returncode != 0
     assert "in use" in run.stderr
     with daemon.client() as client:
-        assert client.ping(timeout=5).protocol_version == 7
+        assert client.ping(timeout=5).protocol_version == 8

@@ -22,6 +22,7 @@ use crate::exec::Children;
 use crate::proto::escrow_service_server::{EscrowService, EscrowServiceServer};
 use crate::proto::reviewer_service_server::{ReviewerService, ReviewerServiceServer};
 use crate::proto::*;
+use crate::reviewer::Runner;
 use crate::views::{Frozen, UNSCOPED, Views};
 
 /// How long shutdown waits for clients to finish their calls before it unmounts anyway.
@@ -32,14 +33,25 @@ const GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 pub struct Service(Arc<Decisions>);
 
 impl Service {
-    pub fn new(views: Arc<Views>, children: Arc<Children>, diff: diff::Caps) -> Self {
-        Service(Arc::new(Decisions::new(views, children, diff)))
+    pub fn new(views: Arc<Views>, children: Arc<Children>, diff: diff::Caps, runner: Runner) -> Self {
+        Service(Arc::new(Decisions::new(views, children, diff, runner)))
+    }
+
+    /// Pick up the reviews of the scopes held at start (`Decisions::resume`).
+    pub async fn resume_reviews(&self) -> crate::error::Result<()> {
+        self.0.resume().await
     }
 
     fn change_set(&self, id: String, f: &Frozen) -> ChangeSet {
         convert::change_set(self.0.views(), id, &f.change_set, &f.diff)
     }
 }
+
+/// The environment variable a reviewer's token travels in (`escrow review --token`).
+pub const REVIEW_TOKEN_ENV: &str = "ESCROW_REVIEW_TOKEN";
+
+/// The environment variable that names the review socket for a reviewer program.
+pub const REVIEW_SOCKET_ENV: &str = "ESCROW_REVIEW_SOCKET";
 
 /// The review socket beside the protocol socket.
 pub fn review_socket(socket: &Path) -> PathBuf {
@@ -198,15 +210,15 @@ impl ReviewerService for Service {
         }))
     }
 
-    /// A tier's verdict; after the last pending tier, the scope is decided.
+    /// A reviewer's verdict; after the last pending reviewer, the scope is decided.
     async fn review(&self, req: Request<ReviewRequest>) -> Result<Response<ReviewResponse>, Status> {
         let req = req.into_inner();
-        let tier =
-            convert::reviewer_tier(req.tier).ok_or_else(|| Status::invalid_argument("tier must be llm or human"))?;
+        let (reviewer, token) =
+            convert::reviewer_request(req.tier, &req.reviewer, &req.token).map_err(Status::invalid_argument)?;
         let verdict = convert::decision(req.verdict).ok_or_else(|| Status::invalid_argument("verdict must be set"))?;
         let out = self
             .0
-            .review(req.scope_id, tier, verdict, req.reasons, req.r#override)
+            .review(req.scope_id, reviewer, token, verdict, req.reasons, req.r#override)
             .await
             .map_err(status)?;
         Ok(Response::new(ReviewResponse {
@@ -253,6 +265,8 @@ pub async fn serve(socket: &Path, service: Service, shutdown: impl Future<Output
     let review_path = review_socket(socket);
     let review_listener = bind_private(&review_path)?;
     let listener = bind(socket)?;
+    // Bound first: a delegate that resumes here finds the review socket.
+    service.resume_reviews().await.context("resuming held reviews")?;
     let started = service.0.clone();
     let reviewers = tonic::transport::Server::builder()
         .add_service(ReviewerServiceServer::new(service.clone()))

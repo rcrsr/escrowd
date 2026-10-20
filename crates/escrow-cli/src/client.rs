@@ -94,6 +94,25 @@ pub(crate) fn tiers(ts: &[i32]) -> String {
     names.join(",")
 }
 
+/// The reviewers of a hold, outcome or review by name; a daemon older than protocol 8
+/// names none, so its tiers stand in.
+pub(crate) fn reviewer_names(reviewers: &[String], tier_values: &[i32]) -> String {
+    if reviewers.is_empty() {
+        tiers(tier_values)
+    } else {
+        reviewers.join(",")
+    }
+}
+
+/// One review's reviewer: its name, else (an older daemon) its tier.
+pub(crate) fn reviewer_of(reviewer: &str, tier: i32) -> String {
+    if reviewer.is_empty() {
+        tiers(&[tier])
+    } else {
+        reviewer.to_string()
+    }
+}
+
 pub(crate) fn verdict_name(v: i32) -> String {
     name(Verdict::try_from(v).ok().map(|v| v.as_str_name()), "VERDICT_")
 }
@@ -136,6 +155,23 @@ mod tests {
     #[test]
     fn known_tiers_render_lowercase_names_joined() {
         assert_eq!(tiers(&[Tier::Llm as i32, Tier::Human as i32]), "llm,human");
+    }
+
+    #[test]
+    fn reviewer_names_join_and_an_older_daemon_falls_back_to_tiers() {
+        let names = vec!["lint".to_string(), "llm".to_string()];
+        assert_eq!(reviewer_names(&names, &[Tier::Llm as i32]), "lint,llm");
+        assert_eq!(
+            reviewer_names(&[], &[Tier::Llm as i32, Tier::Human as i32]),
+            "llm,human"
+        );
+        assert_eq!(reviewer_names(&[], &[]), "");
+    }
+
+    #[test]
+    fn a_review_names_its_reviewer_else_its_tier() {
+        assert_eq!(reviewer_of("lint", Tier::Unspecified as i32), "lint");
+        assert_eq!(reviewer_of("", Tier::Human as i32), "human");
     }
 
     #[test]

@@ -121,6 +121,8 @@ escrow run --project demo --unscoped implicit --on-exit commit -- sh -c 'echo ch
 | `implicit` | Go to a default scope named `unscoped`, settled at exit by `--on-exit` (default `discard`) | Wrapping an existing program whole. |
 | `passthrough` | Reach the project directly, without escrow | Programs that open scopes for only part of their work. |
 
+`escrow daemon` defaults to `--unscoped passthrough`. A policy file (or a reviewer program) that lies inside the project cannot be protected from the programs that write the project in that mode, so such a start is refused. Start the daemon with `--unscoped implicit` or `deny`, or keep the policy outside the project.
+
 An `--on-exit commit` still goes through your policy. A change set that breaks a `write:` rule is discarded, and one that a `review:` rule sends to reviewers is held (see [Reviewing held changes](#reviewing-held-changes)).
 
 Every operation is recorded in a ledger. Print it with:
@@ -196,9 +198,12 @@ write:                                # broken rules discard the change set
   only_by:                            # paths only these programs may change
     - {paths: [".git/**"], programs: ["/usr/bin/git"]}
 
-review:                               # tiers a change set needs, by path; first match wins
+reviewers:                            # named reviewers, beside the built-in llm and human
+  security: {can_override: true}
+review:                               # who a change set needs, by path; first match wins
   - {paths: ["src/auth/**"], tier: human}
   - {paths: ["docs/**"], tier: llm, wait: optional}
+  - {paths: ["infra/**"], reviewers: [security]}
 
 conflict:
   verdict: discard                    # or "return": reopen the scope, conflicting paths as reasons
@@ -238,23 +243,23 @@ Root rules for `roots.home` and `roots.tmp`:
 
 ## Reviewing held changes
 
-A commit of a change set that matches a `review:` rule is **held**. Nothing reaches the project until every required tier approves it, and only reviewers can commit it. The tiers are `llm` and `human`; a change set that needs `human` also needs `llm`, and a human's verdict also counts for a pending `llm` tier.
+A commit of a change set that matches a `review:` rule is **held**. Nothing reaches the project until every required reviewer approves it, and only reviewers can commit it. A rule names its reviewers with `reviewers: [name, ...]` (declared under `reviewers:` in the policy, or the built-in `llm` and `human`) or with `tier:`. `tier: llm` means `llm`; `tier: human` means `llm` then `human`, and a human's verdict also counts for a pending `llm` reviewer. A change set that several rules match needs the union of their reviewers, in the order the policy declares them and the built-ins last. A reviewer without a `run:` answers on the review socket by name.
 
 While the program runs, review from another terminal:
 
 ```bash
 escrow review --project demo list               # held scopes, oldest first
-escrow review --project demo show s2            # tiers, changes with their writers, and the diff
+escrow review --project demo show s2            # reviewers, changes with their writers, and the diff
 escrow review --project demo commit s2 --reason "looks fine"
 escrow review --project demo return s2 --reason "add a test"   # back to the agent to fix
 escrow review --project demo discard s2
 ```
 
-`--tier llm` gives an LLM tier's verdict; the default is `human`. Verdicts only get stricter, unless a human passes `--override`, which the ledger records.
+`--tier llm` gives the LLM tier's verdict; the default is `human`. `--as NAME` gives a named reviewer's verdict instead (`escrow review commit s2 --as security`; it cannot be combined with `--tier`). `--token` (or `ESCROW_REVIEW_TOKEN`) carries a delegated reviewer's one-time token and is never printed. `--review-socket` (or `ESCROW_REVIEW_SOCKET`) names the review socket itself and wins over `--socket` and `--project`. `list` shows the reviewers still to review as `reviewers=`. Verdicts only get stricter, unless a reviewer that may override (the human, or a declared reviewer with `can_override: true`) passes `--override`, which the ledger records.
 
 By default, `escrow.scope()` waits for the verdict. Pass `wait=False` to continue: `s.outcome.status` is then `"held"`, and `s.wait_decided()` or `await s.decided()` returns the verdict later. Scopes that share a `session=` open one at a time while one of them is held with a wait.
 
-The review socket (`<socket>.review`) has file mode 0600: anyone who can open it can review as any tier. No LLM reviewer ships yet; connect your own with `escrow.connect_reviewer()`, whose `review(scope_id, tier, verdict, reasons=None, override=False)` takes a tier (`"software"`, `"llm"` or `"human"`) and a verdict (`"commit"`, `"discard"` or `"return"`) as strings. The protobuf-typed clients are in `escrow.lowlevel`.
+The review socket (`<socket>.review`) has file mode 0600: anyone who can open it can review as any socket reviewer. No LLM reviewer ships yet; connect your own with `escrow.connect_reviewer()`, whose `review(scope_id, tier, verdict, reasons=None, override=False)` takes a tier (`"software"`, `"llm"` or `"human"`) and a verdict (`"commit"`, `"discard"` or `"return"`) as strings, and whose `review_as(scope_id, reviewer, verdict, *, reasons=None, override=False, token=None)` takes a reviewer's name instead (a `ValueError` for an invalid name or verdict). The protobuf-typed clients are in `escrow.lowlevel`.
 
 If `escrow run` exits while its unscoped changes are held, the next `escrow run` on the project refuses to start until they are decided. Start a daemon on the project and decide them, then stop the daemon:
 

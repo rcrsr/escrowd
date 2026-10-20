@@ -1,6 +1,6 @@
 # escrowd Protocol v1
 
-Oct 6, 2026 · Frozen at protocol 7, tag `protocol-v1`
+Oct 6, 2026 · Frozen at protocol 8, tag `protocol-v1`
 
 This spec is for the authors of escrowd SDKs and reviewers. The schema is [`proto/escrow/v1/escrow.proto`](../proto/escrow/v1/escrow.proto), and its comments give each field's meaning. This page gives what the schema cannot: the sockets, the scope lifecycle, which call needs which credential, the status codes, the rules for compatibility, the exec socket's frames and the `escrow exec` command. The Python SDK (`sdk/python/`) implements all of it, and the conformance suite (`tests/conformance/`) checks it.
 
@@ -30,14 +30,14 @@ stateDiagram-v2
     Closed --> [*]: Decide commit, discard (COMMITTED, DISCARDED, CONFLICT)
     Closed --> Open: Decide return, or a conflict under conflict.verdict return
     Closed --> Held: Decide commit of a change set that needs reviewers (HELD)
-    Held --> Held: Review by a tier, tiers still pending
+    Held --> Held: Review by a reviewer, reviewers still pending
     Held --> [*]: last Review, or the opener's Decide discard
     Held --> Open: last Review returns
 ```
 
 - **Open.** The scope's view serves reads from its snapshot and keeps every write in its upper layer. Nothing reaches the project.
 - **Closed.** The daemon has stopped the scope's subprocesses and frozen it. `CloseScope` returns its change set. `CloseScope` on a closed scope returns the same change set again.
-- **Held.** A commit whose change set needs a tier above software (policy `review:`) waits for those reviewers. The holds survive a daemon restart. The opener can only withdraw the scope (`Decide` discard).
+- **Held.** A commit whose change set needs a tier above software (policy `review:`) waits for those reviewers, which the policy names (`reviewers:`, or the built-in `llm` and `human` through `tier:`). The holds survive a daemon restart. The opener can only withdraw the scope (`Decide` discard).
 - **Reopened.** A return reopens the scope with its changes, so the agent fixes them in the same scope. `Outcome.reopened` says so.
 - **Decided.** A committed or discarded scope is gone. Its decision stays in the daemon's history when the scope had a session or was held, for `AwaitDecision` and for reviewers.
 
@@ -62,12 +62,12 @@ Sessions order an agent's scopes. While a scope of a session is held with a wait
 | Call | Does | Errors |
 | --- | --- | --- |
 | `ListHeld` | The held scopes, oldest hold first | none |
-| `GetHeld` | A held scope: change set with writers and diff, its tiers' verdicts so far, its session's last 20 decisions | `NOT_FOUND`, `FAILED_PRECONDITION` |
-| `Review` | A tier's verdict; after the last pending tier, the scope is decided | `NOT_FOUND`, `FAILED_PRECONDITION`, `INVALID_ARGUMENT`, `PERMISSION_DENIED`, `ABORTED` |
+| `GetHeld` | A held scope: change set with writers and diff, its reviewers' verdicts so far, its session's last 20 decisions | `NOT_FOUND`, `FAILED_PRECONDITION` |
+| `Review` | A reviewer's verdict, named in `reviewer` (or by `tier`, for `llm` and `human`); after the last pending reviewer, the scope is decided | `NOT_FOUND`, `FAILED_PRECONDITION`, `INVALID_ARGUMENT`, `PERMISSION_DENIED`, `ABORTED` |
 
 - **Tokens.** `OpenScopeResponse.token` is the scope's capability. Only the opener gets it; the scope id alone, which a path reveals, is not enough. The daemon keeps its SHA-256. The unscoped scope has no token. At start, the daemon discards a named scope stored before protocol 6 (no token hash), with its changes.
 - **Deadlines.** `OpenScope` in a session reads the call's `grpc-timeout`. 100 ms before it, the call fails with `FAILED_PRECONDITION` and the held scope stays held; a client can also see its own `DEADLINE_EXCEEDED` first. With no deadline, the call waits for the verdict, or until the daemon shuts down (`UNAVAILABLE`). The Python SDK opens with none.
-- **Verdicts.** They only tighten: commit < return < discard. `Decide` cannot loosen the software tier's verdict (`ChangeSet.review`), and a reviewer cannot loosen an earlier tier's, unless the tier is human and `override` is set. The ledger records each override.
+- **Verdicts.** They only tighten: commit < return < discard. `Decide` cannot loosen the software tier's verdict (`ChangeSet.review`), and a reviewer cannot loosen an earlier reviewer's, unless the reviewer may override (the built-in `human`, or a declared reviewer with `can_override`) and `override` is set. The ledger records each override.
 - **Arguments in change sets.** `Process.args` holds each writer's whole command line. Command lines can carry secrets (`curl -H "Authorization: …"`). Reviewers get them in full; the ledger keeps the first 4 KiB.
 
 ## Status codes
@@ -77,9 +77,9 @@ The daemon fails a call with one of these codes. An SDK maps each one to the sam
 | Code | Meaning | Python | Retry? |
 | --- | --- | --- | --- |
 | `NOT_FOUND` | No scope with that id: never opened, or decided and dropped | `EscrowNotFoundError` | No |
-| `PERMISSION_DENIED` | A missing or wrong token; the opener's commit or return of a held scope; a looser verdict without a human override | `EscrowPermissionError` | No |
-| `FAILED_PRECONDITION` | The scope is not in the state the call needs (open, closed, held, this tier's turn); the daemon's mode does not serve the call; a session's next scope hit its deadline behind a held one | `EscrowStateError` | After the state changes |
-| `INVALID_ARGUMENT` | A request field is missing or out of range: verdict unset, tier not `llm` or `human` | `EscrowInvalidArgumentError` | No |
+| `PERMISSION_DENIED` | A missing or wrong token (a scope's, or a `ReviewRequest.token`); the opener's commit or return of a held scope; a looser verdict without an override; a verdict on the socket for a reviewer that answers only through its run | `EscrowPermissionError` | No |
+| `FAILED_PRECONDITION` | The scope is not in the state the call needs (open, closed, held, this reviewer's turn); the daemon's mode does not serve the call; a session's next scope hit its deadline behind a held one | `EscrowStateError` | After the state changes |
+| `INVALID_ARGUMENT` | A request field is missing or out of range: verdict unset; with no `reviewer`, a tier that is not `llm` or `human`; a `reviewer` that is not a valid name or that a given `tier` disagrees with | `EscrowInvalidArgumentError` | No |
 | `ABORTED` | `Commits::commit` failed and rolled back. Nothing reached the project; the scope stays closed | `EscrowAbortedError` | Yes: decide again |
 | `UNAVAILABLE` | No daemon on the socket, or it stopped during the call | `EscrowUnavailableError` | When a daemon runs |
 | `DEADLINE_EXCEEDED` | The client's deadline passed; a decision may still have run | `EscrowTimeoutError` | Read the state first |
@@ -92,7 +92,7 @@ The exec socket has no codes: it answers a request it cannot run with a `SpawnEv
 
 ## Versioning
 
-- **`PingResponse.protocol_version` is 7** for the whole of `escrow.v1`. A lower value is a daemon from before the freeze. A client can refuse it.
+- **`PingResponse.protocol_version` is 8** for the whole of `escrow.v1`. A lower value is a daemon from before the freeze. A client can refuse it.
 - **Additions only.** New fields, enum values, messages and calls keep v1. Field numbers and names, enum numbers, calls and their request and response types never change or go away.
 - **Breaking changes** go in a new package, `escrow.v2`, served beside v1 or instead of it. Its calls have new gRPC paths (`/escrow.v2.EscrowService/…`), so a v1 client gets `UNIMPLEMENTED`, never a silent misread.
 - **CI** runs `buf lint` (STANDARD rules) and `buf breaking --against '.git#tag=protocol-v1'` with buf's FILE rules, which also keep generated code compiling (`buf.yaml`).
@@ -104,7 +104,51 @@ A later daemon can send values a v1 client does not know. A client must not fail
 
 - **`OutcomeStatus`**: an unknown status is not decided yet, like `OUTCOME_STATUS_HELD`. A client that waits keeps following `AwaitDecision` until a status it knows as final: committed, discarded, returned or conflict. Phase 7 can add review states this way.
 - **Other enums** (`Tier`, `ChangeKind`, `ReadDecision`): keep the value and show it as unknown. The Python SDK names an unknown tier or change kind `"unknown"` and treats an unknown read decision as a denial.
+- **Reviewer names** are opaque strings: a client shows them as given. A name in `reviewers` it did not expect still reads as a reviewer not decided yet (pending). `tiers` lists only the built-in `llm` and `human`; a daemon older than protocol 8 sends no `reviewers`, and a client then falls back to `tiers`.
 - **Fields**: proto3 skips unknown fields.
+
+## Reviewer programs
+
+A reviewer declared in the policy with `run:` is a command reviewer: the daemon starts its program when the reviewer is the next one pending on a held scope, so no one answers for it on the review socket (`Review` naming it is `PERMISSION_DENIED`). The program runs outside the scope's lock; its answer is applied in a step of its own, and only if its run is still the scope's current one. A verdict that ends or skips the reviewer first (a withdrawal, a reviewer that may override answering out of turn, a final verdict) terminates the program, and whatever it answers is dropped.
+
+**Request.** One JSON object on stdin, in protobuf JSON with the `.proto` field names (64-bit integers as strings, defaults present):
+
+```text
+{
+  "contract": "escrow.review.v1",
+  "scope": {"id": "s7", "name": "…", "session": "…", "labels": {"k": "v"}},
+  "reviewer": "lint",
+  "attempt": 1,
+  "verdict_so_far": "commit" | "return" | "discard",
+  "reviews": [{"reviewer": "…", "verdict": "…", "reasons": ["…"]}],
+  "change_set": <ChangeSet, as CloseScope returned it>,
+  "session_history": [<Decided>, …]          // the session's last 20 decisions, oldest first
+}
+```
+
+**Answer.** One JSON object on stdout and exit status 0: `{"verdict": "commit" | "return" | "discard", "reasons": ["…"]?}`. Other keys are ignored. `pending` is for a reviewer with `delegate`; from any other reviewer it is a failure. The answer is the reviewer's verdict under the usual rules: it only tightens, except that a reviewer with `can_override` may loosen it.
+
+**Environment.** No shell. The program runs in its own process group with its environment cleared, then `PATH`, `HOME`, `LANG` and the variables the reviewer's `env:` names, when the daemon has them set. `run[0]` is the executable, resolved when the daemon starts; `argv[0]` is as written. A delegated run also gets `ESCROW_REVIEW_TOKEN` and `ESCROW_REVIEW_SOCKET`.
+
+**Files.** The working directory is `<state>/scopes/<id>/review/`. It holds `change_set.json` (the `change_set` of the request) and `diff.patch` (its diff) until the hold ends. Stdin is written while the program runs, so a program that never reads it is not stalled; stderr goes to the daemon's stderr, line by line, as `escrowd: reviewer: <name> <scope>: <line>`.
+
+**Limits.** Stdout is read up to 1 MiB. At the reviewer's `timeout` (counted from the start of the program) the process group gets SIGTERM, and SIGKILL 5 s later. At most `reviewers_parallel` programs run at once; the others wait their turn, and the timeout does not count that wait.
+
+**Failure.** A run that fails gives the reviewer's `on_failure` verdict (`commit`, `return` or `discard`; default `discard`), never looser than the verdict so far, with the reason `failed: <cause>` (shown as `<reviewer>: failed: <cause>`). The cause is one of:
+
+| Cause | When |
+| --- | --- |
+| `cannot start: <error>` | The program could not be started |
+| `timeout after <duration>` | It ran past `timeout` |
+| `exit <n>` | It exited with status `n` other than 0 |
+| `signal <n>` | A signal ended it |
+| `answer over 1 MiB` | Its stdout passed the limit |
+| `bad answer: <detail>` | Its stdout was not an answer |
+| `pending from a reviewer without delegate` | It answered `pending` without `delegate` |
+
+**Ledger.** A run's verdict is `op=review-<name> path= pid=<pid> [cause=<cause>] decision=<verdict>`, like any reviewer's verdict with the program's pid (and, for a failure, the cause); an override is ledgered before it. The scope's one `op=decide` follows the final verdict.
+
+**Attempts.** `attempt` is 1 for the first run of a reviewer on a scope, and one more for each run started again. A daemon that stops while a run is going applies nothing from it.
 
 ## Exec socket
 

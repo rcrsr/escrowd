@@ -260,7 +260,8 @@ def test_daemon_check_accepts_valid_policy_and_creates_nothing(escrow_bin, runti
     state_home = runtime_dir / "state-home"
     env = {**os.environ, "XDG_STATE_HOME": str(state_home), "XDG_RUNTIME_DIR": str(runtime_dir)}
     r = _check(escrow_bin, runtime_dir, "version: 1\nread:\n  deny: ['**/.env']\n", env)
-    assert r.returncode == 0 and r.stdout == "" and r.stderr == ""
+    assert r.returncode == 0 and r.stderr == ""
+    assert r.stdout == f"protected: {runtime_dir / 'check-policy.yaml'}\n"  # the policy file only
     assert not state_home.exists()
     assert not (runtime_dir / "escrowd").exists()
 

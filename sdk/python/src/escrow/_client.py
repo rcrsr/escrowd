@@ -7,6 +7,7 @@ from collections.abc import Iterator, MutableMapping
 
 from escrow import lowlevel
 from escrow._model import (
+    NO_TIER,
     ChangeSet,
     DaemonInfo,
     HeldDetail,
@@ -15,6 +16,7 @@ from escrow._model import (
     Result,
     Tier,
     Verdict,
+    reviewer_name,
     tier_value,
     verdict_value,
 )
@@ -139,6 +141,33 @@ class Reviewer:
         `tier` or `verdict` raises ValueError."""
         t, v = tier_value(tier), verdict_value(verdict)
         return Result.from_proto(self._low.review(scope_id, t, v, reasons, override, timeout))
+
+    def review_as(
+        self,
+        scope_id: str,
+        reviewer: str,
+        verdict: Verdict,
+        *,
+        reasons: list[str] | None = None,
+        override: bool = False,
+        token: str | None = None,
+        timeout: float = 60.0,
+    ) -> Result:
+        """`reviewer`'s verdict by name (a declared reviewer, or "llm" or "human"); `token`
+        is a delegated reviewer's one-time token. An invalid `reviewer` or an unknown
+        `verdict` raises ValueError."""
+        name, v = reviewer_name(reviewer), verdict_value(verdict)
+        out = self._low.review(
+            scope_id,
+            NO_TIER,  # the name decides
+            v,
+            reasons,
+            override,
+            timeout,
+            reviewer=name,
+            token=token or "",
+        )
+        return Result.from_proto(out)
 
     def close(self) -> None:
         self._low.close()

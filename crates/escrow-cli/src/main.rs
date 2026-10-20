@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use escrowd::exec::TOKEN_ENV;
+use escrowd::rpc::REVIEW_SOCKET_ENV;
 use escrowd::views::Unscoped;
 
 use client::{OWN_FAILURE, fail};
@@ -81,9 +82,12 @@ enum Command {
         /// Scope id (`unscoped` for the implicit default scope).
         scope: String,
     },
-    /// Review held scopes: list them, show one, give a tier's verdict (the human tier
-    /// by default). Talks to the daemon's review socket (`<socket>.review`).
+    /// Review held scopes: list them, show one, give a reviewer's verdict (the human
+    /// tier by default). Talks to the daemon's review socket (`<socket>.review`).
     Review {
+        /// The review socket itself; wins over --socket and --project.
+        #[arg(long, env = REVIEW_SOCKET_ENV)]
+        review_socket: Option<PathBuf>,
         /// Daemon socket [default: the socket of `escrow run --project`].
         #[arg(long, env = "ESCROW_SOCKET")]
         socket: Option<PathBuf>,
@@ -144,10 +148,11 @@ async fn main() {
             exit_with("diff", cmd::diff::run(socket, project, scope).await.map(|()| 0));
         }
         Command::Review {
+            review_socket,
             socket,
             project,
             action,
-        } => exit_with("review", cmd::review::run(socket, project, action).await),
+        } => exit_with("review", cmd::review::run(review_socket, socket, project, action).await),
         Command::Log { project, state, scope } => exit_with("log", cmd::log::run(project, state, scope).map(|()| 0)),
     }
 }

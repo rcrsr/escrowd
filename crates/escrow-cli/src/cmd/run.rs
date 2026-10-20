@@ -17,7 +17,7 @@ use escrowd::views::{UNSCOPED, Unscoped, Views};
 use tokio::signal::unix::{SignalKind, signal};
 
 use super::daemon::DaemonArgs;
-use crate::client::{NOT_COMMITTED, channel, tiers};
+use crate::client::{NOT_COMMITTED, channel, reviewer_names};
 
 #[derive(Clone, Copy, ValueEnum)]
 pub(crate) enum OnExit {
@@ -84,7 +84,7 @@ async fn settle_unscoped(socket: &Path, on_exit: OnExit) -> anyhow::Result<(Stri
         // Unknown statuses read as held (protocol.md, versioning).
         _ => format!(
             "{n} unscoped change(s) held for review ({}): run `escrow daemon` on the project and decide with `escrow review`",
-            tiers(&out.tiers)
+            reviewer_names(&out.reviewers, &out.tiers)
         ),
     };
     Ok((msg, committed))
@@ -192,7 +192,7 @@ async fn drive(d: Drive) -> anyhow::Result<i32> {
         anyhow::bail!(
             "the last run's unscoped changes are held for {} review: decide them first \
              (`escrow daemon --project {}` with the same --state, then `escrow review`)",
-            hold.tiers[0].as_str(),
+            hold.reviewers[0],
             project.display()
         );
     }

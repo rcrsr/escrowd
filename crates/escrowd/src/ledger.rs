@@ -66,6 +66,18 @@ impl Ledger {
         ));
     }
 
+    /// A reviewer's verdict: `op=review-<reviewer>`, with the pid of the reviewer program
+    /// that gave it and the cause of a failed or refused verdict, when there are any.
+    pub fn append_review(&self, scope: &str, reviewer: &str, pid: Option<u32>, cause: Option<&str>, decision: &str) {
+        let pid = pid.map(|p| format!(" pid={p}")).unwrap_or_default();
+        let cause = cause
+            .map(|c| format!(" cause={}", escape_bytes(c.as_bytes(), b"=%")))
+            .unwrap_or_default();
+        self.write(&format!(
+            "scope={scope} op=review-{reviewer} path={pid}{cause} decision={decision}"
+        ));
+    }
+
     /// The `proc` line of `p`.
     pub fn proc(&self, p: &Proc) {
         let i = &p.info;
@@ -112,5 +124,23 @@ mod tests {
     fn escapes_separators_and_non_ascii() {
         assert_eq!(escape(Path::new("a b=c%d/é")), "a%20b%3Dc%25d/%C3%A9");
         assert_eq!(escape(Path::new("plain/path.txt")), "plain/path.txt");
+    }
+
+    #[test]
+    fn a_review_line_carries_the_pid_and_cause_only_when_given() {
+        let dir = crate::db::temp_dir("ledger-review");
+        let ledger = Ledger::open(&dir.join("l.log")).unwrap();
+        ledger.append_review("s1", "lint", None, None, "commit");
+        ledger.append_review("s1", "lint", Some(7), Some("exit 3 = bad"), "return");
+        ledger.append("s1", "review-lint", Path::new(""), None, "commit");
+        let log = std::fs::read_to_string(dir.join("l.log")).unwrap();
+        let lines: Vec<&str> = log.lines().map(|l| l.split_once(' ').unwrap().1).collect();
+        assert_eq!(lines[0], "scope=s1 op=review-lint path= decision=commit");
+        assert_eq!(lines[0], lines[2]);
+        assert_eq!(
+            lines[1],
+            "scope=s1 op=review-lint path= pid=7 cause=exit%203%20%3D%20bad decision=return"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

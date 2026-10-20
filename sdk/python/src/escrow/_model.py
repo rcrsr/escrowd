@@ -4,6 +4,7 @@ protocol code."""
 
 from __future__ import annotations
 
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, Literal, TypeVar
@@ -47,6 +48,19 @@ def verdict_value(verdict: str) -> pb.Verdict:
 def tier_value(tier: str) -> pb.Tier:
     """The protocol's tier for `tier`; ValueError for any other string."""
     return _choice("tier", tier, _TIER_VALUES)
+
+
+# The tier of a review request that names its reviewer.
+NO_TIER: pb.Tier = pb.TIER_UNSPECIFIED
+_REVIEWER_NAME = re.compile(r"[a-z][a-z0-9-]*")
+
+
+def reviewer_name(name: str) -> str:
+    """`name` when it is a valid reviewer name (lower case letters, digits and `-`, the
+    first a letter); ValueError for any other string."""
+    if not isinstance(name, str) or not _REVIEWER_NAME.fullmatch(name):
+        raise ValueError(f"reviewer must match [a-z][a-z0-9-]* (got {name!r})")
+    return name
 
 
 def _verdict(v: int) -> Verdict | Unknown:
@@ -140,6 +154,9 @@ class Review:
     tiers: list[Tier | Unknown] = field(default_factory=list)
     # A review rule requires the agent to wait for those tiers.
     wait_required: bool = False
+    # Every reviewer the change set needs, in review order (the policy's declared ones,
+    # then "llm" and "human"); empty from a daemon older than protocol 8.
+    reviewers: list[str] = field(default_factory=list)
 
     @classmethod
     def from_proto(cls, r: pb.Review) -> Review:
@@ -148,6 +165,7 @@ class Review:
             reasons=list(r.reasons),
             tiers=_tiers(r.tiers),
             wait_required=r.wait_required,
+            reviewers=list(r.reviewers),
         )
 
 
@@ -243,6 +261,8 @@ class Result:
     reopened: bool = False
     tiers: list[Tier | Unknown] = field(default_factory=list)
     wait: bool = False
+    # Held: the reviewers still to review, in order (empty from a daemon older than protocol 8).
+    reviewers: list[str] = field(default_factory=list)
 
     @classmethod
     def from_proto(cls, o: pb.Outcome) -> Result:
@@ -254,6 +274,7 @@ class Result:
             o.reopened,
             _tiers(o.tiers),
             o.wait,
+            list(o.reviewers),
         )
 
 
@@ -263,10 +284,14 @@ class TierReview:
     verdict: Verdict | Unknown
     reasons: list[str]
     override: bool = False
+    # The reviewer's name: the daemon's, else the tier's name (a daemon older than
+    # protocol 8 names none).
+    reviewer: str = ""
 
     @classmethod
     def from_proto(cls, r: pb.TierReview) -> TierReview:
-        return cls(_TIERS.get(r.tier, "unknown"), _verdict(r.verdict), list(r.reasons), r.override)
+        tier = _TIERS.get(r.tier, "unknown")
+        return cls(tier, _verdict(r.verdict), list(r.reasons), r.override, r.reviewer or tier)
 
 
 @dataclass(frozen=True)
@@ -282,6 +307,8 @@ class HeldScope:
     verdict: Verdict | Unknown  # the strictest so far; "commit" before any review
     reviews: list[TierReview]
     held_at_ms: int
+    # Still to review, in order; empty from a daemon older than protocol 8 (read `tiers`).
+    reviewers: list[str] = field(default_factory=list)
 
     @classmethod
     def from_proto(cls, h: pb.HeldScope) -> HeldScope:
@@ -295,6 +322,7 @@ class HeldScope:
             _verdict(h.verdict),
             [TierReview.from_proto(r) for r in h.reviews],
             h.held_at_ms,
+            list(h.reviewers),
         )
 
 
@@ -352,6 +380,8 @@ class Outcome:
     # Status held: the session's next scope waits for the verdict (a rule requires it,
     # or the scope asked to wait).
     wait: bool = False
+    # Status held: the reviewers still to review, in order.
+    reviewers: list[str] = field(default_factory=list)
 
     @classmethod
     def from_result(
@@ -367,6 +397,7 @@ class Outcome:
             result.reopened,
             list(result.tiers),
             result.wait,
+            list(result.reviewers),
         )
 
     @property

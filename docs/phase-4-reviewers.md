@@ -2,7 +2,7 @@
 
 Oct 6, 2026 · Andre Bremer · Draft
 
-**Status, Oct 6, 2026: drafted**; no sub-phase started. Phase 3 is complete ([plan](phase-3-held-decisions.md), protocol 7 frozen in [PR #34](https://github.com/rcrsr/escrowd/pull/34)). Added Oct 6, 2026, ahead of the TypeScript SDK, which moved to phase 5 ([plan](phase-5-typescript-sdk.md)); every later phase moved down one.
+**Status, Oct 19, 2026: 4.1 to 4.5 built, 4.6 pending.** Review files live in the state folder at `scopes/<id>/review/`, not `reviews/<scope>/` (state is per scope, `ECRD.4.2`). Drafted Oct 6, 2026. Phase 3 is complete ([plan](phase-3-held-decisions.md), protocol 7 frozen in [PR #34](https://github.com/rcrsr/escrowd/pull/34)). Added Oct 6, 2026, ahead of the TypeScript SDK, which moved to phase 5 ([plan](phase-5-typescript-sdk.md)); every later phase moved down one.
 
 Phase 3 holds a change set for fixed tiers, `llm` and `human`, and anyone who can open the review socket gives any tier's verdict. Nothing in escrowd runs a review: a held scope waits until some process connects and answers. Phase 4 makes reviewers part of the policy. Each reviewer has a name and, optionally, a command: the daemon runs the command on a held change set and applies its verdict as that reviewer's, or the command hands the review off (a chat message, a pull request check) and the verdict comes back later with a single-use token. `review:` rules name the reviewers a path needs. The tiers stay as two built-in reviewers with no command, so phase 3 policies keep working.
 
@@ -134,10 +134,10 @@ All known limits are in [LIMITATIONS.md](../LIMITATIONS.md). Out of phase 4, by 
 
 ## Open questions
 
-- [ ] Protected, read-only policy (agents can read the rules) or hidden (ENOENT, as the state folder)? Proposed: read-only.
-- [ ] A discard that ends the review early: also stop when no later reviewer could loosen it, or always run every reviewer so the ledger has each one's view? Proposed: stop early.
-- [ ] Should reviewer commands get a read-only view of the scope's staged tree (to run a linter on whole files), or only the change set and diff? Proposed: a read-only view path in the request, mounted outside every sandbox.
-- [ ] `reviewers_parallel` default: 4, or the number of CPUs?
+- [x] Protected, read-only policy (agents can read the rules) or hidden (ENOENT, as the state folder)? Read-only. Decided Oct 19, 2026.
+- [x] A discard that ends the review early: also stop when no later reviewer could loosen it, or always run every reviewer so the ledger has each one's view? Stop early. Decided Oct 19, 2026.
+- [ ] Should reviewer commands get a read-only view of the scope's staged tree (to run a linter on whole files), or only the change set and diff? Proposed: a read-only view path in the request, mounted outside every sandbox. Deferred Oct 19, 2026 to a later change.
+- [x] `reviewers_parallel` default: 4, or the number of CPUs? 4. Decided Oct 19, 2026.
 - [x] Phase slot: phase 4, ahead of the TypeScript SDK, so the SDK mirrors the reviewer model. Decided Oct 6, 2026.
 - [x] Reviews across a restart: hold the scope until every reviewer has settled; command reviewers run again, delegated ones keep their token. Decided Oct 6, 2026.
 - [x] The policy and reviewer programs: protected from every sandbox, and `passthrough` refused when they lie in the project. Decided Oct 6, 2026 (refusing any policy inside the project was the alternative).

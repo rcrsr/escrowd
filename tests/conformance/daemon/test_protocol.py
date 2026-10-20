@@ -70,4 +70,4 @@ def test_the_spec_names_every_call_and_the_frozen_version():
     typed = [lowlevel.EscrowRpcError, *lowlevel.EscrowRpcError.__subclasses__()]
     assert len(typed) == 9
     assert [t.__name__ for t in typed if f"`{t.__name__}`" not in spec] == []
-    assert "protocol_version` is 7" in spec
+    assert "protocol_version` is 8" in spec

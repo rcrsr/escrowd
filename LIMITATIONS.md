@@ -2,7 +2,7 @@
 
 Every known limit of escrowd as built, in one place. Each entry says where it is tracked. Update this file when a limit is found or lifted; the plans keep the detail.
 
-Status as of Oct 6, 2026: phase 3 complete (PR #34).
+Status as of Oct 19, 2026: phase 3 complete (PR #34); phase 4 sub-phases 4.1 to 4.5 built, 4.6 pending.
 
 ## Capture
 
@@ -88,8 +88,8 @@ Status as of Oct 6, 2026: phase 3 complete (PR #34).
 | A held unscoped scope blocks the next `escrow run` (implicit or deny) until its reviewers decide it, which needs `escrow daemon` on the project: `escrow run` does not wait for a verdict. | Found Oct 6, 2026 (punchlist P0-1). |
 | A panic in the daemon aborts it (`panic = "abort"`): the mount goes stale (ENOTCONN) until a restart, which rolls back an unfinished commit from the journal. | By design, Oct 6, 2026 (punchlist P1-5): an unwinding FUSE thread would leave its request unanswered on a live mount. |
 | At shutdown, calls still running after 10 s are abandoned so the daemon can unmount; a second SIGTERM or SIGINT exits at once and leaves the mount stale (ENOTCONN). | By design, Oct 6, 2026 (punchlist P0-4). |
-| No LLM reviewer exists yet: an LLM-tier hold waits for a stand-in on the review socket, or for a human, whose verdict also stands for a pending LLM tier. | Phase 4 (a reviewer program declared in the policy); phase 8 (LLM auditor). |
-| Anyone who can open the review socket (the daemon's user, mode 0600) reviews as any tier: the socket does not tell an LLM from a human, and `--tier` is the caller's word. | By design, decided Oct 5, 2026: the file mode is the credential; phase 4's reviewers get their own credentials (a reviewer the daemon runs, or a single-use token for a delegated one). |
+| No LLM reviewer ships yet: a reviewer is a program the policy declares (`reviewers:` with `run:`), or a stand-in on the review socket; the `llm` tier waits for one of them, or for a human, whose verdict also stands for it. | Phase 8 (LLM auditor); the program reviewers landed in phase 4 (Oct 19, 2026).
+| Anyone who can open the review socket (the daemon's user, mode 0600) reviews as any socket reviewer (`llm`, `human`, a declared reviewer with no `run:`): the socket does not tell an LLM from a human, and `--tier` and `--as` are the caller's word. A reviewer with `run:` answers only through its run, and a delegate only with the run's single-use token. | By design, decided Oct 5, 2026: the file mode is the credential; phase 4 (Oct 19, 2026) gave command and delegated reviewers their own.
 | The history keeps the newest 100 decisions per session (and 100 of scopes without one); a reviewer sees the last 20. `AwaitDecision` on a scope whose decision dropped out fails with `NOT_FOUND`. | By design (3.4). |
 | A scope's history entry holds its diff (up to `diff.max_bytes`), so `history.sqlite` grows with the diffs of up to 100 decisions per session. | By design (3.4); decisions of scopes without a session that were never held are not kept. |
 | A commit whose rollback failed too returns `INTERNAL`, not `ABORTED`; the base may be partly applied until the next daemon start rolls it back from the journal. | By design (P1 structure refactor): only a clean rollback is safe to decide again. |
@@ -97,7 +97,14 @@ Status as of Oct 6, 2026: phase 3 complete (PR #34).
 | While the unscoped scope (`implicit` mode) is held, IO outside scopes fails as on any closed scope, until its verdict. | By design (3.2): `SettleUnscoped` meets the same review rules, decided Oct 5, 2026. |
 | A session's next `OpenScope` waits behind a held scope only up to the client's deadline (`grpc-timeout`); a client without one waits until the verdict. | By design (3.2). |
 | The Python SDK waits for a held verdict with no deadline: `escrow.scope(..., wait=True)` and a session's next open block until reviewers decide. `s.wait_decided(timeout=…)` and `await s.decided(timeout=…)` take one. | By design (3.5): the agent's turn is the reviewers' to end. |
-| Protocol v1 has no feature negotiation: `protocol_version` stays 7, so a client finds a call a daemon lacks by `UNIMPLEMENTED` and a field it lacks by its default value. | By design (3.6, `docs/protocol.md`): v1 only adds; a break is `escrow.v2`. |
+| Protocol v1 has no feature negotiation: `protocol_version` is 8 (phase 4 added reviewer names and tokens), so a client finds a call a daemon lacks by `UNIMPLEMENTED` and a field it lacks by its default value. | By design (3.6, `docs/protocol.md`): v1 only adds; a break is `escrow.v2`. |
+| Reviews are at least once: a daemon killed while a verdict is being applied, or between a run's answer and its record, runs the same reviewer again at the next start (attempt one higher, a delegate gets a new token). A verdict is applied, and a scope decided, only once. | By design, Oct 19, 2026 (4.5): `Decisions::resume` picks up the first pending reviewer of every held scope. |
+| A reviewer program running when the daemon is killed (SIGKILL) is orphaned: it may finish after the restart, and its answer is dropped (the new run's counts). A delegate's old token stays valid only if its run had answered `pending`. | By design, Oct 19, 2026 (4.5). |
+| Reviewers get the change set and its diff (files in their working directory and on stdin), not a view of the project with the change set staged. | Deferred Oct 19, 2026 to a later change (phase 4 open question 3). |
+| `reviewers_parallel` (default 4) caps the programs running at once across all scopes; a run waits for a slot, and its timeout counts from its start, not from the wait. | By design, Oct 19, 2026 (4.3). |
+| What a reviewer reads besides its program is not protected: a script's interpreter, its libraries and its config are ordinary files a scope can change. | By design, Oct 19, 2026 (4.2): protection covers the policy file and each reviewer's `run[0]`. |
+| A mode change on a folder above a protected path is allowed; a committed one that hides the policy fails the next start, or the run (`on_failure`). | By design, Oct 19, 2026 (4.2): only renames, unlinks and rmdirs of the folder are refused. |
+| If applying a command reviewer's final verdict fails (the commit step errors, or the disk is full), the daemon logs it and the scope stays held with that verdict unapplied until the next daemon start; the same holds for a failure to set up the next reviewer's run. | By design, Oct 19, 2026 (4.3): the run's result is not retried while the daemon runs. |
 | A `deny` rule lets lookups pass: a denied file's name, size and times are visible to `stat`, its contents and listings are not. | By design, decided Oct 5, 2026 (listed paths inside a denied directory must stay reachable). |
 | A scope's view of a root the policy stops serving is dropped (with its changes) at the next daemon start. | By design (2.4). |
 | `escrow exec` passes argv, cwd and environment as UTF-8 (lossy). | Carried since 1.5. |
