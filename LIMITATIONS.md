@@ -19,6 +19,7 @@ Status as of Oct 6, 2026: phase 3 complete (PR #34).
 | `passthrough` paths (package caches) are shared and unescrowed: one ledger line per bind at sandbox start, the IO itself unlogged. | By design (2.4, #11). |
 | In `passthrough` unscoped mode, the app's own `$HOME` and `/tmp` stay empty tmpfs even when the policy serves them; its scopes get their views. | By design, decided Oct 5, 2026: no unscoped scope exists to serve them. |
 | The SDK rewrites absolute paths under a served root (`os.path.expanduser` gives one); a literal `~/x` passed to `open` is a relative path, as in Python. | By design. |
+| `python -` (a script on stdin) is not re-runnable: `escrow.init()` re-executes the interpreter with the same arguments, and stdin is already consumed. | By design; run a script file or use `-c`. |
 | No network capture; `--unshare-net` blocks the network. | Phase 10. |
 
 ## Attribution

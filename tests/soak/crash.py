@@ -22,15 +22,18 @@ import threading
 import time
 from pathlib import Path
 
+from escrow_testkit import (
+    Daemon,
+    fingerprint,
+    isolate_git_env,
+    leftovers,
+    make_runtime_dir,
+    tree,
+    umount,
+)
+
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "tests" / "conformance"))
-
-from conftest import Daemon, make_runtime_dir  # noqa: E402
-from scenario import fingerprint, tree  # noqa: E402
-
-import escrow  # noqa: E402
-
-os.environ |= {"GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_SYSTEM": "/dev/null"}
+isolate_git_env()
 
 
 def seed(root: Path, files: int) -> None:
@@ -70,21 +73,6 @@ def mutate(root: Path, files: int) -> None:
     os.symlink("new/n00/0.txt", root / "link")
 
 
-def spawn_daemon(d: Daemon) -> subprocess.Popen:
-    """Start the daemon on `d`'s directories without waiting (to kill it mid-recovery)."""
-    args = [d.bin, "daemon", "--socket", d.socket, "--project", d.project]
-    args += ["--state", d.state, "--mount", d.mount, "--policy", d.policy]
-    return subprocess.Popen(args, stderr=subprocess.DEVNULL)
-
-
-def umount(d: Daemon) -> None:
-    subprocess.run(["fusermount3", "-u", "-z", d.mount], capture_output=True)
-
-
-def leftovers(root: Path) -> list[str]:
-    return [n for _, dns, fns in os.walk(root) for n in dns + fns if n.startswith(".escrow-")]
-
-
 def one(bin: Path, files: int, kill_after: float | None, double: bool) -> tuple[str, float, Path]:
     work = make_runtime_dir()
     d = Daemon(bin, work)
@@ -94,7 +82,7 @@ def one(bin: Path, files: int, kill_after: float | None, double: bool) -> tuple[
     mutate(ref, files)
     want = tree(ref)
     before, before_fp = tree(d.project), fingerprint(d.project)
-    with escrow.connect(str(d.socket)) as c:
+    with d.client() as c:
         sid = c.open_scope().scope_id
         mutate(d.mount / sid, files)
         c.close_scope(sid)
@@ -103,7 +91,7 @@ def one(bin: Path, files: int, kill_after: float | None, double: bool) -> tuple[
     def commit():
         start = time.monotonic()
         try:
-            with escrow.connect(str(d.socket)) as c:
+            with d.client() as c:
                 result["status"] = c.commit(sid, timeout=120).status
         except Exception as e:  # the kill
             result["error"] = e
@@ -113,18 +101,15 @@ def one(bin: Path, files: int, kill_after: float | None, double: bool) -> tuple[
     t.start()
     if kill_after is not None:
         time.sleep(kill_after)
-        d.proc.send_signal(signal.SIGKILL)
-        d.proc.wait()
-        d.log.close()
-        umount(d)
+        d.kill()
         if double:  # kill the restart while it recovers
-            p = spawn_daemon(d)
+            p = d.spawn()
             time.sleep(random.uniform(0, 0.05))
             p.send_signal(signal.SIGKILL)
             p.wait()
             umount(d)
         t.join()
-        d = Daemon(bin, work)  # recovery
+        d.restart()  # recovery
     else:
         t.join()
     state = "fail"

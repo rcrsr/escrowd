@@ -12,7 +12,12 @@ wheels = [
 ]
 
 [[package]]
-name = "escrow"
+name = "escrow-testkit"
+version = "0.1.0"
+source = { editable = "../../tests/support" }
+
+[[package]]
+name = "escrowd"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
@@ -22,6 +27,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "escrow-testkit" },
     { name = "grpcio-tools" },
     { name = "pytest" },
     { name = "ruff" },
@@ -30,12 +36,13 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "grpcio", specifier = "==1.84.0" },
-    { name = "protobuf", specifier = "==7.36.2" },
+    { name = "grpcio", specifier = ">=1.84,<2" },
+    { name = "protobuf", specifier = ">=7.36.2,<8" },
 ]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "escrow-testkit", editable = "../../tests/support" },
     { name = "grpcio-tools", specifier = "==1.84.0" },
     { name = "pytest", specifier = "==9.1.1" },
     { name = "ruff", specifier = "==0.16.10" },

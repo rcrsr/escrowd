@@ -63,6 +63,8 @@ jobs:
               - 'crates/escrowd/src/snapshot.rs'
               - 'crates/escrowd/src/fault.rs'
               - 'tests/soak/**'
+              - 'tests/support/**'
+              - 'tests/fixtures/**'
             conformance:
               - 'crates/**'
               - 'proto/**'
@@ -190,6 +192,11 @@ jobs:
           uv run --project sdk/python --frozen ruff format --check
           uv run --project sdk/python --frozen ty check --project sdk/python
 
+      - name: Wheel ships py.typed
+        run: |
+          uv build --project sdk/python --wheel --out-dir dist
+          python -m zipfile -l dist/*.whl | grep -q escrow/py.typed
+
       - name: Python stubs match proto/
         run: sdk/python/gen.sh && git diff --exit-code sdk/python/src
 
@@ -212,6 +219,7 @@ jobs:
           sparse-checkout: |
             crates
             sdk
+            tests/support
             .github
             Cargo.toml
             Cargo.lock

@@ -84,9 +84,9 @@ sudo dnf install fuse3 bubblewrap     # Fedora
 3. **Python SDK (optional):** install it from the repository.
 
    ```bash
-   uv add "escrow @ git+https://github.com/rcrsr/escrowd#subdirectory=sdk/python"
+   uv add "escrowd @ git+https://github.com/rcrsr/escrowd#subdirectory=sdk/python"
    # or
-   pip install "escrow @ git+https://github.com/rcrsr/escrowd#subdirectory=sdk/python"
+   pip install "escrowd @ git+https://github.com/rcrsr/escrowd#subdirectory=sdk/python"
    ```
 
    The SDK runs the `escrow` binary. It finds it on `PATH`, or at the path in `ESCROW_EXE`.
@@ -157,15 +157,15 @@ print(s.outcome.status, s.outcome.paths)  # committed ['notes.md']
 print(s.outcome.diff)
 ```
 
-Run it with an absolute path to the script:
+Run it as usual:
 
 ```bash
-python "$PWD/agent.py"
+python agent.py
 ```
 
 What happens:
 
-1. `escrow.init()` re-runs the script under `escrow run`, in the sandbox. The sandbox starts in the project folder, so the script needs an absolute path, and project paths in the script should be absolute too.
+1. `escrow.init()` re-runs the script under `escrow run`, in the sandbox. The script path and the project path may be relative: `init()` resolves them against the directory you ran it from, and puts the script back in that directory when it is visible in the sandbox (the project, the script's own folder and its parents are). Other relative paths in the script follow that directory.
 2. Inside the `with` block, file calls (`open`, `pathlib`, `os`, `shutil`) and subprocesses (`subprocess`, `os.system`, `os.posix_spawn`) write into the scope.
 3. When the block exits, `check` receives the change set: each change's kind, path and writing process, plus a diff in git format.
 4. Its decision is applied all or nothing. `s.outcome` holds the result.
@@ -254,7 +254,7 @@ escrow review --project demo discard s2
 
 By default, `escrow.scope()` waits for the verdict. Pass `wait=False` to continue: `s.outcome.status` is then `"held"`, and `s.wait_decided()` or `await s.decided()` returns the verdict later. Scopes that share a `session=` open one at a time while one of them is held with a wait.
 
-The review socket (`<socket>.review`) has file mode 0600: anyone who can open it can review as any tier. No LLM reviewer ships yet; connect your own with `escrow.connect_reviewer()`.
+The review socket (`<socket>.review`) has file mode 0600: anyone who can open it can review as any tier. No LLM reviewer ships yet; connect your own with `escrow.connect_reviewer()`, whose `review(scope_id, tier, verdict, reasons=None, override=False)` takes a tier (`"software"`, `"llm"` or `"human"`) and a verdict (`"commit"`, `"discard"` or `"return"`) as strings. The protobuf-typed clients are in `escrow.lowlevel`.
 
 If `escrow run` exits while its unscoped changes are held, the next `escrow run` on the project refuses to start until they are decided. Start a daemon on the project and decide them, then stop the daemon:
 

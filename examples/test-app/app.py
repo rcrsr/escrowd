@@ -1,13 +1,14 @@
 """The phase 1 test app: each exit test's IO with ordinary Python file and subprocess calls.
 
-    python app.py PROJECT MODE POLICY CHECK
+    python app.py PROJECT MODE POLICY CHECK SCENARIO
 
 `escrow.init()` re-executes the app under `escrow run` with PROJECT in the unscoped MODE
-(passthrough, implicit or deny) and the policy file POLICY, then runs CHECK. The app
-prints one JSON object: what it saw, each scope's outcome and, under "scopes", the path
-prefixes each scope id may touch. Each check keeps a scope's IO under its own prefix and
-writes content tagged with it, so the suite can flag any ledger entry that names a scope
-for an operation it did not perform.
+(passthrough, implicit or deny) and the policy file POLICY, then runs CHECK. SCENARIO is a
+JSON file whose `mutate` ops (`tests/fixtures/scenarios/app.json`) the checks replay with
+plain file calls. The app prints one JSON object: what it saw, each scope's outcome and,
+under "scopes", the path prefixes each scope id may touch. Each check keeps a scope's IO
+under its own prefix and writes content tagged with it, so the suite can flag any ledger
+entry that names a scope for an operation it did not perform.
 """
 
 import asyncio
@@ -19,7 +20,8 @@ from pathlib import Path
 
 import escrow
 
-P = Path()  # the project, from argv; the suite sets it to replay `mutate` natively
+P = Path()  # the project, from argv
+SCENARIO: dict = {}  # the scenario file, from argv
 out: dict = {"scopes": {"unscoped": []}}
 
 
@@ -37,17 +39,36 @@ def write(rel: str, tag: str) -> None:
     (P / rel).write_text(f"{tag}:{rel}\n")
 
 
+def fill(s: str, d: str, path: str = "") -> str:
+    return s.replace("{dir}", d).replace("{path}", path)
+
+
+def apply(ops: list[dict], d: str) -> None:
+    """Run scenario ops in order under the project; `{dir}` is `d`, `{path}` the op's path."""
+    for op in ops:
+        kind = op["op"]
+        match kind:
+            case "mkdir":
+                (P / fill(op["path"], d)).mkdir(parents=True, exist_ok=True)
+            case "write":
+                path = fill(op["path"], d)
+                (P / path).write_text(fill(op["text"], d, path))
+            case "rename":
+                os.rename(P / fill(op["from"], d), P / fill(op["to"], d))
+            case "remove":
+                os.remove(P / fill(op["path"], d))
+            case "chmod":
+                os.chmod(P / fill(op["path"], d), int(op["mode"], 8))
+            case "symlink":
+                os.symlink(fill(op["target"], d), P / fill(op["path"], d))
+            case _:
+                raise ValueError(f"unknown op {kind!r}")
+
+
 def mutate(d: str) -> None:
-    """A write, a create, a rename, a delete, a chmod, a symlink swap and a new tree."""
-    write(f"{d}/edit.txt", d)
-    write(f"{d}/new.txt", d)
-    os.rename(P / d / "old.txt", P / d / "renamed.txt")
-    os.remove(P / d / "gone.txt")
-    os.chmod(P / d / "mode.txt", 0o600)
-    os.remove(P / d / "link")
-    os.symlink("edit.txt", P / d / "link")
-    os.makedirs(P / d / "sub" / "deep")
-    write(f"{d}/sub/deep/f.txt", d)
+    """The scenario's `mutate` ops: a write, a create, a rename, a delete, a chmod, a
+    symlink swap and a new tree."""
+    apply(SCENARIO["mutate"], d)
 
 
 # ---- exit tests ----
@@ -192,8 +213,8 @@ def held() -> None:
         try:
             c.commit(s.id, token=s._scope_token)
             out["self_commit"] = "committed"
-        except Exception as e:  # grpc.RpcError
-            out["self_commit"] = e.code().name  # ty: ignore[unresolved-attribute]
+        except escrow.EscrowRpcError as e:
+            out["self_commit"] = e.code().name
     # A required wait: this open waits for the verdict, so it reads the committed file.
     with escrow.scope("next", session="agent") as n:
         owns(n, "h")
@@ -228,7 +249,8 @@ CHECKS = {
 
 if __name__ == "__main__":
     P = Path(sys.argv[1])
-    MODE, POLICY, CHECK = sys.argv[2:5]
-    escrow.init(P, unscoped=MODE, policy=POLICY, on_exit="discard")
+    MODE, POLICY, CHECK, SCENARIO_FILE = sys.argv[2:6]
+    escrow.init(P, unscoped=MODE, policy=POLICY, on_exit="discard", read=(SCENARIO_FILE,))
+    SCENARIO = json.loads(Path(SCENARIO_FILE).read_text())
     CHECKS[CHECK]()
     print(json.dumps(out))
