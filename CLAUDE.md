@@ -5,7 +5,7 @@ escrowd captures every filesystem write a program makes inside a **scope**, hold
 ## Where things stand
 <!-- rule-level: operational -->
 
-- **Active plan:** `docs/phase-4-reviewers.md` (policy reviewers). Next: `docs/phase-5-typescript-sdk.md`. Phases 0 to 3 are complete; their plans in `docs/phase-*.md` hold the as-built notes.
+- **Active plan:** `docs/phase-5-typescript-sdk.md`. Phases 0 to 4 are complete (protocol 8, tag `protocol-8`); their plans in `docs/phase-*.md` hold the as-built notes.
 - When a decision is made or an open question closes, tick it in the active plan with the date.
 - `LIMITATIONS.md` lists every known limit. Update it when you find or lift one.
 - `docs/protocol.md` specifies the protocol. Update it with every proto change.
