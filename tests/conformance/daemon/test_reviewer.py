@@ -346,6 +346,8 @@ def test_escrow_review_lists_shows_and_decides(start_daemon, escrow_bin):
         ("applied", COMMIT, pb.OUTCOME_STATUS_COMMITTED),
         ("settled", COMMIT, pb.OUTCOME_STATUS_COMMITTED),
         ("applied", DISCARD, pb.OUTCOME_STATUS_DISCARDED),
+        # The discard is in the ledger, the scope not gone yet: the next start drops it.
+        ("discarded", DISCARD, pb.OUTCOME_STATUS_DISCARDED),
         ("applied", RETURN, pb.OUTCOME_STATUS_RETURNED),
     ],
 )

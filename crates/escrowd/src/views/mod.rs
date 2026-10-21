@@ -210,7 +210,7 @@ impl Views {
             }
             // A kill after the commit's ledger line, before the scope was dropped,
             // leaves the line written: log the commit once.
-            if found && !ledger.shows_commit(&id)? {
+            if found && ledger.last_decision(&id)?.as_deref() != Some("commit") {
                 ledger.append(&id, "decide", Path::new(""), None, "commit");
             }
             commits.scope_dropped(generation)?;
@@ -244,6 +244,20 @@ impl Views {
             writeback: Mutex::new(Some(writeback)),
         };
         let stale = views.load_scopes()?;
+        // A kill after a discard's ledger line, before its scope was gone: drop it as the
+        // line says (before resolve, so its kept decision settles), not review it again.
+        let mut groups: Vec<String> = views
+            .scope_ids()
+            .iter()
+            .map(|v| roots::split_view(v).0.to_string())
+            .collect();
+        groups.dedup();
+        for group in groups.iter().filter(|g| g.as_str() != UNSCOPED) {
+            if views.ledger.last_decision(group)?.as_deref() == Some("discard") {
+                eprintln!("escrowd: load: dropping scope {group}: the ledger shows it discarded");
+                views.remove_scope(group)?;
+            }
+        }
         views.ensure_unscoped()?;
         views.gc(None)?;
         views.history.resolve(|id| views.fate(id, &finished))?;

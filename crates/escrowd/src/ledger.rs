@@ -26,7 +26,7 @@ pub struct Ledger {
 /// Arguments past this many bytes (encoded) are left out of a `proc` line.
 const ARGS_MAX: usize = 4096;
 
-/// `shows_commit` reads the ledger backwards in blocks of this many bytes.
+/// `last_decision` reads the ledger backwards in blocks of this many bytes.
 const SCAN_BLOCK: u64 = 64 * 1024;
 
 pub fn escape(p: &Path) -> String {
@@ -53,11 +53,10 @@ impl Ledger {
         })
     }
 
-    /// Whether the newest `open`, `close` or `decide` line of `scope` is its commit
-    /// (`op=decide decision=commit`): a commit the ledger already shows, which start-up
-    /// recovery must not log again. Reads backwards from the end, so only the lines
-    /// written since that one.
-    pub fn shows_commit(&self, scope: &str) -> io::Result<bool> {
+    /// The decision of `scope`'s newest `open`, `close` or `decide` line, if that line is
+    /// a `decide`: a verdict the ledger already shows, which start-up recovery must not
+    /// log again. Reads backwards from the end, so only the lines written since that one.
+    pub fn last_decision(&self, scope: &str) -> io::Result<Option<String>> {
         let mut f = File::open(&self.path)?;
         let key = format!("scope={scope} op=");
         let mut end = f.seek(SeekFrom::End(0))?;
@@ -73,13 +72,13 @@ impl Ledger {
             // Unless the block starts the file, its first line may begin in the one before.
             let first = if start == 0 { None } else { lines.next() };
             for line in lines.rev() {
-                if let Some(commit) = scope_mark(line, &key) {
-                    return Ok(commit);
+                if let Some(decision) = scope_mark(line, &key) {
+                    return Ok(decision);
                 }
             }
             match first {
                 Some(partial) => carry = partial.to_vec(),
-                None => return Ok(false),
+                None => return Ok(None),
             }
             end = start;
         }
@@ -157,15 +156,18 @@ impl Ledger {
     }
 }
 
-/// For a line of the scope `key` names: `Some(true)` for its commit, `Some(false)` for
-/// another `open`, `close` or `decide`; `None` for any other line.
-fn scope_mark(line: &[u8], key: &str) -> Option<bool> {
+/// For a line of the scope `key` names: `Some(Some(decision))` for a `decide`,
+/// `Some(None)` for an `open` or `close`; `None` for any other line.
+fn scope_mark(line: &[u8], key: &str) -> Option<Option<String>> {
     let fields = &line[line.iter().position(|&b| b == b' ')? + 1..];
     let op = fields.strip_prefix(key.as_bytes())?;
     let op = &op[..op.iter().position(|&b| b == b' ').unwrap_or(op.len())];
     match op {
-        b"decide" => Some(line.ends_with(b" decision=commit")),
-        b"open" | b"close" => Some(false),
+        b"decide" => {
+            let at = line.windows(10).rposition(|w| w == b" decision=")?;
+            Some(Some(String::from_utf8_lossy(&line[at + 10..]).into_owned()))
+        }
+        b"open" | b"close" => Some(None),
         _ => None,
     }
 }
@@ -199,16 +201,16 @@ mod tests {
     }
 
     #[test]
-    fn a_commit_shows_until_the_scope_opens_or_closes_again() {
+    fn the_last_decision_holds_until_the_scope_opens_or_closes_again() {
         let dir = crate::db::temp_dir("ledger-commit");
         let ledger = Ledger::open(&dir.join("l.log")).unwrap();
         let none = Path::new("");
-        assert!(!ledger.shows_commit("s1").unwrap(), "an empty ledger");
+        assert_eq!(ledger.last_decision("s1").unwrap(), None, "an empty ledger");
         ledger.append("s1", "open", none, None, "allow");
         ledger.append("s1", "close", none, None, "allow");
-        assert!(!ledger.shows_commit("s1").unwrap());
+        assert_eq!(ledger.last_decision("s1").unwrap(), None);
         ledger.append("s1", "decide", none, None, "return");
-        assert!(!ledger.shows_commit("s1").unwrap(), "a return is not a commit");
+        assert_eq!(ledger.last_decision("s1").unwrap().as_deref(), Some("return"));
         ledger.append("s1", "close", none, None, "allow");
         ledger.append("s1", "hold", none, None, "llm");
         ledger.append("s1", "decide", none, None, "commit");
@@ -224,10 +226,14 @@ mod tests {
             );
         }
         assert!(SCAN_BLOCK < std::fs::metadata(dir.join("l.log")).unwrap().len());
-        assert!(ledger.shows_commit("s1").unwrap(), "found across scan blocks");
-        assert!(!ledger.shows_commit("s10").unwrap());
-        assert!(!ledger.shows_commit("s2").unwrap());
+        assert_eq!(
+            ledger.last_decision("s1").unwrap().as_deref(),
+            Some("commit"),
+            "found across scan blocks"
+        );
+        assert_eq!(ledger.last_decision("s10").unwrap().as_deref(), Some("discard"));
+        assert_eq!(ledger.last_decision("s2").unwrap(), None);
         ledger.append("s1", "open", none, None, "allow");
-        assert!(!ledger.shows_commit("s1").unwrap(), "a new scope of the same id");
+        assert_eq!(ledger.last_decision("s1").unwrap(), None, "a new scope of the same id");
     }
 }

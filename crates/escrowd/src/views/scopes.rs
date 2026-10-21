@@ -382,6 +382,8 @@ impl Views {
     pub fn drop_scope(&self, id: &str) -> error::Result<()> {
         self.handles(id)?;
         self.ledger.append(id, "decide", Path::new(""), None, "discard");
+        // A kill here leaves the line before the scope is gone: the next start drops it.
+        crate::fault::hit("discarded", 0)?;
         self.remove_scope(id)?;
         self.gc(None)?;
         Ok(self.ensure_unscoped()?)
