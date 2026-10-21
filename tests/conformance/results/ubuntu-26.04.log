@@ -1,5 +1,5 @@
-host: Ubuntu 26.04 LTS, kernel 7.0.0-34-generic, 2026-10-21T00:19:16Z
-commit: 6ba2310
+host: Ubuntu 26.04 LTS, kernel 7.0.0-34-generic, 2026-10-21T16:51:23Z
+commit: d12c294
 installed /usr/lib/escrowd/bwrap with profile escrowd_bwrap
 ============================= test session starts ==============================
 platform linux -- Python 3.14.8, pytest-9.1.1, pluggy-1.6.0 -- /var/tmp/escrow-venv/bin/python
@@ -357,8 +357,8 @@ tests/conformance/sdk/test_sdk_held.py::test_the_sdk_sees_the_review_and_the_tig
 
 =============================== warnings summary ===============================
 sdk/test_client.py::test_fork_child_drops_the_shared_client_without_a_call
-  /home/andre/projects/escrowd/tests/conformance/sdk/test_client.py:75: DeprecationWarning: This process (pid=21648) is multi-threaded, use of fork() may lead to deadlocks in the child.
+  /home/andre/projects/escrowd/tests/conformance/sdk/test_client.py:75: DeprecationWarning: This process (pid=56684) is multi-threaded, use of fork() may lead to deadlocks in the child.
     pid = os.fork()
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-================== 348 passed, 1 warning in 176.76s (0:02:56) ==================
+================== 348 passed, 1 warning in 179.40s (0:02:59) ==================

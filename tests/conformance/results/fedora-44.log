@@ -1,5 +1,5 @@
-host: Fedora Linux 44 (Cloud Edition), kernel 6.19.10-300.fc44.x86_64, 2026-10-21T00:26:37Z
-commit: 6ba2310
+host: Fedora Linux 44 (Cloud Edition), kernel 6.19.10-300.fc44.x86_64, 2026-10-21T16:58:40Z
+commit: d12c294
 ============================= test session starts ==============================
 platform linux -- Python 3.14.8, pytest-9.1.1, pluggy-1.6.0 -- /var/tmp/escrow-venv/bin/python
 rootdir: /home/andre/projects/escrowd/tests/conformance
@@ -356,8 +356,8 @@ tests/conformance/sdk/test_sdk_held.py::test_the_sdk_sees_the_review_and_the_tig
 
 =============================== warnings summary ===============================
 sdk/test_client.py::test_fork_child_drops_the_shared_client_without_a_call
-  /home/andre/projects/escrowd/tests/conformance/sdk/test_client.py:75: DeprecationWarning: This process (pid=21379) is multi-threaded, use of fork() may lead to deadlocks in the child.
+  /home/andre/projects/escrowd/tests/conformance/sdk/test_client.py:75: DeprecationWarning: This process (pid=41900) is multi-threaded, use of fork() may lead to deadlocks in the child.
     pid = os.fork()
 
 -- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
-================== 348 passed, 1 warning in 114.28s (0:01:54) ==================
+================== 348 passed, 1 warning in 117.67s (0:01:57) ==================
