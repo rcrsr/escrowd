@@ -39,8 +39,10 @@ import argparse
 import hashlib
 import os
 import random
+import re
 import shutil
 import signal
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -523,7 +525,37 @@ def one(bin: Path, kill_after: float | None, double: bool, rng_seed: int):
     d.stop()
     if not bad:
         shutil.rmtree(work, ignore_errors=True)
+    else:
+        bad += evidence(d, bad)
     return bad, (took, took_tiers), held, inflight, work
+
+
+def evidence(d: Daemon, bad: list[str]) -> list[str]:
+    """The ledger lines and history rows of each scope a failure names, so the log shows
+    what happened even when the kept directory is gone (a CI runner's)."""
+    out = []
+    ids = sorted(set(re.findall(r"\bs\d+\b", " ".join(bad))), key=lambda i: int(i[1:]))
+    try:
+        ledger = d.ledger
+    except OSError as e:
+        return [f"no ledger: {e}"]
+    log = (d.work / "daemon.log").read_text(errors="replace").splitlines()
+    try:
+        db = sqlite3.connect(f"file:{d.state / 'history.sqlite'}?mode=ro", uri=True)
+        rows = db.execute("SELECT seq, scope, pending, entry FROM decided ORDER BY seq").fetchall()
+        db.close()
+    except sqlite3.Error as e:
+        rows, out = [], [f"no history: {e}"]
+    for i in ids:
+        # Scope-level lines only (open, close, hold, review-*, decide): `path=` is empty.
+        out += [f"{i} ledger: {x}" for x in ledger if f" scope={i} " in x and " path= " in x]
+        out += [f"{i} daemon: {x}" for x in log if re.search(rf"\b{i}\b", x)]
+        for seq, scope, pending, entry in rows:
+            if scope == i:
+                o = pb.Decided.FromString(entry).outcome
+                status = pb.OutcomeStatus.Name(o.status)
+                out.append(f"{i} history: seq={seq} pending={pending} {status} {list(o.reasons)}")
+    return out
 
 
 def main() -> int:
