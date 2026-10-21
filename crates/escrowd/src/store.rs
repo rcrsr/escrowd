@@ -579,8 +579,23 @@ impl ScopeStore {
     /// Hold the scope for reviewers, or (None) release it, which also removes the review
     /// directory; written at once.
     pub fn set_hold(&mut self, hold: Option<Hold>) -> io::Result<()> {
+        self.write_hold(hold, false)
+    }
+
+    /// Open the scope again and drop its hold, in one transaction: a kill cannot leave
+    /// it closed with no hold, a scope no one decides.
+    pub fn reopen(&mut self) -> io::Result<()> {
+        self.flush()?;
+        self.write_hold(None, true)
+    }
+
+    fn write_hold(&mut self, hold: Option<Hold>, reopen: bool) -> io::Result<()> {
         let db = self.db.get_mut();
         let tx = db.transaction().map_err(sql)?;
+        if reopen {
+            tx.execute("UPDATE meta SET value = 'open' WHERE key = 'state'", [])
+                .map_err(sql)?;
+        }
         tx.execute(
             "DELETE FROM meta WHERE key IN ('hold_reviewers', 'hold_wait', 'hold_at', 'hold_verdict')",
             [],
@@ -633,6 +648,9 @@ impl ScopeStore {
             }
         }
         self.hold = hold;
+        if reopen {
+            self.state = ScopeState::Open;
+        }
         Ok(())
     }
 
@@ -1249,6 +1267,28 @@ mod tests {
         store.set_hold(None).unwrap();
         assert!(!cwd.exists(), "a release removes them");
         store.set_hold(None).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_reopen_opens_the_scope_and_drops_its_hold_together() {
+        let dir = crate::db::temp_dir("store-reopen");
+        let scopes = dir.join("scopes");
+        fs::create_dir(&scopes).unwrap();
+        let mut store = ScopeStore::create(&scopes, "s1", "t", 1, 0, false, &HashMap::new(), None, "").unwrap();
+        store.set_state(ScopeState::Closed).unwrap();
+        store.set_hold(Some(held(&["lint"], None))).unwrap();
+        store.write_review_files(&[("diff.patch", b"+x\n")]).unwrap();
+
+        store.reopen().unwrap();
+
+        assert_eq!(store.state, ScopeState::Open);
+        assert!(store.hold().is_none());
+        drop(store);
+        let loaded = ScopeStore::load(&scopes, "s1").unwrap();
+        assert_eq!(loaded.state, ScopeState::Open, "the state is on disk");
+        assert!(loaded.hold().is_none(), "and the hold is gone with it");
+        assert!(!scopes.join("s1/review").exists());
         fs::remove_dir_all(&dir).unwrap();
     }
 
