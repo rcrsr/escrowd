@@ -197,16 +197,18 @@ class ChangeSet(_message.Message):
     def __init__(self, scope_id: _Optional[str] = ..., changes: _Optional[_Iterable[_Union[Change, _Mapping]]] = ..., reads: _Optional[_Iterable[_Union[Read, _Mapping]]] = ..., labels: _Optional[_Mapping[str, str]] = ..., diff: _Optional[str] = ..., unscoped_ops: _Optional[int] = ..., review: _Optional[_Union[Review, _Mapping]] = ..., processes: _Optional[_Iterable[_Union[Process, _Mapping]]] = ...) -> None: ...
 
 class Review(_message.Message):
-    __slots__ = ("verdict", "reasons", "tiers", "wait_required")
+    __slots__ = ("verdict", "reasons", "tiers", "wait_required", "reviewers")
     VERDICT_FIELD_NUMBER: _ClassVar[int]
     REASONS_FIELD_NUMBER: _ClassVar[int]
     TIERS_FIELD_NUMBER: _ClassVar[int]
     WAIT_REQUIRED_FIELD_NUMBER: _ClassVar[int]
+    REVIEWERS_FIELD_NUMBER: _ClassVar[int]
     verdict: Verdict
     reasons: _containers.RepeatedScalarFieldContainer[str]
     tiers: _containers.RepeatedScalarFieldContainer[Tier]
     wait_required: bool
-    def __init__(self, verdict: _Optional[_Union[Verdict, str]] = ..., reasons: _Optional[_Iterable[str]] = ..., tiers: _Optional[_Iterable[_Union[Tier, str]]] = ..., wait_required: _Optional[bool] = ...) -> None: ...
+    reviewers: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, verdict: _Optional[_Union[Verdict, str]] = ..., reasons: _Optional[_Iterable[str]] = ..., tiers: _Optional[_Iterable[_Union[Tier, str]]] = ..., wait_required: _Optional[bool] = ..., reviewers: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class GetChangeSetRequest(_message.Message):
     __slots__ = ("scope_id",)
@@ -241,7 +243,7 @@ class DecideResponse(_message.Message):
     def __init__(self, outcome: _Optional[_Union[Outcome, _Mapping]] = ...) -> None: ...
 
 class Outcome(_message.Message):
-    __slots__ = ("scope_id", "status", "paths", "reasons", "reopened", "tiers", "wait")
+    __slots__ = ("scope_id", "status", "paths", "reasons", "reopened", "tiers", "wait", "reviewers")
     SCOPE_ID_FIELD_NUMBER: _ClassVar[int]
     STATUS_FIELD_NUMBER: _ClassVar[int]
     PATHS_FIELD_NUMBER: _ClassVar[int]
@@ -249,6 +251,7 @@ class Outcome(_message.Message):
     REOPENED_FIELD_NUMBER: _ClassVar[int]
     TIERS_FIELD_NUMBER: _ClassVar[int]
     WAIT_FIELD_NUMBER: _ClassVar[int]
+    REVIEWERS_FIELD_NUMBER: _ClassVar[int]
     scope_id: str
     status: OutcomeStatus
     paths: _containers.RepeatedScalarFieldContainer[str]
@@ -256,7 +259,8 @@ class Outcome(_message.Message):
     reopened: bool
     tiers: _containers.RepeatedScalarFieldContainer[Tier]
     wait: bool
-    def __init__(self, scope_id: _Optional[str] = ..., status: _Optional[_Union[OutcomeStatus, str]] = ..., paths: _Optional[_Iterable[str]] = ..., reasons: _Optional[_Iterable[str]] = ..., reopened: _Optional[bool] = ..., tiers: _Optional[_Iterable[_Union[Tier, str]]] = ..., wait: _Optional[bool] = ...) -> None: ...
+    reviewers: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, scope_id: _Optional[str] = ..., status: _Optional[_Union[OutcomeStatus, str]] = ..., paths: _Optional[_Iterable[str]] = ..., reasons: _Optional[_Iterable[str]] = ..., reopened: _Optional[bool] = ..., tiers: _Optional[_Iterable[_Union[Tier, str]]] = ..., wait: _Optional[bool] = ..., reviewers: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class SpawnRequest(_message.Message):
     __slots__ = ("scope_id", "argv", "cwd", "env", "token")
@@ -320,19 +324,21 @@ class AwaitDecisionResponse(_message.Message):
     def __init__(self, outcome: _Optional[_Union[Outcome, _Mapping]] = ...) -> None: ...
 
 class TierReview(_message.Message):
-    __slots__ = ("tier", "verdict", "reasons", "override")
+    __slots__ = ("tier", "verdict", "reasons", "override", "reviewer")
     TIER_FIELD_NUMBER: _ClassVar[int]
     VERDICT_FIELD_NUMBER: _ClassVar[int]
     REASONS_FIELD_NUMBER: _ClassVar[int]
     OVERRIDE_FIELD_NUMBER: _ClassVar[int]
+    REVIEWER_FIELD_NUMBER: _ClassVar[int]
     tier: Tier
     verdict: Verdict
     reasons: _containers.RepeatedScalarFieldContainer[str]
     override: bool
-    def __init__(self, tier: _Optional[_Union[Tier, str]] = ..., verdict: _Optional[_Union[Verdict, str]] = ..., reasons: _Optional[_Iterable[str]] = ..., override: _Optional[bool] = ...) -> None: ...
+    reviewer: str
+    def __init__(self, tier: _Optional[_Union[Tier, str]] = ..., verdict: _Optional[_Union[Verdict, str]] = ..., reasons: _Optional[_Iterable[str]] = ..., override: _Optional[bool] = ..., reviewer: _Optional[str] = ...) -> None: ...
 
 class HeldScope(_message.Message):
-    __slots__ = ("scope_id", "name", "labels", "session", "tiers", "wait", "verdict", "reviews", "held_at_ms")
+    __slots__ = ("scope_id", "name", "labels", "session", "tiers", "wait", "verdict", "reviews", "held_at_ms", "reviewers")
     class LabelsEntry(_message.Message):
         __slots__ = ("key", "value")
         KEY_FIELD_NUMBER: _ClassVar[int]
@@ -349,6 +355,7 @@ class HeldScope(_message.Message):
     VERDICT_FIELD_NUMBER: _ClassVar[int]
     REVIEWS_FIELD_NUMBER: _ClassVar[int]
     HELD_AT_MS_FIELD_NUMBER: _ClassVar[int]
+    REVIEWERS_FIELD_NUMBER: _ClassVar[int]
     scope_id: str
     name: str
     labels: _containers.ScalarMap[str, str]
@@ -358,7 +365,8 @@ class HeldScope(_message.Message):
     verdict: Verdict
     reviews: _containers.RepeatedCompositeFieldContainer[TierReview]
     held_at_ms: int
-    def __init__(self, scope_id: _Optional[str] = ..., name: _Optional[str] = ..., labels: _Optional[_Mapping[str, str]] = ..., session: _Optional[str] = ..., tiers: _Optional[_Iterable[_Union[Tier, str]]] = ..., wait: _Optional[bool] = ..., verdict: _Optional[_Union[Verdict, str]] = ..., reviews: _Optional[_Iterable[_Union[TierReview, _Mapping]]] = ..., held_at_ms: _Optional[int] = ...) -> None: ...
+    reviewers: _containers.RepeatedScalarFieldContainer[str]
+    def __init__(self, scope_id: _Optional[str] = ..., name: _Optional[str] = ..., labels: _Optional[_Mapping[str, str]] = ..., session: _Optional[str] = ..., tiers: _Optional[_Iterable[_Union[Tier, str]]] = ..., wait: _Optional[bool] = ..., verdict: _Optional[_Union[Verdict, str]] = ..., reviews: _Optional[_Iterable[_Union[TierReview, _Mapping]]] = ..., held_at_ms: _Optional[int] = ..., reviewers: _Optional[_Iterable[str]] = ...) -> None: ...
 
 class ListHeldRequest(_message.Message):
     __slots__ = ()
@@ -403,18 +411,22 @@ class Decided(_message.Message):
     def __init__(self, scope_id: _Optional[str] = ..., name: _Optional[str] = ..., change_set: _Optional[_Union[ChangeSet, _Mapping]] = ..., outcome: _Optional[_Union[Outcome, _Mapping]] = ..., reviews: _Optional[_Iterable[_Union[TierReview, _Mapping]]] = ..., decided_at_ms: _Optional[int] = ...) -> None: ...
 
 class ReviewRequest(_message.Message):
-    __slots__ = ("scope_id", "tier", "verdict", "reasons", "override")
+    __slots__ = ("scope_id", "tier", "verdict", "reasons", "override", "reviewer", "token")
     SCOPE_ID_FIELD_NUMBER: _ClassVar[int]
     TIER_FIELD_NUMBER: _ClassVar[int]
     VERDICT_FIELD_NUMBER: _ClassVar[int]
     REASONS_FIELD_NUMBER: _ClassVar[int]
     OVERRIDE_FIELD_NUMBER: _ClassVar[int]
+    REVIEWER_FIELD_NUMBER: _ClassVar[int]
+    TOKEN_FIELD_NUMBER: _ClassVar[int]
     scope_id: str
     tier: Tier
     verdict: Verdict
     reasons: _containers.RepeatedScalarFieldContainer[str]
     override: bool
-    def __init__(self, scope_id: _Optional[str] = ..., tier: _Optional[_Union[Tier, str]] = ..., verdict: _Optional[_Union[Verdict, str]] = ..., reasons: _Optional[_Iterable[str]] = ..., override: _Optional[bool] = ...) -> None: ...
+    reviewer: str
+    token: str
+    def __init__(self, scope_id: _Optional[str] = ..., tier: _Optional[_Union[Tier, str]] = ..., verdict: _Optional[_Union[Verdict, str]] = ..., reasons: _Optional[_Iterable[str]] = ..., override: _Optional[bool] = ..., reviewer: _Optional[str] = ..., token: _Optional[str] = ...) -> None: ...
 
 class ReviewResponse(_message.Message):
     __slots__ = ("outcome",)

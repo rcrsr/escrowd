@@ -427,11 +427,12 @@ class ReviewerServiceServicer:
         raise NotImplementedError('Method not implemented!')
 
     def Review(self, request, context):
-        """A tier's verdict on a held scope. The tier must be one the scope still waits
-        for; a human's verdict also stands for the cheaper tiers still pending. Verdicts
-        only tighten (commit < return < discard): a looser verdict than the one so far
-        fails with PERMISSION_DENIED unless the tier is human and `override` is set,
-        which the ledger records. After the last pending tier the scope is decided with
+        """A reviewer's verdict on a held scope, named by `reviewer` (or, for the built-ins,
+        by `tier`). The reviewer must be one the scope still waits for; a verdict from a
+        reviewer that may override (the human) also stands for the reviewers still pending
+        before it. Verdicts only tighten (commit < return < discard): a looser verdict than
+        the one so far fails with PERMISSION_DENIED unless the reviewer may override and
+        `override` is set, which the ledger records. After the last pending tier the scope is decided with
         the verdict so far, as Decide would (a commit can conflict); before it, the
         outcome is OUTCOME_STATUS_HELD with the tiers left.
         """

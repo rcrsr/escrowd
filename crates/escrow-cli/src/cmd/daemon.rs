@@ -50,8 +50,13 @@ impl DaemonArgs {
 }
 
 /// `escrow daemon --check`: validate the policy and paths; no socket, nothing created.
+/// Prints one `protected: <path>` line per path no scope may change.
 pub(crate) fn check(args: DaemonArgs, unscoped: Unscoped) -> anyhow::Result<()> {
-    escrowd::daemon::check(&args.into_config(PathBuf::new(), unscoped))
+    let checked = escrowd::daemon::check(&args.into_config(PathBuf::new(), unscoped))?;
+    for p in &checked.protected {
+        println!("protected: {}", p.display());
+    }
+    Ok(())
 }
 
 pub(crate) async fn run(args: DaemonArgs, socket: PathBuf, unscoped: Unscoped) -> anyhow::Result<()> {

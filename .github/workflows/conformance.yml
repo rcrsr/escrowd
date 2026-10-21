@@ -102,3 +102,23 @@ jobs:
         env:
           ESCROW_BIN: ${{ github.workspace }}/target/release/escrow
         run: uv run --project sdk/python --frozen python tests/soak/held.py 20
+
+      # A failed run keeps its directory (state, ledger, history, daemon.log) under
+      # XDG_RUNTIME_DIR; keep them past the runner for a week. Sockets and the
+      # unmounted views are skipped.
+      - name: Archive the kept run directories
+        if: failure()
+        run: |
+          shopt -s nullglob
+          kept=("${XDG_RUNTIME_DIR:-/tmp}"/escrow-test.*)
+          if [ ${#kept[@]} -eq 0 ]; then exit 0; fi
+          tar --ignore-failed-read --exclude='*/mount' -czf "$RUNNER_TEMP/kept-runs.tgz" "${kept[@]}" || true
+
+      - name: Upload the kept run directories
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: kept-runs-${{ matrix.os }}-py${{ matrix.python }}
+          path: ${{ runner.temp }}/kept-runs.tgz
+          if-no-files-found: ignore
+          retention-days: 7

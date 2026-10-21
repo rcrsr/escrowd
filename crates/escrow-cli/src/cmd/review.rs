@@ -1,4 +1,4 @@
-//! `escrow review`: list held scopes, show one, give a tier's verdict.
+//! `escrow review`: list held scopes, show one, give a reviewer's verdict.
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -6,9 +6,11 @@ use std::path::PathBuf;
 use clap::{Subcommand, ValueEnum};
 use escrowd::proto::reviewer_service_client::ReviewerServiceClient;
 use escrowd::proto::{GetHeldRequest, HeldScope, ListHeldRequest, OutcomeStatus, ReviewRequest, Tier, Verdict};
-use escrowd::rpc::review_socket;
+use escrowd::rpc::{REVIEW_TOKEN_ENV, review_socket};
 
-use crate::client::{NOT_COMMITTED, channel, kind_name, socket_of, status_name, tiers, verdict_name};
+use crate::client::{
+    NOT_COMMITTED, channel, kind_name, reviewer_names, reviewer_of, socket_of, status_name, tiers, verdict_name,
+};
 
 #[derive(Subcommand)]
 pub(crate) enum ReviewAction {
@@ -28,13 +30,20 @@ pub(crate) enum ReviewAction {
 #[derive(clap::Args)]
 pub(crate) struct VerdictArgs {
     scope: String,
-    /// The tier giving the verdict; a human's also stands for the cheaper tiers pending.
-    #[arg(long, value_enum, default_value = "human")]
-    tier: ReviewTier,
+    /// The built-in tier giving the verdict; a human's also stands for the cheaper
+    /// reviewers pending. Without --as the human tier gives it.
+    #[arg(long, value_enum, conflicts_with = "reviewer")]
+    tier: Option<ReviewTier>,
+    /// The reviewer giving the verdict, by name (a declared reviewer, `llm` or `human`).
+    #[arg(long = "as", value_name = "NAME")]
+    reviewer: Option<String>,
+    /// A delegated reviewer's one-time token.
+    #[arg(long, env = REVIEW_TOKEN_ENV, hide_env_values = true)]
+    token: Option<String>,
     /// A reason for the verdict (repeatable); a return sends them to the agent.
     #[arg(long = "reason")]
     reasons: Vec<String>,
-    /// Loosen the verdict so far (human tier only; the ledger records it).
+    /// Loosen the verdict so far (a reviewer that may override only; the ledger records it).
     #[arg(long = "override")]
     over: bool,
 }
@@ -49,12 +58,13 @@ fn held_line(h: &HeldScope, now_ms: u64) -> String {
     let age = now_ms.saturating_sub(h.held_at_ms) / 1000;
     let or_dash = |s: &str| if s.is_empty() { "-".to_string() } else { s.to_string() };
     format!(
-        "{} tiers={}{} verdict={} session={} held={age}s name={}",
+        "{} tiers={}{} verdict={} session={} held={age}s reviewers={} name={}",
         h.scope_id,
         tiers(&h.tiers),
         if h.wait { " wait" } else { "" },
         verdict_name(h.verdict),
         or_dash(&h.session),
+        reviewer_names(&h.reviewers, &h.tiers),
         or_dash(&h.name),
     )
 }
@@ -62,11 +72,15 @@ fn held_line(h: &HeldScope, now_ms: u64) -> String {
 /// Exit code of `escrow review`: 124 when a commit verdict ended with the scope conflicted,
 /// discarded or returned; a scope still held for another tier reads 0.
 pub(crate) async fn run(
+    review_socket_path: Option<PathBuf>,
     socket: Option<PathBuf>,
     project: Option<PathBuf>,
     action: ReviewAction,
 ) -> anyhow::Result<i32> {
-    let socket = review_socket(&socket_of(socket, project)?);
+    let socket = match review_socket_path {
+        Some(path) => path,
+        None => review_socket(&socket_of(socket, project)?),
+    };
     let mut client = ReviewerServiceClient::new(channel(&socket).await?).max_decoding_message_size(usize::MAX);
     let err = anyhow::Error::from;
     let now_ms = std::time::SystemTime::now()
@@ -96,7 +110,7 @@ pub(crate) async fn run(
                 writeln!(
                     out,
                     "review {}: {}{}",
-                    tiers(&[r.tier]),
+                    reviewer_of(&r.reviewer, r.tier),
                     verdict_name(r.verdict),
                     if r.r#override { " (override)" } else { "" }
                 )?;
@@ -145,7 +159,12 @@ pub(crate) async fn run(
                     d.name
                 )?;
                 for r in &d.reviews {
-                    writeln!(out, "    review {}: {}", tiers(&[r.tier]), verdict_name(r.verdict))?;
+                    writeln!(
+                        out,
+                        "    review {}: {}",
+                        reviewer_of(&r.reviewer, r.tier),
+                        verdict_name(r.verdict)
+                    )?;
                 }
                 for reason in &o.reasons {
                     writeln!(out, "    {reason}")?;
@@ -159,9 +178,12 @@ pub(crate) async fn run(
         ReviewAction::Discard(a) => (a, Verdict::Discard),
         ReviewAction::Return(a) => (a, Verdict::Return),
     };
-    let tier = match args.tier {
-        ReviewTier::Llm => Tier::Llm,
-        ReviewTier::Human => Tier::Human,
+    // `--as` names the reviewer and leaves the tier open; otherwise the tier gives it, the
+    // human by default.
+    let (tier, reviewer) = match (args.tier, args.reviewer) {
+        (_, Some(name)) => (Tier::Unspecified, name),
+        (Some(ReviewTier::Llm), None) => (Tier::Llm, String::new()),
+        (Some(ReviewTier::Human) | None, None) => (Tier::Human, String::new()),
     };
     let o = client
         .review(ReviewRequest {
@@ -170,6 +192,8 @@ pub(crate) async fn run(
             verdict: verdict.into(),
             reasons: args.reasons,
             r#override: args.over,
+            reviewer,
+            token: args.token.unwrap_or_default(),
         })
         .await
         .map_err(err)?
@@ -178,7 +202,12 @@ pub(crate) async fn run(
         .unwrap_or_default();
     // Unknown statuses read as held (protocol.md, versioning).
     match OutcomeStatus::try_from(o.status) {
-        Ok(OutcomeStatus::Held) | Err(_) => writeln!(out, "{} held for {}", o.scope_id, tiers(&o.tiers))?,
+        Ok(OutcomeStatus::Held) | Err(_) => writeln!(
+            out,
+            "{} held for {}",
+            o.scope_id,
+            reviewer_names(&o.reviewers, &o.tiers)
+        )?,
         Ok(_) => writeln!(out, "{} {}", o.scope_id, status_name(o.status))?,
     }
     for p in &o.paths {

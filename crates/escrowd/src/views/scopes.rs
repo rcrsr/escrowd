@@ -269,11 +269,12 @@ impl Views {
         let hs = self.closed_handles(id)?;
         let mut frozen = hs[0].frozen.lock();
         let now = self.unscoped_changes.load(Ordering::Relaxed);
-        if hs[0].store_read().hold().is_some() {
-            hs[0].store().set_hold(None)?;
-        }
-        for h in &hs {
-            h.store().set_state(ScopeState::Open)?;
+        // The project root's store holds the hold: it opens in the same transaction.
+        hs[0].store().reopen()?;
+        for (i, h) in hs.iter().enumerate() {
+            if i > 0 {
+                h.store().set_state(ScopeState::Open)?;
+            }
             h.unscoped_at.store(now, Ordering::Relaxed);
             h.closed.store(false, Ordering::Release);
         }
@@ -382,6 +383,8 @@ impl Views {
     pub fn drop_scope(&self, id: &str) -> error::Result<()> {
         self.handles(id)?;
         self.ledger.append(id, "decide", Path::new(""), None, "discard");
+        // A kill here leaves the line before the scope is gone: the next start drops it.
+        crate::fault::hit("discarded", 0)?;
         self.remove_scope(id)?;
         self.gc(None)?;
         Ok(self.ensure_unscoped()?)

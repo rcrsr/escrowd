@@ -143,3 +143,75 @@ def test_an_invalid_string_raises_before_any_rpc(runtime_dir):
         assert str(err.value) == "tier must be one of: software, llm, human (got 'x')"
         with pytest.raises(ValueError, match="verdict must be one of"):
             rv.review("s", "llm", "x")  # ty: ignore[invalid-argument-type]
+
+
+def test_review_as_rejects_an_invalid_name_or_verdict_before_any_rpc(runtime_dir):
+    absent = str(runtime_dir / "absent.sock")
+    with escrow.Reviewer(absent) as rv:
+        for bad in ("", "Security", "1a", "a_b", "a b"):
+            with pytest.raises(ValueError, match="reviewer must match"):
+                rv.review_as("s", bad, "commit")
+        with pytest.raises(ValueError, match="verdict must be one of"):
+            rv.review_as("s", "llm", "x")  # ty: ignore[invalid-argument-type]
+
+
+def test_review_keeps_rejecting_a_reviewer_name_as_a_tier(runtime_dir):
+    absent = str(runtime_dir / "absent.sock")
+    with escrow.Reviewer(absent) as rv, pytest.raises(ValueError, match="tier must be one of"):
+        rv.review("s", "security", "commit")  # ty: ignore[invalid-argument-type]
+
+
+def test_review_as_sends_the_name_the_token_and_no_tier():
+    sent = []
+
+    class Low:
+        def review(self, *args, **kw):
+            sent.append((args, kw))
+            return pb.Outcome(scope_id="s", status=pb.OUTCOME_STATUS_HELD, reviewers=["human"])
+
+        def close(self):
+            pass
+
+    rv = escrow.Reviewer.__new__(escrow.Reviewer)
+    rv._low = Low()
+    result = rv.review_as("s", "oncall", "return", reasons=["no"], override=True, token="tok")
+    (args, kw) = sent[0]
+    assert args[0] == "s" and args[1] == pb.TIER_UNSPECIFIED and args[2] == pb.VERDICT_RETURN
+    assert args[3:5] == (["no"], True)
+    assert kw == {"reviewer": "oncall", "token": "tok"}
+    assert result.reviewers == ["human"]
+    rv.review_as("s", "oncall", "commit")
+    assert sent[1][1]["token"] == ""
+
+
+def test_new_fields_map_from_the_protocol_messages():
+    r = _model.Review.from_proto(pb.Review(reviewers=["lint", "llm"], tiers=[pb.TIER_LLM]))
+    assert r.reviewers == ["lint", "llm"] and r.tiers == ["llm"]
+    out = pb.Outcome(status=pb.OUTCOME_STATUS_HELD, reviewers=["lint"])
+    res = _model.Result.from_proto(out)
+    assert res.reviewers == ["lint"]
+    cs = _model.ChangeSet.from_proto(pb.ChangeSet(scope_id="s"))
+    assert _model.Outcome.from_result(res, cs).reviewers == ["lint"]
+    h = _model.HeldScope.from_proto(
+        pb.HeldScope(
+            reviewers=["lint", "human"],
+            reviews=[
+                pb.TierReview(reviewer="lint", verdict=pb.VERDICT_COMMIT),
+                pb.TierReview(tier=pb.TIER_LLM, verdict=pb.VERDICT_COMMIT),
+            ],
+        )
+    )
+    assert h.reviewers == ["lint", "human"]
+    assert [x.reviewer for x in h.reviews] == ["lint", "llm"]
+
+
+def test_a_protocol_7_message_with_no_reviewers_reads_empty_and_falls_back_to_tiers():
+    h = _model.HeldScope.from_proto(
+        pb.HeldScope(
+            tiers=[pb.TIER_LLM, pb.TIER_HUMAN], reviews=[pb.TierReview(tier=pb.TIER_HUMAN)]
+        )
+    )
+    assert h.reviewers == [] and h.tiers == ["llm", "human"]
+    assert h.reviews[0].reviewer == "human"
+    assert _model.Result.from_proto(pb.Outcome(tiers=[pb.TIER_LLM])).reviewers == []
+    assert _model.Review.from_proto(pb.Review()).reviewers == []

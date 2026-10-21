@@ -35,7 +35,6 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::db::{self, Durability, sql};
 
-use crate::policy::Tier;
 use crate::proc::{Info, Proc};
 use crate::review::{Decision, TierReview};
 use crate::sys::{self, Version};
@@ -54,17 +53,45 @@ pub enum ScopeState {
     Closed,
 }
 
-/// A closed scope waiting for reviewers: the tiers still to review, cheapest first,
+/// A closed scope waiting for reviewers: the reviewers still to review, in order,
 /// whether its session's next scope waits for the verdict, and the verdicts so far.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Hold {
-    pub tiers: Vec<Tier>,
+    /// Reviewer names still pending.
+    pub reviewers: Vec<String>,
     pub wait: bool,
     /// Milliseconds since the Unix epoch.
     pub at_ms: u64,
     /// The strictest verdict so far (commit before any review).
     pub verdict: Decision,
     pub reviews: Vec<TierReview>,
+    /// The current run of a command reviewer, if one is.
+    pub run: Option<Run>,
+}
+
+impl Hold {
+    /// The attempt number of the next run of `reviewer`: one more than the recorded run
+    /// of the same reviewer, else 1.
+    pub fn next_attempt(&self, reviewer: &str) -> u32 {
+        self.run
+            .as_ref()
+            .filter(|r| r.reviewer == reviewer)
+            .map_or(1, |r| r.attempt + 1)
+    }
+}
+
+/// The run of a command reviewer on a held scope: at most one per hold.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Run {
+    pub reviewer: String,
+    /// 1 for the first run of this reviewer on the scope, then one more per rerun.
+    pub attempt: u32,
+    /// A delegate answered `pending`: its verdict comes by token.
+    pub waiting: bool,
+    /// SHA-256 of the delegate's token, hex; the token itself is never stored.
+    pub token_sha256: Option<String>,
+    /// Milliseconds since the Unix epoch: when a waiting delegate's token expires.
+    pub deadline_ms: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -170,11 +197,32 @@ fn v1(tx: &Transaction) -> rusqlite::Result<()> {
     tx.execute_batch(SCHEMA)
 }
 
+/// Version 2: reviewers by name instead of tier. A review row's name goes in the new
+/// `reviewer` column (the `tier` column stays, written empty from now on), a held
+/// scope's held-tiers key becomes `hold_reviewers`, and the current run of a command
+/// reviewer gets its table (at most one row).
+const V2: &str = "
+ALTER TABLE reviews ADD COLUMN reviewer TEXT;
+UPDATE reviews SET reviewer = tier;
+UPDATE meta SET key = 'hold_reviewers' WHERE key = 'hold_tiers';
+CREATE TABLE review_run (
+    reviewer TEXT PRIMARY KEY,
+    attempt INTEGER NOT NULL,
+    state TEXT NOT NULL,
+    token_sha256 TEXT,
+    deadline_ms INTEGER
+) STRICT;
+";
+
+fn v2(tx: &Transaction) -> rusqlite::Result<()> {
+    tx.execute_batch(V2)
+}
+
 /// Normal: a store's rows survive a crash of the daemon; a scope does not survive
 /// a crash of the host it runs on, and its writes are the hot path.
 fn open_db(dir: &Path) -> io::Result<Connection> {
     let mut db = db::open(&dir.join("meta.sqlite"), Durability::Normal)?;
-    db::migrate(&mut db, "meta.sqlite", &[v1])?;
+    db::migrate(&mut db, "meta.sqlite", &[v1, v2])?;
     Ok(db)
 }
 
@@ -304,14 +352,13 @@ impl ScopeStore {
                 .map_err(sql)
         };
         let session = text("session")?.unwrap_or_default();
-        let hold = match text("hold_tiers")? {
+        let hold = match text("hold_reviewers")? {
             None => None,
-            Some(t) => {
-                let tier = |t: &str| Tier::parse(t).ok_or_else(|| io::Error::other(format!("bad held tier {t}")));
+            Some(names) => {
                 let decision =
                     |d: &str| Decision::parse(d).ok_or_else(|| io::Error::other(format!("bad held verdict {d}")));
                 let mut st = db
-                    .prepare("SELECT tier, verdict, override, reasons FROM reviews ORDER BY seq")
+                    .prepare("SELECT reviewer, verdict, override, reasons FROM reviews ORDER BY seq")
                     .map_err(sql)?;
                 let rows = st
                     .query_map([], |r| {
@@ -325,20 +372,37 @@ impl ScopeStore {
                     .map_err(sql)?;
                 let mut reviews = Vec::new();
                 for row in rows {
-                    let (t, v, o, reasons) = row.map_err(sql)?;
+                    let (reviewer, v, o, reasons) = row.map_err(sql)?;
                     reviews.push(TierReview {
-                        tier: tier(&t)?,
+                        reviewer,
                         verdict: decision(&v)?,
                         over: o != 0,
                         reasons: split_nul(&reasons),
                     });
                 }
+                let run = db
+                    .query_row(
+                        "SELECT reviewer, attempt, state, token_sha256, deadline_ms FROM review_run",
+                        [],
+                        |r| {
+                            Ok(Run {
+                                reviewer: r.get(0)?,
+                                attempt: r.get(1)?,
+                                waiting: r.get::<_, String>(2)? == "waiting",
+                                token_sha256: r.get(3)?,
+                                deadline_ms: r.get::<_, Option<i64>>(4)?.map(|d| d as u64),
+                            })
+                        },
+                    )
+                    .optional()
+                    .map_err(sql)?;
                 Some(Hold {
-                    tiers: t.split(',').map(tier).collect::<io::Result<_>>()?,
+                    reviewers: names.split(',').filter(|n| !n.is_empty()).map(str::to_string).collect(),
                     wait: text("hold_wait")?.is_some_and(|w| w == "1"),
                     at_ms: text("hold_at")?.and_then(|t| t.parse().ok()).unwrap_or(0),
                     verdict: decision(&text("hold_verdict")?.unwrap_or_else(|| "commit".into()))?,
                     reviews,
+                    run,
                 })
             }
         };
@@ -501,22 +565,49 @@ impl ScopeStore {
         self.hold.as_ref()
     }
 
-    /// Hold the scope for reviewers, or (None) release it; written at once.
+    /// Write `files` (name, bytes) into the scope's review directory, `review/` beside
+    /// its upper, and return the directory: a command reviewer's working directory.
+    pub fn write_review_files(&self, files: &[(&str, &[u8])]) -> io::Result<PathBuf> {
+        let dir = self.dir.join("review");
+        fs::create_dir_all(&dir)?;
+        for (name, bytes) in files {
+            fs::write(dir.join(name), bytes)?;
+        }
+        Ok(dir)
+    }
+
+    /// Hold the scope for reviewers, or (None) release it, which also removes the review
+    /// directory; written at once.
     pub fn set_hold(&mut self, hold: Option<Hold>) -> io::Result<()> {
+        self.write_hold(hold, false)
+    }
+
+    /// Open the scope again and drop its hold, in one transaction: a kill cannot leave
+    /// it closed with no hold, a scope no one decides.
+    pub fn reopen(&mut self) -> io::Result<()> {
+        self.flush()?;
+        self.write_hold(None, true)
+    }
+
+    fn write_hold(&mut self, hold: Option<Hold>, reopen: bool) -> io::Result<()> {
         let db = self.db.get_mut();
         let tx = db.transaction().map_err(sql)?;
+        if reopen {
+            tx.execute("UPDATE meta SET value = 'open' WHERE key = 'state'", [])
+                .map_err(sql)?;
+        }
         tx.execute(
-            "DELETE FROM meta WHERE key IN ('hold_tiers', 'hold_wait', 'hold_at', 'hold_verdict')",
+            "DELETE FROM meta WHERE key IN ('hold_reviewers', 'hold_wait', 'hold_at', 'hold_verdict')",
             [],
         )
         .map_err(sql)?;
         tx.execute("DELETE FROM reviews", []).map_err(sql)?;
+        tx.execute("DELETE FROM review_run", []).map_err(sql)?;
         if let Some(h) = &hold {
-            let tiers: Vec<&str> = h.tiers.iter().map(|t| t.as_str()).collect();
             tx.execute(
-                "INSERT INTO meta VALUES ('hold_tiers', ?1), ('hold_wait', ?2), ('hold_at', ?3), ('hold_verdict', ?4)",
+                "INSERT INTO meta VALUES ('hold_reviewers', ?1), ('hold_wait', ?2), ('hold_at', ?3), ('hold_verdict', ?4)",
                 params![
-                    tiers.join(","),
+                    h.reviewers.join(","),
                     if h.wait { "1" } else { "0" },
                     h.at_ms.to_string(),
                     h.verdict.as_str()
@@ -525,9 +616,9 @@ impl ScopeStore {
             .map_err(sql)?;
             for r in &h.reviews {
                 tx.execute(
-                    "INSERT INTO reviews (tier, verdict, override, reasons) VALUES (?1, ?2, ?3, ?4)",
+                    "INSERT INTO reviews (tier, reviewer, verdict, override, reasons) VALUES ('', ?1, ?2, ?3, ?4)",
                     params![
-                        r.tier.as_str(),
+                        r.reviewer.as_str(),
                         r.verdict.as_str(),
                         r.over as i64,
                         r.reasons.join("\0").into_bytes()
@@ -535,9 +626,31 @@ impl ScopeStore {
                 )
                 .map_err(sql)?;
             }
+            if let Some(r) = &h.run {
+                tx.execute(
+                    "INSERT INTO review_run VALUES (?1, ?2, ?3, ?4, ?5)",
+                    params![
+                        r.reviewer,
+                        r.attempt,
+                        if r.waiting { "waiting" } else { "running" },
+                        r.token_sha256,
+                        r.deadline_ms.map(|d| d as i64)
+                    ],
+                )
+                .map_err(sql)?;
+            }
         }
         tx.commit().map_err(sql)?;
+        if hold.is_none() {
+            match fs::remove_dir_all(self.dir.join("review")) {
+                Err(e) if e.kind() != io::ErrorKind::NotFound => return Err(e),
+                _ => {}
+            }
+        }
         self.hold = hold;
+        if reopen {
+            self.state = ScopeState::Open;
+        }
         Ok(())
     }
 
@@ -1029,5 +1142,167 @@ mod tests {
         assert_eq!(loaded.base_version(Path::new("changed.txt")).unwrap(), Some(version(6)));
         drop((store, loaded));
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn held(reviewers: &[&str], run: Option<Run>) -> Hold {
+        Hold {
+            reviewers: reviewers.iter().map(|r| r.to_string()).collect(),
+            wait: true,
+            at_ms: 42,
+            verdict: Decision::Return,
+            reviews: vec![TierReview {
+                reviewer: "lint".into(),
+                verdict: Decision::Return,
+                reasons: vec!["a".into(), "b".into()],
+                over: false,
+            }],
+            run,
+        }
+    }
+
+    fn meta_keys(dir: &Path) -> Vec<String> {
+        let db = rusqlite::Connection::open(dir.join("s1/meta.sqlite")).unwrap();
+        let mut st = db.prepare("SELECT key FROM meta ORDER BY key").unwrap();
+        st.query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect()
+    }
+
+    #[test]
+    fn a_version_1_store_migrates_its_held_tiers_to_reviewer_names() {
+        let dir = crate::db::temp_dir("store-v1-hold");
+        let scopes = dir.join("scopes");
+        fs::create_dir_all(scopes.join("s1")).unwrap();
+        {
+            let mut db = db::open(&scopes.join("s1/meta.sqlite"), Durability::Normal).unwrap();
+            db::migrate(&mut db, "meta.sqlite", &[v1]).unwrap();
+            db.execute_batch(
+                "INSERT INTO meta VALUES ('name', 't'), ('idx', 1), ('since', 0), ('readonly', 0),
+                     ('next_upper_ino', 0), ('state', 'closed'), ('hold_tiers', 'llm,human'),
+                     ('hold_wait', '1'), ('hold_at', '7'), ('hold_verdict', 'return');
+                 INSERT INTO reviews (tier, verdict, override, reasons) VALUES ('llm', 'return', 0, x'');",
+            )
+            .unwrap();
+        }
+        let mut store = ScopeStore::load(&scopes, "s1").unwrap();
+        let hold = store.hold().unwrap().clone();
+        assert_eq!(hold.reviewers, ["llm", "human"]);
+        assert_eq!(hold.reviews[0].reviewer, "llm");
+        assert_eq!(
+            (hold.wait, hold.at_ms, hold.verdict, hold.run),
+            (true, 7, Decision::Return, None)
+        );
+        assert!(!meta_keys(&scopes).contains(&"hold_tiers".to_string()));
+        // A hold written now uses only the new key.
+        store.set_hold(Some(held(&["human"], None))).unwrap();
+        let keys = meta_keys(&scopes);
+        assert!(keys.contains(&"hold_reviewers".to_string()) && !keys.contains(&"hold_tiers".to_string()));
+        drop(store);
+        assert_eq!(
+            ScopeStore::load(&scopes, "s1").unwrap().hold().unwrap().reviewers,
+            ["human"]
+        );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_hold_with_a_run_round_trips_and_a_release_drops_the_run() {
+        let dir = crate::db::temp_dir("store-run");
+        let scopes = dir.join("scopes");
+        fs::create_dir(&scopes).unwrap();
+        let mut store = ScopeStore::create(&scopes, "s1", "t", 1, 0, false, &HashMap::new(), None, "").unwrap();
+        let token = "c0ffee-clear-text-token";
+        let run = Run {
+            reviewer: "lint".into(),
+            attempt: 2,
+            waiting: true,
+            token_sha256: Some(crate::views::token_sha256(token)),
+            deadline_ms: Some(1_700_000_000_000),
+        };
+        let hold = held(&["lint", "llm"], Some(run));
+        store.set_hold(Some(hold.clone())).unwrap();
+        drop(store);
+        let mut store = ScopeStore::load(&scopes, "s1").unwrap();
+        assert_eq!(store.hold(), Some(&hold));
+        store
+            .set_hold(Some(Hold {
+                run: None,
+                ..hold.clone()
+            }))
+            .unwrap();
+        assert_eq!(store.hold().unwrap().run, None);
+        store.set_hold(Some(hold)).unwrap();
+        // The raw files hold the hash, never the token.
+        for file in fs::read_dir(scopes.join("s1")).unwrap().flatten() {
+            if file.path().is_file() {
+                let bytes = fs::read(file.path()).unwrap();
+                assert!(!bytes.windows(token.len()).any(|w| w == token.as_bytes()));
+            }
+        }
+        store.set_hold(None).unwrap();
+        drop(store);
+        assert_eq!(ScopeStore::load(&scopes, "s1").unwrap().hold(), None);
+        let db = rusqlite::Connection::open(scopes.join("s1/meta.sqlite")).unwrap();
+        let rows: i64 = db
+            .query_row("SELECT count(*) FROM review_run", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn review_files_live_in_the_scope_directory_until_the_hold_is_released() {
+        let dir = crate::db::temp_dir("store-review-files");
+        let scopes = dir.join("scopes");
+        fs::create_dir(&scopes).unwrap();
+        let mut store = ScopeStore::create(&scopes, "s1", "t", 1, 0, false, &HashMap::new(), None, "").unwrap();
+        store.set_hold(Some(held(&["lint"], None))).unwrap();
+
+        let cwd = store
+            .write_review_files(&[("change_set.json", b"{}"), ("diff.patch", b"+x\n")])
+            .unwrap();
+
+        assert_eq!(cwd, scopes.join("s1/review"));
+        assert_eq!(fs::read(cwd.join("diff.patch")).unwrap(), b"+x\n");
+        store.set_hold(Some(held(&["lint", "llm"], None))).unwrap();
+        assert!(cwd.join("change_set.json").exists(), "a review keeps the files");
+        store.set_hold(None).unwrap();
+        assert!(!cwd.exists(), "a release removes them");
+        store.set_hold(None).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_reopen_opens_the_scope_and_drops_its_hold_together() {
+        let dir = crate::db::temp_dir("store-reopen");
+        let scopes = dir.join("scopes");
+        fs::create_dir(&scopes).unwrap();
+        let mut store = ScopeStore::create(&scopes, "s1", "t", 1, 0, false, &HashMap::new(), None, "").unwrap();
+        store.set_state(ScopeState::Closed).unwrap();
+        store.set_hold(Some(held(&["lint"], None))).unwrap();
+        store.write_review_files(&[("diff.patch", b"+x\n")]).unwrap();
+
+        store.reopen().unwrap();
+
+        assert_eq!(store.state, ScopeState::Open);
+        assert!(store.hold().is_none());
+        drop(store);
+        let loaded = ScopeStore::load(&scopes, "s1").unwrap();
+        assert_eq!(loaded.state, ScopeState::Open, "the state is on disk");
+        assert!(loaded.hold().is_none(), "and the hold is gone with it");
+        assert!(!scopes.join("s1/review").exists());
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_next_attempt_follows_the_recorded_run_of_the_same_reviewer() {
+        let run = |reviewer: &str| Run {
+            reviewer: reviewer.into(),
+            attempt: 2,
+            waiting: false,
+            token_sha256: None,
+            deadline_ms: None,
+        };
+        assert_eq!(held(&["lint"], None).next_attempt("lint"), 1);
+        assert_eq!(held(&["lint"], Some(run("lint"))).next_attempt("lint"), 3);
+        assert_eq!(held(&["lint"], Some(run("other"))).next_attempt("lint"), 1);
     }
 }

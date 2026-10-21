@@ -16,4 +16,4 @@ cd "$ROOT"
 if [ $# -gt 0 ]; then
   exec "$UV" run --project sdk/python --frozen python "$@"
 fi
-"$UV" run --project sdk/python --frozen pytest -v -p no:cacheprovider tests/conformance
+"$UV" run --project sdk/python --frozen pytest -v -p no:cacheprovider --rootdir tests/conformance tests/conformance

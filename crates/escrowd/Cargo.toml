@@ -21,6 +21,8 @@ rusqlite.workspace = true
 rustix.workspace = true
 serde.workspace = true
 serde-saphyr.workspace = true
+serde_json.workspace = true
+pbjson.workspace = true
 sha2 = "0.11.0"
 similar = "3.2.0"
 memchr = "2.8.3"
@@ -31,5 +33,6 @@ tonic-prost.workspace = true
 parking_lot.workspace = true
 
 [build-dependencies]
+pbjson-build.workspace = true
 protoc-bin-vendored.workspace = true
 tonic-prost-build.workspace = true

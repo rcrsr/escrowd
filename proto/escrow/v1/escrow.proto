@@ -1,5 +1,5 @@
 // escrowd protocol v1: SDKs mark scopes, the daemon captures, gates and decides.
-// Served as gRPC over a Unix socket (path in ESCROW_SOCKET). Frozen at protocol 7
+// Served as gRPC over a Unix socket (path in ESCROW_SOCKET). Frozen at protocol 8
 // (tag protocol-v1): fields and calls are only added; a breaking change is a new
 // package, escrow.v2. The specification, with status codes, the exec socket's
 // frames and the `escrow exec` interface, is docs/protocol.md.
@@ -64,11 +64,12 @@ service ReviewerService {
   // and its session's earlier decisions.
   rpc GetHeld(GetHeldRequest) returns (GetHeldResponse);
 
-  // A tier's verdict on a held scope. The tier must be one the scope still waits
-  // for; a human's verdict also stands for the cheaper tiers still pending. Verdicts
-  // only tighten (commit < return < discard): a looser verdict than the one so far
-  // fails with PERMISSION_DENIED unless the tier is human and `override` is set,
-  // which the ledger records. After the last pending tier the scope is decided with
+  // A reviewer's verdict on a held scope, named by `reviewer` (or, for the built-ins,
+  // by `tier`). The reviewer must be one the scope still waits for; a verdict from a
+  // reviewer that may override (the human) also stands for the reviewers still pending
+  // before it. Verdicts only tighten (commit < return < discard): a looser verdict than
+  // the one so far fails with PERMISSION_DENIED unless the reviewer may override and
+  // `override` is set, which the ledger records. After the last pending tier the scope is decided with
   // the verdict so far, as Decide would (a commit can conflict); before it, the
   // outcome is OUTCOME_STATUS_HELD with the tiers left.
   rpc Review(ReviewRequest) returns (ReviewResponse);
@@ -211,10 +212,14 @@ message Review {
   repeated string reasons = 2;
   // The tiers above software the change set needs, cheapest first: each tier from
   // TIER_LLM up to the highest its paths need (policy `review:`, first match per path).
-  // Decide holds a committed change set that needs any (OUTCOME_STATUS_HELD).
+  // Decide holds a committed change set that needs any (OUTCOME_STATUS_HELD). Only the
+  // built-in reviewers appear here; `reviewers` has all of them.
   repeated Tier tiers = 3;
   // A `review:` rule of a path that needs a tier above software requires the agent to wait.
   bool wait_required = 4;
+  // The reviewers the change set needs, in review order: the policy's declared reviewers,
+  // then the built-in "llm" and "human". Decide holds a committed change set that needs any.
+  repeated string reviewers = 5;
 }
 
 message GetChangeSetRequest {
@@ -270,11 +275,14 @@ message Outcome {
   // The scope is open again with its changes: verdict return, or a conflict under
   // conflict.verdict return.
   bool reopened = 5;
-  // OUTCOME_STATUS_HELD: the tiers still to review, cheapest first.
+  // OUTCOME_STATUS_HELD: the tiers still to review, cheapest first (built-in reviewers
+  // only; `reviewers` has all).
   repeated Tier tiers = 6;
   // OUTCOME_STATUS_HELD: the session's next scope waits for the verdict (a review rule
   // requires it, or the client asked to wait).
   bool wait = 7;
+  // OUTCOME_STATUS_HELD: the reviewers still to review, in order.
+  repeated string reviewers = 8;
 }
 
 // Exec socket: start argv in the scope's sandbox, with the scope's view over the project.
@@ -324,11 +332,14 @@ message AwaitDecisionResponse {
 
 // One tier's verdict on a held scope.
 message TierReview {
+  // TIER_UNSPECIFIED for a reviewer that is not "llm" or "human".
   Tier tier = 1;
   Verdict verdict = 2;
   repeated string reasons = 3;
-  // A human loosened the verdict so far.
+  // A reviewer that may override loosened the verdict so far.
   bool override = 4;
+  // The reviewer's name.
+  string reviewer = 5;
 }
 
 message HeldScope {
@@ -346,6 +357,8 @@ message HeldScope {
   repeated TierReview reviews = 8;
   // When the scope was held, in milliseconds since the Unix epoch.
   uint64 held_at_ms = 9;
+  // The reviewers still to review, in order.
+  repeated string reviewers = 10;
 }
 
 message ListHeldRequest {}
@@ -381,11 +394,17 @@ message Decided {
 
 message ReviewRequest {
   string scope_id = 1;
+  // TIER_LLM or TIER_HUMAN names that built-in reviewer when `reviewer` is empty.
   Tier tier = 2;
   Verdict verdict = 3;
   repeated string reasons = 4;
-  // A human loosens the verdict so far (recorded in the ledger).
+  // A reviewer that may override loosens the verdict so far (recorded in the ledger).
   bool override = 5;
+  // The reviewer giving the verdict. Empty: the one `tier` names (TIER_LLM or TIER_HUMAN).
+  // A given `tier` must agree with the name.
+  string reviewer = 6;
+  // A delegated reviewer's one-time token.
+  string token = 7;
 }
 
 message ReviewResponse {

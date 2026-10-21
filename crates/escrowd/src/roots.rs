@@ -14,6 +14,9 @@
 //!
 //! The project, passthrough and read paths inside a root are stubs: sandboxes bind
 //! them over the view. escrowd's own state, views and sockets are hidden.
+//!
+//! The policy file and each reviewer program are protected: a change to one, in
+//! any view that serves it, gets EACCES whatever the rules say (`Protected`).
 
 use std::path::{Path, PathBuf};
 
@@ -119,9 +122,51 @@ impl Rules {
     }
 }
 
+/// The paths of one root that no scope may change: the policy file and the reviewer
+/// programs, relative to the root.
+#[derive(Debug)]
+pub struct Protected {
+    paths: Vec<PathBuf>,
+}
+
+impl Protected {
+    pub fn new(paths: Vec<PathBuf>) -> Self {
+        Protected { paths }
+    }
+
+    /// `op` on `rel` must be refused: `rel` is a protected path, or (for `rename`,
+    /// `unlink` and `rmdir`, which would move or remove it) a folder above one.
+    pub fn refuses(&self, rel: &Path, op: &str) -> bool {
+        let removes = matches!(op, "rename" | "unlink" | "rmdir");
+        self.paths.iter().any(|p| p == rel || (removes && p.starts_with(rel)))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn protected_refuses_the_path_and_removals_above_it() {
+        let prot = Protected::new(vec![PathBuf::from("ci/policy.yaml")]);
+        let refused = |rel: &str, op: &str| prot.refuses(Path::new(rel), op);
+
+        for op in ["open-write", "setattr", "unlink", "rename", "create", "link"] {
+            assert!(refused("ci/policy.yaml", op), "{op} on the path itself");
+        }
+        for op in ["rename", "unlink", "rmdir"] {
+            assert!(refused("ci", op), "{op} on the folder above");
+            assert!(refused("", op), "{op} on the root");
+        }
+        for op in ["mkdir", "create", "setattr", "open-write", "symlink"] {
+            assert!(!refused("ci", op), "{op} on the folder above is allowed");
+        }
+        for op in ["rename", "unlink", "open-write", "create"] {
+            assert!(!refused("ci/other.yaml", op), "{op} on a sibling");
+            assert!(!refused("ci/policy.yaml.bak", op), "{op} on a name sharing a prefix");
+            assert!(!refused("cx", op), "{op} on an unrelated folder");
+        }
+    }
 
     #[test]
     fn view_names_round_trip() {

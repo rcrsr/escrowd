@@ -18,6 +18,8 @@ pub struct ScopeHandle {
     pub root: usize,
     /// The root's rules; None for the project, where every path is captured.
     pub(super) rules: Option<Arc<Rules>>,
+    /// The policy file and reviewer programs in this view; changes to them get EACCES.
+    pub(super) protected: Option<Arc<Protected>>,
     pub idx: u64,
     /// The base generation the scope opened at.
     pub since: u64,
@@ -232,7 +234,8 @@ impl Views {
 
     /// `rel` may change: the scope is open, the rules capture it (or keep it
     /// ephemeral), and the scope is writable (ephemeral paths always are). A change
-    /// to a captured path of the unscoped scope counts in `unscoped_changes`.
+    /// to a captured path of the unscoped scope counts in `unscoped_changes`. A
+    /// protected path is refused first (logged, not counted).
     pub(super) fn may_change(&self, h: &ScopeHandle, op: &str, rel: &Path, by: By) -> R<()> {
         self.check_change(h, op, rel, by, true)
     }
@@ -245,6 +248,10 @@ impl Views {
     pub(super) fn check_change(&self, h: &ScopeHandle, op: &str, rel: &Path, by: By, count: bool) -> R<()> {
         h.check_open()?;
         let access = h.access(rel);
+        if access != Access::Hidden && h.protected.as_ref().is_some_and(|p| p.refuses(rel, op)) {
+            self.log_by(h, op, rel, by, "deny");
+            return Err(Errno::EACCES);
+        }
         if count && access == Access::Capture && h.group == UNSCOPED {
             self.unscoped_changes.fetch_add(1, Ordering::Relaxed);
         }

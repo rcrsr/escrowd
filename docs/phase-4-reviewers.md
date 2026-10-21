@@ -2,7 +2,7 @@
 
 Oct 6, 2026 · Andre Bremer · Draft
 
-**Status, Oct 6, 2026: drafted**; no sub-phase started. Phase 3 is complete ([plan](phase-3-held-decisions.md), protocol 7 frozen in [PR #34](https://github.com/rcrsr/escrowd/pull/34)). Added Oct 6, 2026, ahead of the TypeScript SDK, which moved to phase 5 ([plan](phase-5-typescript-sdk.md)); every later phase moved down one.
+**Status, Oct 21, 2026: phase 4 is complete**: 4.1 to 4.6 done, exit runs in [PR #40](https://github.com/rcrsr/escrowd/pull/40). Protocol 8 (tag `protocol-8` on the merge commit; phase 5's `daemon-frozen` check counts from it). Review files live in the state folder at `scopes/<id>/review/`, not `reviews/<scope>/` (state is per scope, `ECRD.4.2`). Drafted Oct 6, 2026. Phase 3 is complete ([plan](phase-3-held-decisions.md), protocol 7 frozen in [PR #34](https://github.com/rcrsr/escrowd/pull/34)). Added Oct 6, 2026, ahead of the TypeScript SDK, which moved to phase 5 ([plan](phase-5-typescript-sdk.md)); every later phase moved down one.
 
 Phase 3 holds a change set for fixed tiers, `llm` and `human`, and anyone who can open the review socket gives any tier's verdict. Nothing in escrowd runs a review: a held scope waits until some process connects and answers. Phase 4 makes reviewers part of the policy. Each reviewer has a name and, optionally, a command: the daemon runs the command on a held change set and applies its verdict as that reviewer's, or the command hands the review off (a chat message, a pull request check) and the verdict comes back later with a single-use token. `review:` rules name the reviewers a path needs. The tiers stay as two built-in reviewers with no command, so phase 3 policies keep working.
 
@@ -123,6 +123,27 @@ When a scope is held and its next reviewer has `run`, the daemon starts it:
 
 Checks 1–6 on the final commit: the held soak (100 runs on the dev host), the suite 10 consecutive times on each CI runner (`ci:repeat`) and once on each Lima host, `buf breaking` against `protocol-v1`, then the tag `protocol-8`, which phase 5's `daemon-frozen` check counts from. Logs go to `tests/soak/results/` and `tests/conformance/results/`, and the status line gets the PR link.
 
+**As run (Oct 20 to 21, 2026)** on `d12c294`, the daemon's last change.
+
+| Check | Where | Result | Log |
+| --- | --- | --- | --- |
+| 1, 2, 3, 5. Conformance | Dev host | **348 / 348** | |
+| 6. Conformance | Lima: Ubuntu 24.04, Ubuntu 26.04, Debian 13, Fedora 44 | **348 / 348** on each | `tests/conformance/results/<host>.log` |
+| 4. Held soak | Dev host, 100 runs: 8 tier scopes and 8 command-reviewed scopes (4 `check`, 4 `check` then the delegate `oncall`), killed while reviewers decide (a quarter killed again in recovery) | 206 scopes held at a kill, a call in flight at 36 kills (5 took effect, 31 did not); **0 failed** | `tests/soak/results/held-wsl-dev-host-4.6.log` |
+| 5. `buf breaking` | Against `protocol-v1` | No breaking change | |
+| 6. 10 consecutive CI runs | CI: 3 conformance jobs (Python 3.11 and 3.14), with the crash and held soaks | **10 / 10** on each job; 210 held soak runs, **0 failed** ([PR #40](https://github.com/rcrsr/escrowd/pull/40)). Before the last fix, 3 more rounds on `aeacbc2`: 630 held soak runs, 0 failed | |
+
+Phase 3 checks pass with two intended edits: `protocol_version` is 8, and the fault-abort test of a final review (`test_reviewer.py`) now also counts `op=decide` lines and gains a `discarded` case.
+
+Found and fixed in 4.6 (all from phase 3; the phase 4 soak is the first check that counts `op=decide` lines):
+
+- **A recovered commit logged twice.** A kill after a commit's ledger line, before its scope was dropped, made the next start log `op=decide decision=commit` again. Recovery now logs it only if the scope's last ledger decision is not that commit (`Ledger::last_decision`, a backward scan to the scope's last `open`, `close` or `decide`). Fault points `applied` and `settled` test it.
+- **A logged discard reviewed again.** `drop_scope` writes its ledger line before the scope is gone; a kill in between left the scope closed and held, and phase 4's `resume` ran its reviewer again, which logged a second discard. The next start now drops a scope whose last ledger decision is a discard, before the history resolves. New fault point `discarded`.
+- **A returned scope left closed with no hold.** `reopen_scope` cleared the hold, then set each root's state open, in separate writes. A kill in between left the scope closed and unheld: the next start cancelled its pending history entry, and no one could decide it. CI's held soak caught it with the new failure output (scope `s7`, CI run 39635598909); `ScopeStore::reopen` now writes `state=open` and drops the hold in one transaction.
+- **A flaky runner test.** `a_run_that_ignores_term_is_killed_after_the_grace` checked the killed process group at once; an orphaned member can outlive the shell until init reaps it. The test waits up to 5 s.
+
+Seen once, not explained: one CI held soak run on `e752561` (run 39521584073, run 26, double kill) left a tier scope gone (discarded) with no history entry. The returned-scope fix above does not explain it: that bug leaves the scope's directory in place. A failed soak run now prints the named scopes' ledger lines, history rows and daemon log lines, and CI keeps failed run directories as artifacts for 7 days, so a repeat comes with evidence. Open: the advisory stable-toolchain clippy job fails on pbjson's generated code (`escrow.v1.serde.rs`); it does not gate CI.
+
 ## Carried limits
 
 All known limits are in [LIMITATIONS.md](../LIMITATIONS.md). Out of phase 4, by design:
@@ -134,10 +155,10 @@ All known limits are in [LIMITATIONS.md](../LIMITATIONS.md). Out of phase 4, by 
 
 ## Open questions
 
-- [ ] Protected, read-only policy (agents can read the rules) or hidden (ENOENT, as the state folder)? Proposed: read-only.
-- [ ] A discard that ends the review early: also stop when no later reviewer could loosen it, or always run every reviewer so the ledger has each one's view? Proposed: stop early.
-- [ ] Should reviewer commands get a read-only view of the scope's staged tree (to run a linter on whole files), or only the change set and diff? Proposed: a read-only view path in the request, mounted outside every sandbox.
-- [ ] `reviewers_parallel` default: 4, or the number of CPUs?
+- [x] Protected, read-only policy (agents can read the rules) or hidden (ENOENT, as the state folder)? Read-only. Decided Oct 19, 2026.
+- [x] A discard that ends the review early: also stop when no later reviewer could loosen it, or always run every reviewer so the ledger has each one's view? Stop early. Decided Oct 19, 2026.
+- [ ] Should reviewer commands get a read-only view of the scope's staged tree (to run a linter on whole files), or only the change set and diff? Proposed: a read-only view path in the request, mounted outside every sandbox. Deferred Oct 19, 2026 to a later change.
+- [x] `reviewers_parallel` default: 4, or the number of CPUs? 4. Decided Oct 19, 2026.
 - [x] Phase slot: phase 4, ahead of the TypeScript SDK, so the SDK mirrors the reviewer model. Decided Oct 6, 2026.
 - [x] Reviews across a restart: hold the scope until every reviewer has settled; command reviewers run again, delegated ones keep their token. Decided Oct 6, 2026.
 - [x] The policy and reviewer programs: protected from every sandbox, and `passthrough` refused when they lie in the project. Decided Oct 6, 2026 (refusing any policy inside the project was the alternative).

@@ -12,7 +12,8 @@ use fuser::BackgroundSession;
 use crate::exec::{self, Children, ExecServer};
 use crate::gate::Gate;
 use crate::policy::{Policy, RootRules, Rule};
-use crate::roots::{self, Rules};
+use crate::reviewer::Runner;
+use crate::roots::{self, Protected, Rules};
 use crate::sandbox::{self, Mount, Sandbox};
 use crate::views::{RootSpec, Unscoped, Views};
 use crate::{fuse, review, rpc, sys};
@@ -86,6 +87,8 @@ pub struct Daemon {
     pub socket: PathBuf,
     pub children: Arc<Children>,
     diff: crate::diff::Caps,
+    /// Command reviewers running at once.
+    reviewers_parallel: usize,
     read: Vec<PathBuf>,
     write: Vec<PathBuf>,
     /// `$HOME` (served or not).
@@ -179,6 +182,32 @@ struct Validated {
     tmp: Option<Resolved>,
     /// Writable binds, resolved but possibly not yet created.
     write: Vec<PathBuf>,
+    /// The policy file and each reviewer program, as given and canonical (absolute).
+    protected: Vec<PathBuf>,
+}
+
+/// Each of `paths` made absolute, plus its canonical form when that differs; sorted, no duplicates.
+fn protected_forms(paths: impl IntoIterator<Item = PathBuf>) -> anyhow::Result<Vec<PathBuf>> {
+    let mut out = std::collections::BTreeSet::new();
+    for p in paths {
+        let abs = std::path::absolute(&p).with_context(|| format!("resolving {}", p.display()))?;
+        if let Ok(canonical) = abs.canonicalize() {
+            out.insert(canonical);
+        }
+        out.insert(abs);
+    }
+    Ok(out.into_iter().collect())
+}
+
+/// `protected` relative to `host`, as the root's view sees it; None when none lies in it.
+fn protected_in(host: &Path, protected: &[PathBuf]) -> Option<Arc<Protected>> {
+    let rel: Vec<PathBuf> = protected
+        .iter()
+        .filter_map(|p| p.strip_prefix(host).ok())
+        .filter(|r| !r.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .collect();
+    (!rel.is_empty()).then(|| Arc::new(Protected::new(rel)))
 }
 
 /// Load and compile the policy and check the paths against one another. Creates no
@@ -255,7 +284,33 @@ fn validate(config: &Config) -> anyhow::Result<Validated> {
             );
         }
     }
-    let review = review::Rules::new(&policy.review, &policy.write).context("policy review: or write:")?;
+    let programs = policy
+        .reviewers
+        .iter()
+        .filter(|(_, def)| def.run.is_some())
+        .map(|(name, def)| def.program_path(name))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    for (name, def) in &policy.reviewers {
+        for var in def.env.iter().filter(|v| std::env::var_os(v).is_none()) {
+            eprintln!("escrowd: reviewers: {name}: env {var} is unset");
+        }
+    }
+    let protected = protected_forms(config.policy.iter().cloned().chain(programs))?;
+    if config.unscoped == Unscoped::Passthrough
+        && let Some(p) = protected.iter().find(|p| inside(p, &project))
+    {
+        bail!(
+            "unscoped passthrough: {} is protected and lies in the project",
+            p.display()
+        );
+    }
+    for w in &write {
+        if let Some(p) = protected.iter().find(|p| inside(p, w)) {
+            bail!("passthrough {} contains protected {}", w.display(), p.display());
+        }
+    }
+    let review =
+        review::Rules::new(&policy.review, &policy.reviewers, &policy.write).context("policy review: or write:")?;
     Ok(Validated {
         project,
         state,
@@ -268,13 +323,21 @@ fn validate(config: &Config) -> anyhow::Result<Validated> {
         home,
         tmp,
         write,
+        protected,
     })
+}
+
+/// What `check` found valid.
+pub struct Checked {
+    /// The absolute paths no scope may change (the policy file and the reviewer
+    /// programs, as given and canonical), sorted.
+    pub protected: Vec<PathBuf>,
 }
 
 /// Check that `config` would start: the policy loads and compiles and the paths do not
 /// overlap. Creates no directory, takes no lock, opens no store and mounts nothing.
-pub fn check(config: &Config) -> anyhow::Result<()> {
-    validate(config).map(drop)
+pub fn check(config: &Config) -> anyhow::Result<Checked> {
+    validate(config).map(|v| Checked { protected: v.protected })
 }
 
 /// Mount the views and load the scopes (rolling back an interrupted commit).
@@ -291,6 +354,7 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
         home,
         tmp,
         write,
+        protected,
     } = validate(&config)?;
     std::fs::create_dir_all(&state).with_context(|| format!("state dir {}", state.display()))?;
     std::fs::create_dir_all(&mount).with_context(|| format!("mount dir {}", mount.display()))?;
@@ -313,6 +377,7 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
             state: &state,
             mount: &mount,
             sockets: &sockets,
+            protected: &protected,
         },
         home,
         tmp,
@@ -341,6 +406,7 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
         socket: config.socket,
         children: Arc::new(Children::new(std::time::Duration::from_millis(policy.close.grace_ms))),
         diff: policy.diff.caps(),
+        reviewers_parallel: policy.reviewers_parallel,
         read,
         write,
         home: home.or_else(std::env::home_dir),
@@ -357,6 +423,8 @@ struct Paths<'a> {
     state: &'a Path,
     mount: &'a Path,
     sockets: &'a [PathBuf],
+    /// The protected paths, absolute.
+    protected: &'a [PathBuf],
 }
 
 /// Open every base before anything is mounted, so reads of it never loop through a view.
@@ -374,6 +442,7 @@ fn open_roots(
         state,
         mount,
         sockets,
+        protected,
     } = *paths;
     let open = |p: &Path| sys::open_dir(p).with_context(|| format!("opening {}", p.display()));
     let mut specs = vec![RootSpec {
@@ -381,6 +450,7 @@ fn open_roots(
         lower: Some(open(project)?),
         served: true,
         rules: None,
+        protected: protected_in(project, protected),
         direct: Vec::new(),
     }];
     let fallback = [
@@ -395,6 +465,7 @@ fn open_roots(
                 lower,
                 served: false,
                 rules: None,
+                protected: None,
                 direct: Vec::new(),
             });
             continue;
@@ -423,6 +494,7 @@ fn open_roots(
         let (default, paths) = rules.expect("a resolved root has rules");
         specs.push(RootSpec {
             lower: Some(open(&host)?),
+            protected: protected_in(&host, protected),
             host,
             served: true,
             rules: Some(Arc::new(Rules::new(default, paths, stubs, hidden))),
@@ -509,7 +581,8 @@ impl Daemon {
                 });
             }
         });
-        let service = rpc::Service::new(self.views.clone(), self.children.clone(), self.diff);
+        let runner = Runner::new(self.reviewers_parallel, rpc::review_socket(&self.socket));
+        let service = rpc::Service::new(self.views.clone(), self.children.clone(), self.diff, runner);
         let served = rpc::serve(&self.socket, service, shutdown).await;
         accept.abort();
         let _ = std::fs::remove_file(&exec_path);
@@ -550,5 +623,111 @@ mod tests {
                 .unwrap()
                 .join("escrowd-no-such-dir/sub")
         );
+    }
+
+    /// A config over a fresh project, state and mount outside it, with `policy` written
+    /// to `<dir>/policy.yaml` when given.
+    fn config(name: &str, policy: Option<&str>, unscoped: Unscoped) -> (Config, PathBuf) {
+        let dir = crate::db::temp_dir(name).canonicalize().unwrap();
+        let project = dir.join("project");
+        std::fs::create_dir(&project).unwrap();
+        let policy = policy.map(|text| {
+            let path = dir.join("policy.yaml");
+            std::fs::write(&path, text).unwrap();
+            path
+        });
+        let config = Config {
+            socket: PathBuf::new(),
+            project,
+            state: Some(dir.join("state")),
+            mount: Some(dir.join("mount")),
+            policy,
+            threads: 1,
+            unscoped,
+            bwrap: None,
+            read: Vec::new(),
+        };
+        (config, dir)
+    }
+
+    #[test]
+    fn a_protected_policy_in_the_project_refuses_unscoped_passthrough() {
+        let (mut config, dir) = config("protected-pass", None, Unscoped::Passthrough);
+        let policy = config.project.join("policy.yaml");
+        std::fs::write(&policy, "version: 1\n").unwrap();
+        config.policy = Some(policy.clone());
+
+        let err = check(&config).err().unwrap().to_string();
+        config.unscoped = Unscoped::Implicit;
+        let checked = check(&config).unwrap();
+
+        assert_eq!(
+            err,
+            format!(
+                "unscoped passthrough: {} is protected and lies in the project",
+                policy.display()
+            )
+        );
+        assert_eq!(checked.protected, [policy]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// An executable `<dir>/tools/prog` and a symlink `<dir>/link` to it.
+    fn program(dir: &Path) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+        let tools = dir.join("tools");
+        std::fs::create_dir(&tools).unwrap();
+        let prog = tools.join("prog");
+        std::fs::write(&prog, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&prog, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let link = dir.join("link");
+        symlink(&prog, &link).unwrap();
+        (prog, link)
+    }
+
+    #[test]
+    fn a_passthrough_path_over_a_reviewer_program_is_refused() {
+        let (mut config, dir) = config("protected-write", None, Unscoped::Implicit);
+        let (prog, _) = program(&dir);
+        let policy = dir.join("policy.yaml");
+        let text = format!(
+            "version: 1\nreviewers:\n  lint: {{run: [{}]}}\nroots:\n  other:\n    passthrough: [{}]\n",
+            prog.display(),
+            prog.parent().unwrap().display()
+        );
+        std::fs::write(&policy, text).unwrap();
+        config.policy = Some(policy);
+
+        let err = check(&config).err().unwrap().to_string();
+
+        assert_eq!(
+            err,
+            format!(
+                "passthrough {} contains protected {}",
+                prog.parent().unwrap().display(),
+                prog.display()
+            )
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_protected_set_has_each_path_as_given_and_canonical_sorted() {
+        let (mut config, dir) = config("protected-set", None, Unscoped::Implicit);
+        let (prog, link) = program(&dir);
+        let policy = dir.join("policy.yaml");
+        std::fs::write(
+            &policy,
+            format!("version: 1\nreviewers:\n  lint: {{run: [{}]}}\n", link.display()),
+        )
+        .unwrap();
+        config.policy = Some(policy.clone());
+
+        let checked = check(&config).unwrap();
+
+        let mut want = vec![policy, link, prog];
+        want.sort();
+        assert_eq!(checked.protected, want);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

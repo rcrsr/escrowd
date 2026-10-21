@@ -25,6 +25,7 @@ pub mod policy;
 pub(crate) mod proc;
 pub(crate) mod record;
 pub(crate) mod review;
+pub(crate) mod reviewer;
 pub(crate) mod roots;
 pub mod rpc;
 pub mod sandbox;
@@ -33,10 +34,11 @@ pub(crate) mod store;
 pub(crate) mod sys;
 pub mod views;
 
-/// Protocol version reported by `Ping`: 7 since the freeze (tag `protocol-v1`),
+/// Protocol version reported by `Ping`: 8 since the freeze (tag `protocol-v1`),
 /// for the whole of `escrow.v1`; see `docs/protocol.md`.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 
 pub mod proto {
     tonic::include_proto!("escrow.v1");
+    include!(concat!(env!("OUT_DIR"), "/escrow.v1.serde.rs"));
 }

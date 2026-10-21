@@ -11,17 +11,23 @@
 //! line splits on spaces and every path round-trips. Arguments stop at 4 KiB.
 
 use std::fs::{File, OpenOptions};
-use std::io::{self, Write as _};
-use std::path::Path;
+use std::io::{self, Read as _, Seek as _, SeekFrom, Write as _};
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::proc::Proc;
 use crate::sys;
 
-pub struct Ledger(File);
+pub struct Ledger {
+    file: File,
+    path: PathBuf,
+}
 
 /// Arguments past this many bytes (encoded) are left out of a `proc` line.
 const ARGS_MAX: usize = 4096;
+
+/// `last_decision` reads the ledger backwards in blocks of this many bytes.
+const SCAN_BLOCK: u64 = 64 * 1024;
 
 pub fn escape(p: &Path) -> String {
     escape_bytes(sys::path_bytes(p), b"=%")
@@ -41,7 +47,41 @@ fn escape_bytes(bytes: &[u8], also: &[u8]) -> String {
 
 impl Ledger {
     pub fn open(path: &Path) -> io::Result<Self> {
-        Ok(Ledger(OpenOptions::new().create(true).append(true).open(path)?))
+        Ok(Ledger {
+            file: OpenOptions::new().create(true).append(true).open(path)?,
+            path: path.to_path_buf(),
+        })
+    }
+
+    /// The decision of `scope`'s newest `open`, `close` or `decide` line, if that line is
+    /// a `decide`: a verdict the ledger already shows, which start-up recovery must not
+    /// log again. Reads backwards from the end, so only the lines written since that one.
+    pub fn last_decision(&self, scope: &str) -> io::Result<Option<String>> {
+        let mut f = File::open(&self.path)?;
+        let key = format!("scope={scope} op=");
+        let mut end = f.seek(SeekFrom::End(0))?;
+        // The start of the line the block after this one began with.
+        let mut carry = Vec::new();
+        loop {
+            let start = end.saturating_sub(SCAN_BLOCK);
+            let mut block = vec![0; (end - start) as usize];
+            f.seek(SeekFrom::Start(start))?;
+            f.read_exact(&mut block)?;
+            block.extend_from_slice(&carry);
+            let mut lines = block.split(|&b| b == b'\n');
+            // Unless the block starts the file, its first line may begin in the one before.
+            let first = if start == 0 { None } else { lines.next() };
+            for line in lines.rev() {
+                if let Some(decision) = scope_mark(line, &key) {
+                    return Ok(decision);
+                }
+            }
+            match first {
+                Some(partial) => carry = partial.to_vec(),
+                None => return Ok(None),
+            }
+            end = start;
+        }
     }
 
     pub fn append(&self, scope: &str, op: &str, path: &Path, from: Option<&Path>, decision: &str) {
@@ -63,6 +103,18 @@ impl Ledger {
         self.write(&format!(
             "scope={scope} op={op} path={}{from}{proc} decision={decision}",
             escape(path)
+        ));
+    }
+
+    /// A reviewer's verdict: `op=review-<reviewer>`, with the pid of the reviewer program
+    /// that gave it and the cause of a failed or refused verdict, when there are any.
+    pub fn append_review(&self, scope: &str, reviewer: &str, pid: Option<u32>, cause: Option<&str>, decision: &str) {
+        let pid = pid.map(|p| format!(" pid={p}")).unwrap_or_default();
+        let cause = cause
+            .map(|c| format!(" cause={}", escape_bytes(c.as_bytes(), b"=%")))
+            .unwrap_or_default();
+        self.write(&format!(
+            "scope={scope} op=review-{reviewer} path={pid}{cause} decision={decision}"
         ));
     }
 
@@ -100,7 +152,23 @@ impl Ledger {
             .unwrap_or_default()
             .as_millis();
         // One O_APPEND write per line: concurrent appends never interleave within a line.
-        let _ = (&self.0).write_all(format!("{ms} {fields}\n").as_bytes());
+        let _ = (&self.file).write_all(format!("{ms} {fields}\n").as_bytes());
+    }
+}
+
+/// For a line of the scope `key` names: `Some(Some(decision))` for a `decide`,
+/// `Some(None)` for an `open` or `close`; `None` for any other line.
+fn scope_mark(line: &[u8], key: &str) -> Option<Option<String>> {
+    let fields = &line[line.iter().position(|&b| b == b' ')? + 1..];
+    let op = fields.strip_prefix(key.as_bytes())?;
+    let op = &op[..op.iter().position(|&b| b == b' ').unwrap_or(op.len())];
+    match op {
+        b"decide" => {
+            let at = line.windows(10).rposition(|w| w == b" decision=")?;
+            Some(Some(String::from_utf8_lossy(&line[at + 10..]).into_owned()))
+        }
+        b"open" | b"close" => Some(None),
+        _ => None,
     }
 }
 
@@ -112,5 +180,60 @@ mod tests {
     fn escapes_separators_and_non_ascii() {
         assert_eq!(escape(Path::new("a b=c%d/é")), "a%20b%3Dc%25d/%C3%A9");
         assert_eq!(escape(Path::new("plain/path.txt")), "plain/path.txt");
+    }
+
+    #[test]
+    fn a_review_line_carries_the_pid_and_cause_only_when_given() {
+        let dir = crate::db::temp_dir("ledger-review");
+        let ledger = Ledger::open(&dir.join("l.log")).unwrap();
+        ledger.append_review("s1", "lint", None, None, "commit");
+        ledger.append_review("s1", "lint", Some(7), Some("exit 3 = bad"), "return");
+        ledger.append("s1", "review-lint", Path::new(""), None, "commit");
+        let log = std::fs::read_to_string(dir.join("l.log")).unwrap();
+        let lines: Vec<&str> = log.lines().map(|l| l.split_once(' ').unwrap().1).collect();
+        assert_eq!(lines[0], "scope=s1 op=review-lint path= decision=commit");
+        assert_eq!(lines[0], lines[2]);
+        assert_eq!(
+            lines[1],
+            "scope=s1 op=review-lint path= pid=7 cause=exit%203%20%3D%20bad decision=return"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_last_decision_holds_until_the_scope_opens_or_closes_again() {
+        let dir = crate::db::temp_dir("ledger-commit");
+        let ledger = Ledger::open(&dir.join("l.log")).unwrap();
+        let none = Path::new("");
+        assert_eq!(ledger.last_decision("s1").unwrap(), None, "an empty ledger");
+        ledger.append("s1", "open", none, None, "allow");
+        ledger.append("s1", "close", none, None, "allow");
+        assert_eq!(ledger.last_decision("s1").unwrap(), None);
+        ledger.append("s1", "decide", none, None, "return");
+        assert_eq!(ledger.last_decision("s1").unwrap().as_deref(), Some("return"));
+        ledger.append("s1", "close", none, None, "allow");
+        ledger.append("s1", "hold", none, None, "llm");
+        ledger.append("s1", "decide", none, None, "commit");
+        // Lines of other scopes, and of a scope whose id starts the same, come after.
+        ledger.append("s10", "decide", none, None, "discard");
+        for _ in 0..3000 {
+            ledger.append(
+                "s2",
+                "write",
+                Path::new("a/long/enough/path/to/fill/the/blocks.txt"),
+                None,
+                "allow",
+            );
+        }
+        assert!(SCAN_BLOCK < std::fs::metadata(dir.join("l.log")).unwrap().len());
+        assert_eq!(
+            ledger.last_decision("s1").unwrap().as_deref(),
+            Some("commit"),
+            "found across scan blocks"
+        );
+        assert_eq!(ledger.last_decision("s10").unwrap().as_deref(), Some("discard"));
+        assert_eq!(ledger.last_decision("s2").unwrap(), None);
+        ledger.append("s1", "open", none, None, "allow");
+        assert_eq!(ledger.last_decision("s1").unwrap(), None, "a new scope of the same id");
     }
 }
