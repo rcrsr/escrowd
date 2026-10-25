@@ -70,7 +70,7 @@ These were measured or decided; do not reopen them without new evidence. Phase 0
 - **Reviewer calls go on `ReviewerService`** (the separate 0600 review socket), never `EscrowService`.
 - **Policy keys parse only in `policy.rs`.** Enforce `read:` in `gate.rs`, `write:`/`review:` in `review.rs`, `roots:` in `roots.rs`.
 - **Diagnostics use `eprintln!("escrowd: <area>: {e}")`.** No `println!`, `dbg!` or logging crate in the daemon.
-- **Only `#[allow(clippy::too_many_arguments)]` is permitted.** New dependencies go in `[workspace.dependencies]` with `dep.workspace = true`.
+- **Only `#[allow(clippy::too_many_arguments)]` is permitted** in hand-written code. Generated code (the `proto` module in `lib.rs`) takes `#[allow(clippy::all)]`. New dependencies go in `[workspace.dependencies]` with `dep.workspace = true`.
 
 ## CI and pull requests
 <!-- rule-level: operational -->
