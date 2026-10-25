@@ -24,19 +24,19 @@ escrowd captures every filesystem write a program makes inside a **scope**, hold
 | `tests/soak/` | Crash, held-decision and close soaks (`crash.py N`, `held.py N`, `close.py N`). |
 | `bench/` | Real-repo benchmark (`run.sh`, `lima.sh`, `summarize.py`). |
 | `packaging/ubuntu/` | escrowd's bwrap copy and AppArmor profile. |
+| `nx.json`, `package.json`, `pnpm-workspace.yaml`, `project.json` files | The nx workspace. Root `project.json` is `protocol`; `crates/`, `sdk/python/` and `tests/conformance/{daemon,sdk}/` each hold a `project.json` (`rust`, `python-sdk`, `conformance-daemon`, `conformance-sdk`). Tool commands live in the targets; `.github/actions/setup-nx` sets up CI. |
 | `spikes/` | Phase 0 throwaway code, a separate Cargo workspace. Only `spikes/lima/` (VM templates) is used outside it. |
 
 ## Commands
 
 ```bash
-cargo build && cargo clippy --all-targets -- -D warnings && cargo fmt --check
-cargo test
+pnpm exec nx run-many -t lint test build                           # all projects: rust, python-sdk, protocol (build: rust and python-sdk only)
+pnpm exec nx run-many -t conformance                               # daemon and SDK suites; builds the debug escrow binary first (or set ESCROW_BIN)
+pnpm exec nx run rust:lint                                         # cargo fmt --check and clippy -D warnings (also: rust:test, rust:build)
+pnpm exec nx run python-sdk:lint                                   # ruff check, ruff format --check, ty check (python-sdk:test diffs the generated stubs)
+pnpm exec nx run protocol:lint                                     # buf lint and buf format; protocol:test runs buf breaking against protocol-v1
+pnpm exec nx show project <project> --json                         # list a project's targets
 sdk/python/gen.sh                                                  # after editing proto/; CI diffs the stubs
-buf lint && buf format --diff --exit-code                          # CI also runs buf breaking against protocol-v1
-uv run --project sdk/python --frozen ruff check && uv run --project sdk/python --frozen ruff format --check
-uv run --project sdk/python --frozen ty check --project sdk/python
-uv run --project sdk/python --frozen pytest -q tests/conformance  # needs target/debug/escrow (or ESCROW_BIN)
-uv build --project sdk/python                                        # builds the SDK sdist and wheel
 tests/conformance/lima.sh ubuntu-24.04                             # suite in one host-matrix VM
 cargo build --release -p escrow-cli --features fault-injection     # release binary that honors ESCROWD_FAULT (soaks: ESCROW_BIN=target/release/escrow)
 ```
@@ -84,7 +84,7 @@ These were measured or decided; do not reopen them without new evidence. Phase 0
 <!-- rule-level: operational -->
 
 - Every tool is pinned in `mise.toml`; run `mise install`. Keep `rust-toolchain.toml` and `.python-version` in sync with it.
-- Use pnpm (not npm) and uv (not pip).
+- Use pnpm (not npm) and uv (not pip). Run `pnpm install` once per clone (installs nx); invoke it as `pnpm exec nx`.
 - Pin exact versions. When choosing one, take the latest stable or LTS.
 - Run `lefthook install` once per clone. Hooks format staged files and lint on push; the suite runs only in CI.
 

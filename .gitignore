@@ -8,3 +8,6 @@ __pycache__/
 !/.codanna/settings.toml
 conduct
 .fastembed_cache
+node_modules/
+/.nx/
+/dist/

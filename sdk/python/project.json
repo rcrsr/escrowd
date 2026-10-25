@@ -1,0 +1,48 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "python-sdk",
+  "projectType": "library",
+  "targets": {
+    "lint": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "inputs": [
+        "{workspaceRoot}/**/*.py",
+        "{workspaceRoot}/ruff.toml",
+        "{workspaceRoot}/sdk/python/pyproject.toml",
+        "{workspaceRoot}/sdk/python/uv.lock",
+        "{workspaceRoot}/tests/support/pyproject.toml",
+        "{workspaceRoot}/.python-version",
+        "{workspaceRoot}/mise.toml"
+      ],
+      "outputs": [],
+      "options": {
+        "parallel": false,
+        "commands": [
+          "uv run --project sdk/python --frozen ruff check",
+          "uv run --project sdk/python --frozen ruff format --check",
+          "uv run --project sdk/python --frozen ty check --project sdk/python"
+        ]
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "parallelism": false,
+      "options": {
+        "commands": ["sdk/python/gen.sh && git diff --exit-code sdk/python/src"]
+      }
+    },
+    "build": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "parallel": false,
+        "commands": [
+          "uv build --project sdk/python --wheel --out-dir dist",
+          "python -m zipfile -l dist/*.whl | grep -q escrow/py.typed"
+        ]
+      }
+    }
+  }
+}

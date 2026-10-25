@@ -1,5 +1,5 @@
 # Lefthook git hook manager: auto-fix staged files before commit, check before push.
-# Install: mise install && lefthook install (once per clone).
+# Install: mise install && pnpm install && lefthook install (once per clone).
 # Skip:    LEFTHOOK=0 git commit ...   or   git commit --no-verify
 #
 # pre-commit jobs fix only staged files and re-stage the result (stage_fixed).
@@ -29,32 +29,22 @@ pre-commit:
 pre-push:
   parallel: true
   jobs:
-    - name: cargo-fmt
-      glob: "*.rs"
-      run: cargo fmt --check
+    - name: rust-lint
+      glob: "{*.rs,crates/**,proto/**,Cargo.toml,Cargo.lock,rust-toolchain.toml,rustfmt.toml}"
+      run: pnpm exec nx run rust:lint
 
-    - name: clippy
-      glob: "{crates/**,proto/**,Cargo.toml,Cargo.lock,rust-toolchain.toml}"
-      run: cargo clippy --locked --all-targets -- -D warnings
-
-    - name: ruff-check
+    - name: python-lint
       glob: "*.py"
-      run: |
-        uv run --project sdk/python --frozen ruff check && \
-        uv run --project sdk/python --frozen ruff format --check
+      run: pnpm exec nx run python-sdk:lint
 
-    - name: ty-check
-      glob: "sdk/python/src/**/*.py"
-      run: uv run --project sdk/python --frozen ty check --project sdk/python
+    - name: protocol-lint
+      glob: "{proto/**,buf.yaml}"
+      run: pnpm exec nx run protocol:lint
 
     - name: lockfiles
-      glob: "{Cargo.toml,Cargo.lock,crates/*/Cargo.toml,sdk/python/pyproject.toml,sdk/python/uv.lock}"
-      run: cargo metadata --locked --format-version=1 > /dev/null && uv lock --check --project sdk/python
-
-    - name: buf
-      glob: "{proto/**,buf.yaml}"
-      run: buf lint && buf format --diff --exit-code
+      glob: "{Cargo.toml,Cargo.lock,crates/*/Cargo.toml,sdk/python/pyproject.toml,sdk/python/uv.lock,package.json,pnpm-lock.yaml,pnpm-workspace.yaml}"
+      run: cargo metadata --locked --format-version=1 > /dev/null && uv lock --check --project sdk/python && pnpm install --frozen-lockfile
 
     - name: actionlint
-      glob: ".github/workflows/*.yml"
+      glob: "{.github/workflows/*.yml,.github/actions/**}"
       run: actionlint

@@ -1,0 +1,22 @@
+name: Set up nx
+description: Node from the mise.toml pin, pnpm from packageManager, and a frozen pnpm install.
+
+runs:
+  using: composite
+  steps:
+    - name: Read the node pin
+      id: pin
+      shell: bash
+      run: echo "node=$(sed -n 's/^node = "\(.*\)"$/\1/p' mise.toml)" >> "$GITHUB_OUTPUT"
+
+    - uses: actions/setup-node@v7
+      with:
+        node-version: ${{ steps.pin.outputs.node }}
+
+    - uses: pnpm/action-setup@v6
+      with:
+        cache: true
+
+    - name: Install workspace dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile
