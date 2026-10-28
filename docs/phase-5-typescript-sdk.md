@@ -55,7 +55,7 @@ With three languages (Rust, Python, TypeScript), each with its own build, lint a
 - **D-DX-10** Deviation: no placeholder build targets; `protocol` and the conformance projects have no `build`.
 - **D-DX-11** Nothing under `crates/escrowd/` or `proto/` changed; the daemon stays frozen for phase 5.
 
-Not verified in this change (ENV): the CI Gate and the `ci:repeat` runs happen on the PR, which was not opened. Open gaps: `tests/conformance/lima-guest.sh` still runs pytest directly through `uv` (the Lima guest is not yet routed through nx); `.github/labeler.yml` has no `area:dx` entry for the new root files (`package.json`, `nx.json`, `pnpm-workspace.yaml`, `project.json`, `pnpm-lock.yaml`).
+Not verified in this change (ENV): the CI Gate and the `ci:repeat` runs run on PR #42. Open gap: `tests/conformance/lima-guest.sh` still runs pytest directly through `uv` (the Lima guest is not yet routed through nx).
 
 ### 5.2 TypeScript SDK: client, scopes, fs, held decisions
 

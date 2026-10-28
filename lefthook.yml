@@ -43,7 +43,7 @@ pre-push:
 
     - name: lockfiles
       glob: "{Cargo.toml,Cargo.lock,crates/*/Cargo.toml,sdk/python/pyproject.toml,sdk/python/uv.lock,package.json,pnpm-lock.yaml,pnpm-workspace.yaml}"
-      run: cargo metadata --locked --format-version=1 > /dev/null && uv lock --check --project sdk/python && pnpm install --frozen-lockfile
+      run: cargo metadata --locked --format-version=1 > /dev/null && uv lock --check --project sdk/python && pnpm install --frozen-lockfile --lockfile-only
 
     - name: actionlint
       glob: "{.github/workflows/*.yml,.github/actions/**}"

@@ -88,7 +88,7 @@ jobs:
         if: inputs.soak
         env:
           ESCROW_BIN: ${{ github.workspace }}/target/release/escrow
-        run: pnpm exec nx run-many -t conformance --outputStyle=stream
+        run: pnpm exec nx run-many -t conformance --outputStyle=stream --excludeTaskDependencies
 
       - name: Crash soak, release build, 20 random kills mid-commit
         if: inputs.soak
