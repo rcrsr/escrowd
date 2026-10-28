@@ -1,0 +1,53 @@
+{
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "name": "rust",
+  "projectType": "application",
+  "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "commands": ["cargo build --locked"]
+      }
+    },
+    "lint": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "inputs": [
+        "{workspaceRoot}/crates/**",
+        "{workspaceRoot}/proto/**",
+        "{workspaceRoot}/Cargo.toml",
+        "{workspaceRoot}/Cargo.lock",
+        "{workspaceRoot}/rust-toolchain.toml",
+        "{workspaceRoot}/rustfmt.toml",
+        "{workspaceRoot}/mise.toml",
+        { "env": "RUSTUP_TOOLCHAIN" }
+      ],
+      "outputs": [],
+      "options": {
+        "parallel": false,
+        "commands": [
+          "cargo fmt --check",
+          "cargo clippy --locked --all-targets -- -D warnings"
+        ]
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "inputs": [
+        "{workspaceRoot}/crates/**",
+        "{workspaceRoot}/proto/**",
+        "{workspaceRoot}/Cargo.toml",
+        "{workspaceRoot}/Cargo.lock",
+        "{workspaceRoot}/rust-toolchain.toml",
+        "{workspaceRoot}/mise.toml",
+        { "env": "RUSTUP_TOOLCHAIN" }
+      ],
+      "outputs": [],
+      "options": {
+        "commands": ["cargo test --locked"]
+      }
+    }
+  }
+}

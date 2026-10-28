@@ -3,6 +3,9 @@ name: CI
 # Pull requests only. `changes` gates each job on the paths it covers (every
 # job runs when this file changes); `CI Gate` is the one check to require. The
 # suite runs once here; `ci-repeat.yml` repeats it 10 times on demand (`ci:repeat`).
+# Tool commands live in the nx targets (project.json files); jobs call `nx run-many`.
+# Toolchain and workspace files (package.json, lockfile, nx.json, mise.toml, the
+# setup-nx action) are in the filter of each job that reads them.
 
 on:
   pull_request:
@@ -40,6 +43,12 @@ jobs:
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - 'rustfmt.toml'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - 'nx.json'
+              - 'mise.toml'
+              - '.github/actions/**'
               - '.github/workflows/ci.yml'
             python:
               - 'sdk/python/**'
@@ -48,11 +57,24 @@ jobs:
               - 'bench/**'
               - 'proto/**'
               - '.python-version'
+              - 'ruff.toml'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - 'nx.json'
+              - 'mise.toml'
+              - '.github/actions/**'
               - '.github/workflows/ci.yml'
             protocol:
               - 'proto/**'
               - 'buf.yaml'
+              - 'project.json'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - 'nx.json'
               - 'mise.toml'
+              - '.github/actions/**'
               - '.github/workflows/ci.yml'
             # The commit path and held decisions: run the crash and held soaks (50 random
             # kills each) after the suite.
@@ -77,6 +99,12 @@ jobs:
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
               - '.python-version'
+              - 'package.json'
+              - 'pnpm-lock.yaml'
+              - 'pnpm-workspace.yaml'
+              - 'nx.json'
+              - 'mise.toml'
+              - '.github/actions/**'
               - '.github/workflows/ci.yml'
               - '.github/workflows/conformance.yml'
 
@@ -94,13 +122,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Check Rust crates
-        run: |
-          cargo fmt --check
-          cargo clippy --locked --all-targets -- -D warnings
-          cargo test --locked
+      - uses: ./.github/actions/setup-nx
 
-  # The frozen protocol (docs/protocol.md): buf lint and format, and no breaking change
+      - name: Check Rust crates
+        run: pnpm exec nx run-many -t lint test -p rust
+
+  # The frozen protocol (docs/protocol.md): linted, formatted, and no breaking change
   # against the protocol-v1 tag (buf's FILE rules: generated code keeps compiling).
   check-protocol:
     name: Protocol
@@ -122,18 +149,10 @@ jobs:
           version: ${{ steps.pin.outputs.buf }}
           setup_only: true
 
-      - name: Lint and format
-        run: |
-          buf lint
-          buf format --diff --exit-code
+      - uses: ./.github/actions/setup-nx
 
-      - name: No breaking change since protocol-v1
-        run: |
-          if ! git rev-parse -q --verify refs/tags/protocol-v1 > /dev/null; then
-            echo "::notice::no protocol-v1 tag yet: nothing to compare"
-            exit 0
-          fi
-          buf breaking --against '.git#tag=protocol-v1'
+      - name: Lint, format and breaking-change check
+        run: pnpm exec nx run-many -t lint test -p protocol
 
   # Early warning, not required by the CI Gate: the workspace on current stable Rust
   # instead of the rust-toolchain.toml pin (RUSTUP_TOOLCHAIN overrides the file).
@@ -150,17 +169,18 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
 
       - uses: Swatinem/rust-cache@v2
         with:
           key: stable
 
+      - uses: ./.github/actions/setup-nx
+
       - name: Check Rust crates on stable
         run: |
           rustc --version
-          cargo clippy --locked --all-targets -- -D warnings
-          cargo test --locked
+          pnpm exec nx run-many -t lint test -p rust
 
   check-python:
     name: Python
@@ -186,19 +206,10 @@ jobs:
       - name: Install dependencies
         run: uv sync --project sdk/python --frozen
 
+      - uses: ./.github/actions/setup-nx
+
       - name: Check Python
-        run: |
-          uv run --project sdk/python --frozen ruff check
-          uv run --project sdk/python --frozen ruff format --check
-          uv run --project sdk/python --frozen ty check --project sdk/python
-
-      - name: Wheel ships py.typed
-        run: |
-          uv build --project sdk/python --wheel --out-dir dist
-          python -m zipfile -l dist/*.whl | grep -q escrow/py.typed
-
-      - name: Python stubs match proto/
-        run: sdk/python/gen.sh && git diff --exit-code sdk/python/src
+        run: pnpm exec nx run-many -t lint test build -p python-sdk
 
   # One suite run on each Ubuntu LTS runner (see conformance.yml), then the crash
   # soak when the commit path changed.
@@ -221,6 +232,10 @@ jobs:
             sdk
             tests/support
             .github
+            package.json
+            pnpm-lock.yaml
+            pnpm-workspace.yaml
+            mise.toml
             Cargo.toml
             Cargo.lock
             rust-toolchain.toml
@@ -230,6 +245,9 @@ jobs:
         uses: astral-sh/setup-uv@v7
 
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Frozen pnpm install matches pnpm-lock.yaml
+        uses: ./.github/actions/setup-nx
 
       - name: uv.lock in sync with pyproject.toml
         run: uv lock --check --project sdk/python
