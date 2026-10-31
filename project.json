@@ -1,0 +1,34 @@
+{
+  "$schema": "node_modules/nx/schemas/project-schema.json",
+  "name": "protocol",
+  "projectType": "library",
+  "targets": {
+    "lint": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "inputs": [
+        "{workspaceRoot}/proto/**",
+        "{workspaceRoot}/buf.yaml",
+        "{workspaceRoot}/mise.toml"
+      ],
+      "outputs": [],
+      "options": {
+        "parallel": false,
+        "commands": ["buf lint", "buf format --diff --exit-code"]
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "inputs": [
+        "{workspaceRoot}/proto/**",
+        "{workspaceRoot}/buf.yaml",
+        "{workspaceRoot}/mise.toml"
+      ],
+      "outputs": [],
+      "options": {
+        "commands": ["buf breaking --against '.git#tag=protocol-v1'"]
+      }
+    }
+  }
+}

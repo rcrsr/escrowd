@@ -1,0 +1,9 @@
+{
+  "name": "escrowd-workspace",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@12.7.0",
+  "devDependencies": {
+    "nx": "23.2.1"
+  }
+}

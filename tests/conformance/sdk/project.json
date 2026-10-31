@@ -1,0 +1,14 @@
+{
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "name": "conformance-sdk",
+  "projectType": "application",
+  "implicitDependencies": ["rust", "python-sdk"],
+  "targets": {
+    "conformance": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "uv run --project sdk/python --frozen pytest -v --rootdir tests/conformance tests/conformance/sdk"
+      }
+    }
+  }
+}

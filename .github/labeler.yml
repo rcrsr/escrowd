@@ -51,3 +51,8 @@ area:dx:
           - "Cargo.toml"
           - "CLAUDE.md"
           - ".gitignore"
+          - "package.json"
+          - "pnpm-lock.yaml"
+          - "pnpm-workspace.yaml"
+          - "nx.json"
+          - "**/project.json"

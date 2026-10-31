@@ -1,0 +1,14 @@
+{
+  "$schema": "./node_modules/nx/schemas/nx-schema.json",
+  "neverConnectToCloud": true,
+  "targetDefaults": {
+    "build": {
+      "cache": false
+    },
+    "conformance": {
+      "cache": false,
+      "parallelism": false,
+      "dependsOn": ["rust:build"]
+    }
+  }
+}
