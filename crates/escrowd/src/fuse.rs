@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime};
 
 use fuser::{
     AccessFlags, BackgroundSession, Config, Errno, FileAttr, FileHandle, FileType, Filesystem, FopenFlags, Generation,
-    INodeNo, InitFlags, KernelConfig, LockOwner, MountOption, OpenFlags, RenameFlags, ReplyAttr, ReplyCreate,
+    INodeNo, InitFlags, KernelConfig, LockOwner, MountOption, OpenFlags, Owner, RenameFlags, ReplyAttr, ReplyCreate,
     ReplyData, ReplyDirectory, ReplyDirectoryPlus, ReplyEmpty, ReplyEntry, ReplyOpen, ReplyStatfs, ReplyWrite, Request,
     TimeOrNow, WriteFlags,
 };
@@ -214,6 +214,7 @@ impl Filesystem for FuseView {
         _chgtime: Option<SystemTime>,
         _bkuptime: Option<SystemTime>,
         _flags: Option<fuser::BsdFileFlags>,
+        _kill_suid_gid: bool,
         reply: ReplyAttr,
     ) {
         let ts = |t: Option<TimeOrNow>| match t {
@@ -239,7 +240,16 @@ impl Filesystem for FuseView {
         }
     }
 
-    fn mkdir(&self, req: &Request, parent: INodeNo, name: &OsStr, mode: u32, umask: u32, reply: ReplyEntry) {
+    fn mkdir(
+        &self,
+        req: &Request,
+        parent: INodeNo,
+        name: &OsStr,
+        mode: u32,
+        umask: u32,
+        _owner: Owner,
+        reply: ReplyEntry,
+    ) {
         // Scopes are created over RPC, never by mkdir in the mount root.
         match self
             .0
@@ -269,7 +279,15 @@ impl Filesystem for FuseView {
         )
     }
 
-    fn symlink(&self, req: &Request, parent: INodeNo, link_name: &OsStr, target: &Path, reply: ReplyEntry) {
+    fn symlink(
+        &self,
+        req: &Request,
+        parent: INodeNo,
+        link_name: &OsStr,
+        target: &Path,
+        _owner: Owner,
+        reply: ReplyEntry,
+    ) {
         match self
             .0
             .child(parent.0, link_name)
@@ -288,6 +306,7 @@ impl Filesystem for FuseView {
         newparent: INodeNo,
         newname: &OsStr,
         flags: RenameFlags,
+        _owner: Option<Owner>,
         reply: ReplyEmpty,
     ) {
         let r = (|| {
@@ -317,7 +336,7 @@ impl Filesystem for FuseView {
         }
     }
 
-    fn open(&self, req: &Request, ino: INodeNo, flags: OpenFlags, reply: ReplyOpen) {
+    fn open(&self, req: &Request, ino: INodeNo, flags: OpenFlags, _kill_suid_gid: bool, reply: ReplyOpen) {
         match self
             .0
             .key(ino.0)
@@ -492,6 +511,8 @@ impl Filesystem for FuseView {
         mode: u32,
         umask: u32,
         flags: i32,
+        _kill_suid_gid: bool,
+        _owner: Owner,
         reply: ReplyCreate,
     ) {
         let v = &self.0;

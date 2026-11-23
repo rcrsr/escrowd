@@ -6,7 +6,7 @@ readme = "README.md"
 license = "Apache-2.0"
 requires-python = ">=3.11"
 dependencies = [
-    "grpcio>=1.84,<2",
+    "grpcio>=1.85,<2",
     "protobuf>=7.36.2,<8",
 ]
 classifiers = [
@@ -18,6 +18,7 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Typing :: Typed",
 ]
 
@@ -29,17 +30,17 @@ Issues = "https://github.com/rcrsr/escrowd/issues"
 [dependency-groups]
 dev = [
     "escrow-testkit",
-    "grpcio-tools==1.84.0",
-    "pytest==9.1.1",
-    "ruff==0.16.10",
-    "ty==0.0.84",
+    "grpcio-tools==1.85.3",
+    "pytest==9.2.0",
+    "ruff==0.17.6",
+    "ty==0.0.108",
 ]
 
 [tool.uv.sources]
 escrow-testkit = { path = "../../tests/support", editable = true }
 
 [build-system]
-requires = ["uv_build>=0.12.21,<0.13"]
+requires = ["uv_build>=0.13.9,<0.14"]
 build-backend = "uv_build"
 
 # The distribution is `escrowd` (the name `escrow` is taken on PyPI); the package stays `escrow`.

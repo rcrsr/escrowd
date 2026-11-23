@@ -5,7 +5,7 @@ import warnings
 
 from escrow.v1 import escrow_pb2 as escrow_dot_v1_dot_escrow__pb2
 
-GRPC_GENERATED_VERSION = '1.84.0'
+GRPC_GENERATED_VERSION = '1.85.3'
 GRPC_VERSION = grpc.__version__
 _version_not_supported = False
 

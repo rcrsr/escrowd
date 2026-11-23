@@ -47,7 +47,7 @@ There are no prebuilt binaries yet; you build escrowd from source.
 | Linux, kernel 6.8 or later | FUSE and namespace features escrowd relies on. macOS is not supported. |
 | `fuse3` (provides `fusermount3`) | Mounts the scope views without root. |
 | `bubblewrap` (`bwrap`) | Runs your program in a sandbox whose only way to the project is escrowd. |
-| Rust 1.93 or later | Builds escrowd. The repository pins its toolchain, which `rustup` installs for you. |
+| Rust 1.95 or later | Builds escrowd. The repository pins its toolchain, which `rustup` installs for you. |
 | Python 3.11 or later | Only for the Python SDK. |
 
 Install the system packages:
