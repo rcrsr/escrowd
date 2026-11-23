@@ -156,6 +156,8 @@ fn entry_attr(v: &Views, dir_ino: u64, at: &Dir, name: &OsStr) -> R<PlusEntry> {
 impl Filesystem for FuseView {
     fn init(&mut self, _req: &Request, config: &mut KernelConfig) -> io::Result<()> {
         // Unprivileged cache flags; passthrough needs CAP_SYS_ADMIN and is not used.
+        // FUSE_HANDLE_KILLPRIV_V2 stays off, so the kernel clears suid/sgid itself and
+        // the `kill_suid_gid` arguments of setattr, open and create are always false.
         let _ = config.add_capabilities(
             InitFlags::FUSE_ASYNC_READ
                 | InitFlags::FUSE_WRITEBACK_CACHE
