@@ -13,7 +13,7 @@ const WRITEBACK_QUEUE: usize = 256;
 
 /// The open files of every view, by file handle.
 pub(super) struct Files {
-    files: HashMap<u64, (Arc<ScopeHandle>, Arc<File>)>,
+    open: HashMap<u64, (Arc<ScopeHandle>, Arc<File>)>,
     /// The process that opened each file handle.
     openers: HashMap<u64, u32>,
     next_fh: u64,
@@ -22,7 +22,7 @@ pub(super) struct Files {
 impl Default for Files {
     fn default() -> Self {
         Files {
-            files: HashMap::new(),
+            open: HashMap::new(),
             openers: HashMap::new(),
             next_fh: 1,
         }
@@ -37,7 +37,7 @@ impl Views {
         let mut t = self.files.lock();
         let fh = t.next_fh;
         t.next_fh += 1;
-        t.files.insert(fh, (h, Arc::new(f)));
+        t.open.insert(fh, (h, Arc::new(f)));
         t.openers.insert(fh, pid);
         fh
     }
@@ -56,7 +56,7 @@ impl Views {
             // requests of every scope take this lock.
             let openers: Vec<u32> = {
                 let t = self.files.lock();
-                t.files
+                t.open
                     .iter()
                     .filter(|(_, (h, _))| h.group == id)
                     .filter_map(|(fh, _)| t.openers.get(fh).copied())
@@ -75,7 +75,7 @@ impl Views {
     pub fn file(&self, fh: u64) -> R<Arc<File>> {
         self.files
             .lock()
-            .files
+            .open
             .get(&fh)
             .map(|(_, f)| f.clone())
             .ok_or(Errno::EBADF)
@@ -83,7 +83,7 @@ impl Views {
 
     /// A handle to write through: the tag is fixed at open, and a closed scope takes no writes.
     pub fn file_for_write(&self, fh: u64) -> R<Arc<File>> {
-        let (h, f) = self.files.lock().files.get(&fh).cloned().ok_or(Errno::EBADF)?;
+        let (h, f) = self.files.lock().open.get(&fh).cloned().ok_or(Errno::EBADF)?;
         if h.is_closed() {
             self.ledger.append(&h.group, "write", Path::new(""), None, "deny");
             return Err(Errno::EBADF);
@@ -95,7 +95,7 @@ impl Views {
         let f = {
             let mut t = self.files.lock();
             t.openers.remove(&fh);
-            t.files.remove(&fh)
+            t.open.remove(&fh)
         };
         self.released.notify_all();
         // A file opened for writing is in the upper: start writing its data to disk

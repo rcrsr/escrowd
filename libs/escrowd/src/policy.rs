@@ -599,7 +599,7 @@ mod tests {
 
     #[test]
     fn read_section_is_optional() {
-        assert!(Policy::parse("version: 1\n").unwrap().read.deny.is_empty());
+        assert_eq!(Policy::parse("version: 1\n").unwrap().read.deny, Vec::<String>::new());
     }
 
     #[test]

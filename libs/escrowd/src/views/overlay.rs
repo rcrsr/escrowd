@@ -123,7 +123,7 @@ impl Views {
         }
     }
 
-    pub(super) fn record(&self, h: &ScopeHandle, rel: &Path, kind: VersionKind, st: &Stat) -> R<()> {
+    pub(super) fn record(h: &ScopeHandle, rel: &Path, kind: VersionKind, st: &Stat) -> R<()> {
         if h.store_read().has_version(rel, kind) {
             return Ok(());
         }
@@ -135,7 +135,7 @@ impl Views {
         if loc == Loc::Upper {
             return Ok(());
         }
-        self.record(h, rel, VersionKind::Changed, &st)?;
+        Self::record(h, rel, VersionKind::Changed, &st)?;
         self.ensure_upper_dir(h, parent(rel))?;
         if sys::is_dir(&st) {
             return self.ensure_upper_dir(h, rel);
@@ -196,7 +196,7 @@ impl Views {
 
     /// A new entry exists at `rel` in the upper: it no longer hides a base entry.
     /// A directory created where the base had one hides the base directory's contents.
-    pub(super) fn unwhiteout(&self, h: &ScopeHandle, rel: &Path, is_dir: bool) -> R<()> {
+    pub(super) fn unwhiteout(h: &ScopeHandle, rel: &Path, is_dir: bool) -> R<()> {
         let mut store = h.store();
         if store.remove_whiteout(rel).map_err(errno)? && is_dir {
             store.add_opaque(rel).map_err(errno)?;
@@ -228,7 +228,7 @@ impl Views {
     }
 
     /// `by` changed `rel`: it goes into the change set's writers.
-    pub(super) fn wrote(&self, h: &ScopeHandle, rel: &Path, by: By) -> R<()> {
+    pub(super) fn wrote(h: &ScopeHandle, rel: &Path, by: By) -> R<()> {
         let Some(p) = by else { return Ok(()) };
         if h.store_read().has_writer(rel, p.info.id) {
             return Ok(());
@@ -309,7 +309,7 @@ impl Views {
         if let Some((atime, mtime)) = times {
             sys::set_times(up, rel, atime, mtime).map_err(errno)?;
         }
-        self.wrote(h, rel, by)?;
+        Self::wrote(h, rel, by)?;
         sys::lstat(up, rel).map_err(errno)
     }
 
@@ -335,8 +335,8 @@ impl Views {
         }
         self.ensure_upper_dir(h, parent(rel))?;
         sys::mkdir(h.upper.as_fd(), rel, mode).map_err(errno)?;
-        self.unwhiteout(h, rel, true)?;
-        self.wrote(h, rel, by)?;
+        Self::unwhiteout(h, rel, true)?;
+        Self::wrote(h, rel, by)?;
         self.log_by(h, "mkdir", rel, by, "allow");
         Ok(())
     }
@@ -392,8 +392,8 @@ impl Views {
         }
         self.ensure_upper_dir(h, parent(rel))?;
         sys::symlink(target, h.upper.as_fd(), rel).map_err(errno)?;
-        self.unwhiteout(h, rel, false)?;
-        self.wrote(h, rel, by)?;
+        Self::unwhiteout(h, rel, false)?;
+        Self::wrote(h, rel, by)?;
         self.log_by(h, "symlink", rel, by, "allow");
         Ok(())
     }
@@ -478,14 +478,14 @@ impl Views {
         self.copy_up(h, src)?;
         self.ensure_upper_dir(h, parent(dst))?;
         sys::link(h.upper.as_fd(), src, dst).map_err(errno)?;
-        self.unwhiteout(h, dst, false)?;
+        Self::unwhiteout(h, dst, false)?;
         {
             let mut store = h.store();
             store.set_pin(src, ino).map_err(errno)?;
             store.set_pin(dst, ino).map_err(errno)?;
         }
         h.inodes.lock().inos.insert(dst.to_path_buf(), ino);
-        self.wrote(h, dst, by)?;
+        Self::wrote(h, dst, by)?;
         self.log_by(h, "link", dst, by, "allow");
         Ok(())
     }
@@ -530,13 +530,13 @@ impl Views {
         let (loc, st) = self.locate(h, rel)?;
         let f = if writes {
             self.copy_up(h, rel)?;
-            self.wrote(h, rel, by)?;
+            Self::wrote(h, rel, by)?;
             sys::open(h.upper.as_fd(), rel, oflags, 0)
         } else {
             match loc {
                 Loc::Upper => sys::open(h.upper.as_fd(), rel, oflags, 0),
                 Loc::Lower => {
-                    self.record(h, rel, VersionKind::Read, &st)?;
+                    Self::record(h, rel, VersionKind::Read, &st)?;
                     self.base(h).open(rel, oflags)
                 }
             }
@@ -572,8 +572,8 @@ impl Views {
         self.log_by(h, "create", rel, by, "allow");
         let oflags = Self::open_flags(flags) | OFlags::CREATE;
         let f = sys::open(h.upper.as_fd(), rel, oflags, mode).map_err(errno)?;
-        self.unwhiteout(h, rel, false)?;
-        self.wrote(h, rel, by)?;
+        Self::unwhiteout(h, rel, false)?;
+        Self::wrote(h, rel, by)?;
         Ok(f)
     }
 }

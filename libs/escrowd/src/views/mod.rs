@@ -105,7 +105,8 @@ fn lowers_of(roots: &[RootSpec]) -> Lowers<'_> {
 }
 
 #[must_use]
-pub fn errno(e: io::Error) -> Errno {
+pub fn errno(e: impl Into<io::Error>) -> Errno {
+    let e = e.into();
     Errno::from_i32(e.raw_os_error().unwrap_or(libc::EIO))
 }
 
@@ -476,7 +477,7 @@ impl Views {
             Gate::new(&[]).unwrap(),
             Unscoped::Passthrough,
             ConflictRules::default(),
-            review::Rules::new(&[], &policy.reviewers, &Default::default()).unwrap(),
+            review::Rules::new(&[], &policy.reviewers, &crate::policy::WriteRules::default()).unwrap(),
         )
         .unwrap();
         (views, dir)

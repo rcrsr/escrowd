@@ -596,7 +596,7 @@ impl Daemon {
                     continue;
                 };
                 std::thread::spawn(move || {
-                    if let Err(e) = server.handle(stream) {
+                    if let Err(e) = server.handle(&stream) {
                         eprintln!("escrowd: exec: {e}");
                     }
                 });

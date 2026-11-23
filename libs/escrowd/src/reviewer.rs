@@ -410,7 +410,7 @@ mod tests {
             argv: vec!["sh".into(), "-c".into(), script.into()],
             timeout,
             on_failure: Decision::Discard,
-            env: env.iter().map(|s| s.to_string()).collect(),
+            env: env.iter().map(ToString::to_string).collect(),
             delegate,
         }
     }
@@ -656,16 +656,16 @@ mod tests {
     async fn one_permit_serializes_two_runs() {
         let cmd = quick(r#"sleep 0.4; echo '{"verdict":"commit"}'"#);
         let serial = runner(1);
-        let t = Instant::now();
-        let (a, b) = tokio::join!(serial.run(&cmd, request("a")), serial.run(&cmd, request("b")));
-        let serial_took = t.elapsed();
+        let start = Instant::now();
+        let (serial_a, serial_b) = tokio::join!(serial.run(&cmd, request("a")), serial.run(&cmd, request("b")));
+        let serial_took = start.elapsed();
 
         let both = runner(2);
-        let t = Instant::now();
-        let (c, d) = tokio::join!(both.run(&cmd, request("a")), both.run(&cmd, request("b")));
-        let parallel_took = t.elapsed();
+        let start = Instant::now();
+        let (both_a, both_b) = tokio::join!(both.run(&cmd, request("a")), both.run(&cmd, request("b")));
+        let parallel_took = start.elapsed();
 
-        for r in [a, b, c, d] {
+        for r in [serial_a, serial_b, both_a, both_b] {
             assert_eq!(r.result, Ok(Answer::Verdict(Decision::Commit, vec![])));
         }
         assert!(serial_took >= Duration::from_millis(800), "{serial_took:?}");

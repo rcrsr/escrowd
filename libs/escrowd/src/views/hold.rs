@@ -222,7 +222,7 @@ impl Views {
             return Err(Error::State(format!("scope {id} is not held")));
         };
         let current = hold.run.as_ref().filter(|r| r.reviewer == reviewer);
-        let (pid, cause, from_run) = match &giver {
+        let (pid, cause, from_run) = match giver {
             Giver::Socket => {
                 if matches!(
                     self.review.reviewer(reviewer).map(|r| &r.kind),
@@ -242,18 +242,18 @@ impl Views {
                 (None, None, false)
             }
             Giver::Run { attempt, pid, failure } => {
-                if !current.is_some_and(|r| r.attempt == *attempt && !r.waiting) {
+                if !current.is_some_and(|r| r.attempt == attempt && !r.waiting) {
                     return Ok(Reviewed::Stale);
                 }
-                (*pid, failure.clone(), true)
+                (pid, failure, true)
             }
             Giver::Expired { attempt, cause } => {
-                if !current.is_some_and(|r| r.waiting && r.attempt == *attempt) {
+                if !current.is_some_and(|r| r.waiting && r.attempt == attempt) {
                     return Ok(Reviewed::Stale);
                 }
-                (None, Some(cause.clone()), true)
+                (None, Some(cause), true)
             }
-            Giver::Missing { cause } => (None, Some(cause.clone()), true),
+            Giver::Missing { cause } => (None, Some(cause), true),
         };
         let admitted = self
             .review
@@ -328,7 +328,7 @@ mod tests {
     const DECLARED: &str = "{sec: {}, boss: {can_override: true}, cmd: {run: [/bin/sh]}}";
 
     fn names(ns: &[&str]) -> Vec<String> {
-        ns.iter().map(|n| n.to_string()).collect()
+        ns.iter().map(ToString::to_string).collect()
     }
 
     /// A closed scope held for the reviewers `ns`.
@@ -434,12 +434,12 @@ mod tests {
             panic!("sec is the last reviewer");
         };
         assert_eq!(hold.verdict, Decision::Return);
-        assert!(hold.reviewers.is_empty());
+        assert_eq!(hold.reviewers, Vec::<String>::new());
         // The stored hold is as hold_scope left it.
         let stored = views.held(&id).unwrap().unwrap();
         assert_eq!(stored.reviewers, ["sec"]);
         assert_eq!(stored.verdict, Decision::Commit);
-        assert!(stored.reviews.is_empty());
+        assert_eq!(stored.reviews, Vec::<TierReview>::new());
         drop(views);
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -457,7 +457,7 @@ mod tests {
         let Reviewed::Final(done) = review(&views, &id, "human", Decision::Return, false).unwrap() else {
             panic!("the human is last");
         };
-        assert!(done.reviewers.is_empty());
+        assert_eq!(done.reviewers, Vec::<String>::new());
         assert_eq!(done.reviews.len(), 2);
         drop(views);
         fs::remove_dir_all(&dir).unwrap();

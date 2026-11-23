@@ -533,7 +533,7 @@ impl Filesystem for FuseView {
         let r = (|| {
             let (h, rel) = v.child(parent.0, name)?;
             let f = v.create(&h, req.pid(), &rel, mode & !umask, flags)?;
-            let st = rustix::fs::fstat(&f).map_err(|e| errno(e.into()))?;
+            let st = rustix::fs::fstat(&f).map_err(errno)?;
             let attr = sys::attr(v.ino_for(&h, &rel)?, &st);
             v.looked_up(&h, &rel, attr.ino.0);
             Ok((attr, f, h))

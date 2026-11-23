@@ -210,11 +210,11 @@ pub struct ExecServer {
 
 impl ExecServer {
     /// Serve one connection: start the child, relay signals, report its exit.
-    pub fn handle(&self, stream: UnixStream) -> io::Result<()> {
-        let (len, fds) = recv_len_with_fds(&stream)?;
-        let mut reader = &stream;
+    pub fn handle(&self, stream: &UnixStream) -> io::Result<()> {
+        let (len, fds) = recv_len_with_fds(stream)?;
+        let mut reader = stream;
         let req: SpawnRequest = read_body(&mut reader, len)?;
-        let mut out = &stream;
+        let mut out = stream;
         let mut child = match self.start(&req, fds) {
             Ok(c) => c,
             Err(e) => {

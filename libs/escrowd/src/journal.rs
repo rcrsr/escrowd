@@ -492,7 +492,7 @@ mod tests {
 
         j.forget(generation).unwrap();
         assert_eq!(j.state(generation).unwrap(), None);
-        assert!(j.gens().unwrap().is_empty());
+        assert_eq!(j.gens().unwrap(), Vec::<(u64, String, GenState)>::new());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

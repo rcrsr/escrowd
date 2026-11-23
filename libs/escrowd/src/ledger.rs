@@ -10,6 +10,7 @@
 //! printable ASCII, and ` `, `=` and `%` (and `,` in arguments), become `%XX`, so every
 //! line splits on spaces and every path round-trips. Arguments stop at 4 KiB.
 
+use std::fmt::Write as _;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read as _, Seek as _, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
@@ -39,7 +40,7 @@ fn escape_bytes(bytes: &[u8], also: &[u8]) -> String {
         if b.is_ascii_graphic() && !also.contains(&b) {
             out.push(b as char);
         } else {
-            out.push_str(&format!("%{b:02X}"));
+            let _ = write!(out, "%{b:02X}");
         }
     }
     out
@@ -72,8 +73,11 @@ impl Ledger {
             // Unless the block starts the file, its first line may begin in the one before.
             let first = if start == 0 { None } else { lines.next() };
             for line in lines.rev() {
-                if let Some(decision) = scope_mark(line, &key) {
-                    return Ok(decision);
+                if let Some(mark) = scope_mark(line, &key) {
+                    return Ok(match mark {
+                        Mark::Decided(decision) => Some(decision),
+                        Mark::Lifecycle => None,
+                    });
                 }
             }
             match first {
@@ -154,18 +158,26 @@ impl Ledger {
     }
 }
 
-/// For a line of the scope `key` names: `Some(Some(decision))` for a `decide`,
-/// `Some(None)` for an `open` or `close`; `None` for any other line.
-fn scope_mark(line: &[u8], key: &str) -> Option<Option<String>> {
+/// A ledger line of a scope that bounds the scan for its last decision.
+enum Mark {
+    /// A `decide` line, with its decision.
+    Decided(String),
+    /// An `open` or `close` line.
+    Lifecycle,
+}
+
+/// For a line of the scope `key` names: `Decided` for a `decide`, `Lifecycle` for an
+/// `open` or `close`; `None` for any other line.
+fn scope_mark(line: &[u8], key: &str) -> Option<Mark> {
     let fields = &line[line.iter().position(|&b| b == b' ')? + 1..];
     let op = fields.strip_prefix(key.as_bytes())?;
     let op = &op[..op.iter().position(|&b| b == b' ').unwrap_or(op.len())];
     match op {
         b"decide" => {
             let at = line.windows(10).rposition(|w| w == b" decision=")?;
-            Some(Some(String::from_utf8_lossy(&line[at + 10..]).into_owned()))
+            Some(Mark::Decided(String::from_utf8_lossy(&line[at + 10..]).into_owned()))
         }
-        b"open" | b"close" => Some(None),
+        b"open" | b"close" => Some(Mark::Lifecycle),
         _ => None,
     }
 }

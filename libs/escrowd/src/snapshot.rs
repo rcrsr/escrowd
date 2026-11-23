@@ -283,8 +283,8 @@ impl<'a> Base<'a> {
 mod tests {
     use super::*;
 
-    fn meta(ino: u64) -> Entry {
-        Some(Meta {
+    fn meta(ino: u64) -> Meta {
+        Meta {
             mode: libc::S_IFREG,
             ino,
             size: 0,
@@ -293,7 +293,7 @@ mod tests {
             atime_ns: 0,
             mtime_ns: 0,
             ctime_ns: 0,
-        })
+        }
     }
 
     fn generations(name: &str) -> (Generations, PathBuf) {
@@ -305,10 +305,10 @@ mod tests {
     fn resolve_returns_the_first_generation_after_since() {
         let (gens, dir) = generations("snap-first");
         let p = PathBuf::from("a.txt");
-        gens.register(2, [(p.clone(), meta(20))]);
+        gens.register(2, [(p.clone(), Some(meta(20)))]);
         gens.register(4, [(p.clone(), None)]);
-        assert_eq!(gens.resolve(0, &p), Some((2, meta(20))));
-        assert_eq!(gens.resolve(1, &p), Some((2, meta(20))));
+        assert_eq!(gens.resolve(0, &p), Some((2, Some(meta(20)))));
+        assert_eq!(gens.resolve(1, &p), Some((2, Some(meta(20)))));
         assert_eq!(gens.resolve(2, &p), Some((4, None)));
         assert_eq!(gens.resolve(0, Path::new("other")), None);
         drop(gens);
@@ -319,7 +319,7 @@ mod tests {
     fn resolve_returns_none_when_since_is_at_or_past_the_latest_generation() {
         let (gens, dir) = generations("snap-latest");
         let p = PathBuf::from("a.txt");
-        gens.register(3, [(p.clone(), meta(30))]);
+        gens.register(3, [(p.clone(), Some(meta(30)))]);
         assert_eq!(gens.resolve(3, &p), None);
         assert_eq!(gens.resolve(9, &p), None);
         drop(gens);
@@ -330,12 +330,12 @@ mod tests {
     fn unregister_recomputes_the_latest_generation() {
         let (gens, dir) = generations("snap-unregister");
         let p = PathBuf::from("a.txt");
-        gens.register(2, [(p.clone(), meta(20))]);
-        gens.register(5, [(PathBuf::from("b.txt"), meta(50))]);
+        gens.register(2, [(p.clone(), Some(meta(20)))]);
+        gens.register(5, [(PathBuf::from("b.txt"), Some(meta(50)))]);
         assert_eq!(gens.index.read().latest, 5);
         gens.unregister(5);
         assert_eq!(gens.index.read().latest, 2);
-        assert_eq!(gens.resolve(1, &p), Some((2, meta(20))));
+        assert_eq!(gens.resolve(1, &p), Some((2, Some(meta(20)))));
         gens.unregister(2);
         assert_eq!(gens.index.read().latest, 0);
         assert_eq!(gens.resolve(0, &p), None);

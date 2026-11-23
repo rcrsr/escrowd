@@ -246,7 +246,7 @@ mod tests {
                 vec![u8::try_from(KEEP).unwrap() + 4]
             ]
         );
-        assert!(h.session("", 10).unwrap().is_empty());
+        assert_eq!(h.session("", 10).unwrap(), Vec::<Vec<u8>>::new());
         let latest = h.latest("x").unwrap().unwrap();
         assert_eq!(
             (latest.seq, latest.entry, latest.token_sha256),
@@ -323,7 +323,7 @@ mod tests {
             h.intend(scope, "s", None, &entry(*status)).unwrap();
             assert!(h.latest(scope).unwrap().is_none(), "a pending decision is not read");
         }
-        assert!(h.session("s", 10).unwrap().is_empty());
+        assert_eq!(h.session("s", 10).unwrap(), Vec::<Vec<u8>>::new());
         let settled = h.resolve(|id| cases.iter().find(|c| c.0 == id).unwrap().2).unwrap();
         assert_eq!(settled, 4);
         for (scope, _, _, want) in cases {

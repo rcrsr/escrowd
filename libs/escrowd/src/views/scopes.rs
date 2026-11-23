@@ -193,7 +193,7 @@ impl Views {
                 });
             } else if let Some((p, rule)) = std::iter::once(&path)
                 .chain(&from)
-                .find_map(|p| Some((p, self.review.only_by(p, writers.clone())?)))
+                .find_map(|p| Some((p, self.review.only_by(p, &writers)?)))
             {
                 hits.push(review::Hit { path: p.clone(), rule });
             } else if c.kind != Kind::Delete

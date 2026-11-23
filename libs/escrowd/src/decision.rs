@@ -450,8 +450,8 @@ impl Decisions {
                 eprintln!("escrowd: history: {e}");
             }
             crate::fault::hit("settled", 0)?;
-            if let Some(generation) = finish {
-                v.finish_commit(&id, generation)?;
+            if let Some(kept) = finish {
+                v.finish_commit(&id, kept.generation)?;
             }
             Ok(out)
         })
@@ -999,8 +999,14 @@ enum RunAnswer {
     Failed(String, Decision),
 }
 
+/// A commit `apply_now` left in place for `finish_commit`.
+struct KeptCommit {
+    /// The generation to finish it with.
+    generation: Option<u64>,
+}
+
 /// `Decisions::apply` on the blocking pool. With `keep`, a committed scope stays until
-/// `finish_commit`, and the second value is the generation to finish it with.
+/// `finish_commit`, and the second value says how to finish it.
 fn apply_now(
     v: &Views,
     children: &Children,
@@ -1009,7 +1015,7 @@ fn apply_now(
     reasons: Vec<String>,
     frozen: Option<Arc<Frozen>>,
     keep: bool,
-) -> error::Result<(Outcome, Option<Option<u64>>)> {
+) -> error::Result<(Outcome, Option<KeptCommit>)> {
     let mut out = Outcome {
         reasons,
         ..Outcome::new(id, Status::Discarded)
@@ -1027,7 +1033,7 @@ fn apply_now(
                 commit::Outcome::Committed(generation, changed) => {
                     out.status = Status::Committed;
                     out.paths = changed.iter().map(|p| convert::path_str(p)).collect();
-                    finish = keep.then_some(generation);
+                    finish = keep.then_some(KeptCommit { generation });
                 }
                 commit::Outcome::Conflict(conflicts) => {
                     out.status = Status::Conflict;
