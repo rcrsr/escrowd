@@ -54,7 +54,7 @@ fn reply_entry(v: &Views, h: &ScopeHandle, rel: &Path, reply: ReplyEntry) {
         Ok(a) => {
             // Before the reply: the kernel may use the number at once.
             v.looked_up(h, rel, a.ino.0);
-            reply.entry(ttl, &a, Generation(0))
+            reply.entry(ttl, &a, Generation(0));
         }
         // A negative entry: the kernel caches the absence (a create replaces it). Not under
         // the unscoped root, which resets in place: kernel 7.0 keeps a negative entry
@@ -269,7 +269,7 @@ impl Filesystem for FuseView {
                 .child(parent.0, name)
                 .and_then(|(h, rel)| self.0.unlink(&h, req.pid(), &rel, false)),
             reply,
-        )
+        );
     }
 
     fn rmdir(&self, req: &Request, parent: INodeNo, name: &OsStr, reply: ReplyEmpty) {
@@ -278,7 +278,7 @@ impl Filesystem for FuseView {
                 .child(parent.0, name)
                 .and_then(|(h, rel)| self.0.unlink(&h, req.pid(), &rel, true)),
             reply,
-        )
+        );
     }
 
     fn symlink(
@@ -319,7 +319,7 @@ impl Filesystem for FuseView {
             }
             self.0.rename(&h, req.pid(), &from, &to, flags.bits())
         })();
-        reply_empty(r, reply)
+        reply_empty(r, reply);
     }
 
     fn link(&self, req: &Request, ino: INodeNo, newparent: INodeNo, newname: &OsStr, reply: ReplyEntry) {
@@ -355,7 +355,7 @@ impl Filesystem for FuseView {
                 } else {
                     FopenFlags::empty()
                 };
-                reply.opened(FileHandle(self.0.add_file(h, f, req.pid())), flags)
+                reply.opened(FileHandle(self.0.add_file(h, f, req.pid())), flags);
             }
             Err(e) => reply.error(e),
         }
@@ -409,7 +409,7 @@ impl Filesystem for FuseView {
     /// Nothing to do at close: the kernel writes dirty pages back before FLUSH, and
     /// ENOSYS tells it to skip the round trip on every later close.
     fn flush(&self, _req: &Request, _ino: INodeNo, _fh: FileHandle, _lock_owner: LockOwner, reply: ReplyEmpty) {
-        reply.error(Errno::ENOSYS)
+        reply.error(Errno::ENOSYS);
     }
 
     fn release(
@@ -423,7 +423,7 @@ impl Filesystem for FuseView {
         reply: ReplyEmpty,
     ) {
         self.0.release(fh.0);
-        reply.ok()
+        reply.ok();
     }
 
     fn fsync(&self, _req: &Request, _ino: INodeNo, fh: FileHandle, datasync: bool, reply: ReplyEmpty) {
@@ -431,7 +431,7 @@ impl Filesystem for FuseView {
             .0
             .file(fh.0)
             .and_then(|f| if datasync { f.sync_data() } else { f.sync_all() }.map_err(errno));
-        reply_empty(r, reply)
+        reply_empty(r, reply);
     }
 
     /// A scope's listings change only through its own requests: the kernel may cache them
@@ -442,7 +442,7 @@ impl Filesystem for FuseView {
             Ok(_) => FopenFlags::empty(),
             Err(e) => return reply.error(e),
         };
-        reply.opened(FileHandle(0), flags)
+        reply.opened(FileHandle(0), flags);
     }
 
     fn readdir(&self, _req: &Request, ino: INodeNo, _fh: FileHandle, offset: u64, mut reply: ReplyDirectory) {
@@ -460,7 +460,7 @@ impl Filesystem for FuseView {
                 break;
             }
         }
-        reply.ok()
+        reply.ok();
     }
 
     /// A listing with each entry's attributes: saves the kernel a lookup per entry.
@@ -482,7 +482,7 @@ impl Filesystem for FuseView {
                 v.looked_up(&h, &rel, attr.ino.0);
             }
         }
-        reply.ok()
+        reply.ok();
     }
 
     fn statfs(&self, _req: &Request, _ino: INodeNo, reply: ReplyStatfs) {
@@ -502,7 +502,7 @@ impl Filesystem for FuseView {
     }
 
     fn access(&self, _req: &Request, _ino: INodeNo, _mask: AccessFlags, reply: ReplyEmpty) {
-        reply.ok()
+        reply.ok();
     }
 
     fn create(

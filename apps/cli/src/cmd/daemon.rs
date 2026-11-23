@@ -12,16 +12,16 @@ pub(crate) struct DaemonArgs {
     /// Project directory the scopes stage changes against.
     #[arg(long)]
     pub(crate) project: PathBuf,
-    /// Scope stores and ledger [default: $XDG_STATE_HOME/escrowd/<project-id>].
+    /// Scope stores and ledger [default: $`XDG_STATE_HOME/escrowd`/<project-id>].
     #[arg(long)]
     pub(crate) state: Option<PathBuf>,
-    /// Mount point of the scope views [default: $XDG_RUNTIME_DIR/escrowd/<project-id>/view].
+    /// Mount point of the scope views [default: $`XDG_RUNTIME_DIR/escrowd`/<project-id>/view].
     #[arg(long)]
     pub(crate) mount: Option<PathBuf>,
     /// Policy file (YAML): read rules, path roots.
     #[arg(long)]
     pub(crate) policy: Option<PathBuf>,
-    /// bwrap binary for scope children [default: $ESCROW_BWRAP, /usr/lib/escrowd/bwrap, bwrap].
+    /// bwrap binary for scope children [default: $`ESCROW_BWRAP`, /usr/lib/escrowd/bwrap, bwrap].
     #[arg(long)]
     pub(crate) bwrap: Option<PathBuf>,
     /// FUSE request threads.

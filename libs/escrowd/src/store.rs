@@ -292,7 +292,7 @@ impl ScopeStore {
         let tx = db.transaction().map_err(sql)?;
         tx.execute(
             "INSERT INTO meta VALUES ('name', ?1), ('idx', ?2), ('since', ?3), ('readonly', ?4), ('next_upper_ino', 0), ('state', 'open')",
-            params![name, idx as i64, since as i64, readonly as i64],
+            params![name, idx as i64, since as i64, i64::from(readonly)],
         )
         .map_err(sql)?;
         if let Some(t) = token_sha256 {
@@ -620,7 +620,7 @@ impl ScopeStore {
                     params![
                         r.reviewer.as_str(),
                         r.verdict.as_str(),
-                        r.over as i64,
+                        i64::from(r.over),
                         r.reasons.join("\0").into_bytes()
                     ],
                 )

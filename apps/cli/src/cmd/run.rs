@@ -104,13 +104,12 @@ pub(crate) async fn run(
         .project
         .canonicalize()
         .with_context(|| format!("project {}", args.project.display()))?;
-    let socket = match socket {
-        Some(s) => s,
-        None => {
-            let dir = default_runtime_dir(&project)?;
-            std::fs::create_dir_all(&dir)?;
-            dir.join("escrow.sock")
-        }
+    let socket = if let Some(s) = socket {
+        s
+    } else {
+        let dir = default_runtime_dir(&project)?;
+        std::fs::create_dir_all(&dir)?;
+        dir.join("escrow.sock")
     };
     // wait_for must not mistake a stale socket for this daemon's, nor a live one's.
     escrowd::rpc::clear_stale(&socket)?;

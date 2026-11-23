@@ -85,7 +85,7 @@ impl Ledger {
     }
 
     pub fn append(&self, scope: &str, op: &str, path: &Path, from: Option<&Path>, decision: &str) {
-        self.append_by(scope, op, path, from, None, decision)
+        self.append_by(scope, op, path, from, None, decision);
     }
 
     /// A line naming the process `proc` (its `proc` line written before).
@@ -98,8 +98,8 @@ impl Ledger {
         proc: Option<u64>,
         decision: &str,
     ) {
-        let from = from.map(|f| format!(" from={}", escape(f))).unwrap_or_default();
-        let proc = proc.map(|p| format!(" proc={p:016x}")).unwrap_or_default();
+        let from = from.map_or_default(|f| format!(" from={}", escape(f)));
+        let proc = proc.map_or_default(|p| format!(" proc={p:016x}"));
         self.write(&format!(
             "scope={scope} op={op} path={}{from}{proc} decision={decision}",
             escape(path)
@@ -109,10 +109,8 @@ impl Ledger {
     /// A reviewer's verdict: `op=review-<reviewer>`, with the pid of the reviewer program
     /// that gave it and the cause of a failed or refused verdict, when there are any.
     pub fn append_review(&self, scope: &str, reviewer: &str, pid: Option<u32>, cause: Option<&str>, decision: &str) {
-        let pid = pid.map(|p| format!(" pid={p}")).unwrap_or_default();
-        let cause = cause
-            .map(|c| format!(" cause={}", escape_bytes(c.as_bytes(), b"=%")))
-            .unwrap_or_default();
+        let pid = pid.map_or_default(|p| format!(" pid={p}"));
+        let cause = cause.map_or_default(|c| format!(" cause={}", escape_bytes(c.as_bytes(), b"=%")));
         self.write(&format!(
             "scope={scope} op=review-{reviewer} path={pid}{cause} decision={decision}"
         ));

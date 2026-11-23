@@ -1,7 +1,10 @@
 //! Open files: the file handle table, who opened each, handles that settle before
 //! a close, and writeback off the request threads.
 
-use super::*;
+use super::{
+    Arc, AsFd, Errno, File, HashMap, JoinHandle, OFlags, PROJECT, Path, R, ScopeHandle, SyncSender, Views, errno,
+    sync_channel, sys,
+};
 
 /// How often a settle wait rechecks its handles when no release wakes it.
 const SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(20);

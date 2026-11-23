@@ -116,7 +116,7 @@ CREATE TABLE IF NOT EXISTS restored (
 ) STRICT;
 ";
 
-/// A journal from before roots (user_version 0) gets a root column (every row is the project's).
+/// A journal from before roots (`user_version` 0) gets a root column (every row is the project's).
 const MIGRATE_ROOTS: &str = "
 ALTER TABLE entries RENAME TO entries0;
 ALTER TABLE dirs RENAME TO dirs0;

@@ -21,7 +21,12 @@ use crate::error::Error;
 use crate::exec::Children;
 use crate::proto::escrow_service_server::{EscrowService, EscrowServiceServer};
 use crate::proto::reviewer_service_server::{ReviewerService, ReviewerServiceServer};
-use crate::proto::*;
+use crate::proto::{
+    AwaitDecisionRequest, AwaitDecisionResponse, ChangeSet, CloseScopeRequest, CloseScopeResponse, DecideRequest,
+    DecideResponse, Decided, GetChangeSetRequest, GetChangeSetResponse, GetHeldRequest, GetHeldResponse,
+    ListHeldRequest, ListHeldResponse, OpenScopeRequest, OpenScopeResponse, PingRequest, PingResponse, ReviewRequest,
+    ReviewResponse, ScopeRoot, SettleUnscopedRequest, SettleUnscopedResponse,
+};
 use crate::reviewer::Runner;
 use crate::views::{Frozen, UNSCOPED, Views};
 
@@ -54,6 +59,7 @@ pub const REVIEW_TOKEN_ENV: &str = "ESCROW_REVIEW_TOKEN";
 pub const REVIEW_SOCKET_ENV: &str = "ESCROW_REVIEW_SOCKET";
 
 /// The review socket beside the protocol socket.
+#[must_use]
 pub fn review_socket(socket: &Path) -> PathBuf {
     let mut s = socket.as_os_str().to_owned();
     s.push(".review");
@@ -271,7 +277,7 @@ pub async fn serve(socket: &Path, service: Service, shutdown: impl Future<Output
     let reviewers = tonic::transport::Server::builder()
         .add_service(ReviewerServiceServer::new(service.clone()))
         .serve_with_incoming_shutdown(UnixListenerStream::new(review_listener), async move {
-            started.stopped().await
+            started.stopped().await;
         });
     let stopper = service.0.clone();
     let clients = tonic::transport::Server::builder()
@@ -289,7 +295,7 @@ pub async fn serve(socket: &Path, service: Service, shutdown: impl Future<Output
     let both = async { tokio::join!(clients, reviewers) };
     let (result, reviewed) = tokio::select! {
         r = both => r,
-        _ = async {
+        () = async {
             service.0.stopped().await;
             tokio::time::sleep(GRACE).await;
         } => {

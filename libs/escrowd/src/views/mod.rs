@@ -93,6 +93,7 @@ pub struct Opened {
 }
 
 /// The hex SHA-256 the store keeps of a token.
+#[must_use]
 pub fn token_sha256(token: &str) -> String {
     use sha2::{Digest, Sha256};
     diff::hex(&Sha256::digest(token.as_bytes()))
@@ -103,6 +104,7 @@ fn lowers_of(roots: &[RootSpec]) -> Lowers<'_> {
     std::array::from_fn(|r| roots.get(r).and_then(|s| s.lower.as_ref()).map(|l| l.as_fd()))
 }
 
+#[must_use]
 pub fn errno(e: io::Error) -> Errno {
     Errno::from_i32(e.raw_os_error().unwrap_or(libc::EIO))
 }

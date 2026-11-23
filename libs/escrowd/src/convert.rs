@@ -35,11 +35,7 @@ pub fn change_set(views: &Views, scope_id: String, cs: &changeset::ChangeSet, di
             .map(|c| proto::Change {
                 kind: kind(c.kind).into(),
                 path: path_str(&views.shown(c.root, &c.path)),
-                from_path: c
-                    .from
-                    .as_deref()
-                    .map(|f| path_str(&views.shown(c.root, f)))
-                    .unwrap_or_default(),
+                from_path: c.from.as_deref().map_or_default(|f| path_str(&views.shown(c.root, f))),
                 writers: c.writers.clone(),
             })
             .collect(),
@@ -105,7 +101,7 @@ fn tiers_of(reviewers: &[String]) -> Vec<i32> {
 
 /// The reviewer and token of a `ReviewRequest` (`tier`, `reviewer`, `token`). An empty
 /// `reviewer` is the built-in the tier names; a `tier` given beside a name must agree
-/// with it. The error is the text of an INVALID_ARGUMENT.
+/// with it. The error is the text of an `INVALID_ARGUMENT`.
 pub fn reviewer_request(tier: i32, reviewer: &str, token: &str) -> Result<(String, Option<String>), String> {
     let token = (!token.is_empty()).then(|| token.to_string());
     if reviewer.is_empty() {
@@ -281,14 +277,14 @@ pub fn outcome_from(o: proto::Outcome) -> Option<Outcome> {
         proto::OutcomeStatus::Unspecified => return None,
     };
     // A protocol-7 history entry has tiers and no reviewers.
-    let reviewers = match o.reviewers.is_empty() {
-        true => o
-            .tiers
+    let reviewers = if o.reviewers.is_empty() {
+        o.tiers
             .iter()
             .filter_map(|t| builtin_name(*t))
             .map(str::to_string)
-            .collect(),
-        false => o.reviewers,
+            .collect()
+    } else {
+        o.reviewers
     };
     Some(Outcome {
         scope_id: o.scope_id,

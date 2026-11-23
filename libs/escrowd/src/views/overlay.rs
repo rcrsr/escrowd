@@ -1,7 +1,11 @@
 //! The copy-on-write overlay of one view: where a path lives (upper or base),
 //! copy-up, listings, and the filesystem operations FUSE forwards, in FUSE order.
 
-use super::*;
+use super::{
+    Access, Arc, AsFd, AtomicBool, AtomicU64, BTreeMap, Base, By, Errno, File, FileType, Frozen, Inodes, Mutex, OFlags,
+    Ordering, OsString, OwnedFd, PROJECT, Pages, Path, PathBuf, Proc, Protected, R, Rules, RwLock, RwLockReadGuard,
+    RwLockWriteGuard, ScopeStore, Stat, UNSCOPED, Version, VersionKind, Views, errno, io, parent, sys,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Loc {
@@ -110,7 +114,7 @@ impl Views {
             return Ok(());
         }
         self.ensure_upper_dir(h, parent(rel))?;
-        let mode = self.lower_stat(h, rel).map(|st| st.st_mode & 0o7777).unwrap_or(0o755);
+        let mode = self.lower_stat(h, rel).map_or(0o755, |st| st.st_mode & 0o7777);
         match sys::mkdir(h.upper.as_fd(), rel, mode) {
             Err(e) if e.kind() != io::ErrorKind::AlreadyExists => Err(errno(e)),
             Err(_) => Ok(()),
@@ -203,7 +207,7 @@ impl Views {
     // ---- operations, in FUSE order ----
 
     pub fn log(&self, h: &ScopeHandle, op: &str, rel: &Path, decision: &str) {
-        self.log_by(h, op, rel, None, decision)
+        self.log_by(h, op, rel, None, decision);
     }
 
     /// A ledger line naming the process `by` that asked for it.

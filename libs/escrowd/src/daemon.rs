@@ -38,15 +38,13 @@ pub struct Config {
 }
 
 /// `<project basename>-<FNV-1a 64 of the canonical path>`: stable and readable.
+#[must_use]
 pub fn project_id(project: &Path) -> String {
     let mut h: u64 = 0xcbf29ce484222325;
     for b in project.as_os_str().as_bytes() {
         h = (h ^ u64::from(*b)).wrapping_mul(0x100000001b3);
     }
-    let base = project
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let base = project.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
     format!("{base}-{h:016x}")
 }
 
@@ -147,22 +145,19 @@ fn resolve_lexical(path: &Path) -> anyhow::Result<PathBuf> {
     let mut tail = Vec::new();
     let mut head = abs.as_path();
     loop {
-        match head.canonicalize() {
-            Ok(mut base) => {
-                base.extend(tail.iter().rev());
-                return Ok(base);
-            }
-            Err(_) => {
-                let (Some(parent), Some(name)) = (head.parent(), head.file_name()) else {
-                    if head.parent().is_some() {
-                        // A `..` after a missing directory cannot be resolved without creating it.
-                        bail!("{} has `..` after a directory that does not exist", path.display());
-                    }
-                    return Ok(abs);
-                };
-                tail.push(name);
-                head = parent;
-            }
+        if let Ok(mut base) = head.canonicalize() {
+            base.extend(tail.iter().rev());
+            return Ok(base);
+        } else {
+            let (Some(parent), Some(name)) = (head.parent(), head.file_name()) else {
+                if head.parent().is_some() {
+                    // A `..` after a missing directory cannot be resolved without creating it.
+                    bail!("{} has `..` after a directory that does not exist", path.display());
+                }
+                return Ok(abs);
+            };
+            tail.push(name);
+            head = parent;
         }
     }
 }
@@ -363,9 +358,9 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
     for w in &write {
         std::fs::create_dir_all(w).with_context(|| format!("passthrough {}", w.display()))?;
     }
-    let socket_dir = config.socket.parent().map(Path::to_path_buf).unwrap_or_default();
+    let socket_dir = config.socket.parent().map_or_default(Path::to_path_buf);
     let socket_dir = socket_dir.canonicalize().unwrap_or(socket_dir);
-    let socket_name = config.socket.file_name().map(PathBuf::from).unwrap_or_default();
+    let socket_name = config.socket.file_name().map_or_default(PathBuf::from);
     let sockets = [
         socket_dir.join(&socket_name),
         exec::exec_socket(&socket_dir.join(&socket_name)),
@@ -532,6 +527,7 @@ fn lock_state(state: &Path) -> anyhow::Result<std::fs::File> {
 
 impl Daemon {
     /// A sandbox that hides escrowd's state, views and sockets.
+    #[must_use]
     pub fn sandbox(&self) -> Sandbox {
         Sandbox {
             bwrap: self.bwrap.clone(),
@@ -548,6 +544,7 @@ impl Daemon {
     }
 
     /// Scope `id`'s views of the roots other than the project, as sandbox mounts.
+    #[must_use]
     pub fn root_mounts(&self, id: &str) -> Vec<Mount> {
         self.views
             .root_views(id)

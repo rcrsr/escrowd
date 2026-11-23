@@ -1,7 +1,10 @@
 //! The inode table: path to inode and back per scope, pinned and upper-only
 //! numbers, and what the kernel may keep of each inode's cached pages.
 
-use super::*;
+use super::{
+    Arc, Errno, HashMap, Loc, OsStr, OsString, Path, PathBuf, R, ROOT, SCOPE_SHIFT, ScopeHandle, Stat, UNSCOPED,
+    UNSCOPED_ROOT, UPPER_BIT, Version, Views, errno, moved, roots,
+};
 
 /// One view's inode table: path to inode and back, the kernel's lookup count of
 /// each inode, and what the kernel may keep of each inode's cached pages. Each view
@@ -204,7 +207,7 @@ impl Views {
         let (h, p) = self.key(parent)?;
         Ok((h, p.join(name)))
     }
-    /// The scope's inode for `rel`: a pinned number, else the base st_ino, else a new
+    /// The scope's inode for `rel`: a pinned number, else the base `st_ino`, else a new
     /// upper number (pinned). The table learns it when the kernel looks it up.
     pub fn ino_for(&self, h: &ScopeHandle, rel: &Path) -> R<u64> {
         if h.group == UNSCOPED && rel.as_os_str().is_empty() {
@@ -222,13 +225,12 @@ impl Views {
                 _ => {
                     // Under the store's lock: two lookups of a new path pin one number.
                     let mut store = h.store();
-                    match store.pin(rel) {
-                        Some(ino) => ino,
-                        None => {
-                            let ino = prefix | UPPER_BIT | store.alloc_upper_ino();
-                            store.set_pin(rel, ino).map_err(errno)?;
-                            ino
-                        }
+                    if let Some(ino) = store.pin(rel) {
+                        ino
+                    } else {
+                        let ino = prefix | UPPER_BIT | store.alloc_upper_ino();
+                        store.set_pin(rel, ino).map_err(errno)?;
+                        ino
                     }
                 }
             },

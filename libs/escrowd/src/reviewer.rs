@@ -188,7 +188,7 @@ impl Runner {
         let fail = |pid, f| RunReport { pid, result: Err(f) };
         let permit = tokio::select! {
             p = self.permits.clone().acquire_owned() => p,
-            _ = wait_cancelled(cancelled) => return fail(None, Failure::Cancelled),
+            () = wait_cancelled(cancelled) => return fail(None, Failure::Cancelled),
         };
         // The semaphore is never closed.
         let Ok(_permit) = permit else {
@@ -231,8 +231,8 @@ impl Runner {
                     Ok(n) => if !take(&mut out, &buf[..n]) { break Stop::TooLarge },
                 },
                 st = child.wait() => break Stop::Exited(st),
-                _ = &mut timeout => break Stop::Timeout,
-                _ = wait_cancelled(cancelled) => break Stop::Cancelled,
+                () = &mut timeout => break Stop::Timeout,
+                () = wait_cancelled(cancelled) => break Stop::Cancelled,
             }
         };
 

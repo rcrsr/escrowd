@@ -2,7 +2,7 @@
 //!
 //! The app's sandbox cannot run bwrap (user namespaces are disabled inside), so
 //! `escrow exec` asks the daemon. It sends its stdin, stdout and stderr over
-//! SCM_RIGHTS with a `SpawnRequest`; the daemon starts the command in bwrap with
+//! `SCM_RIGHTS` with a `SpawnRequest`; the daemon starts the command in bwrap with
 //! the scope's view over the project, in its own process group, and reports
 //! `pid`, then `exit_code`; its other views (`$HOME`, `/tmp`) are mounted over
 //! their roots. `SpawnSignal` frames are delivered to the command's
@@ -41,6 +41,7 @@ const MAX_FRAME: usize = 16 << 20;
 pub const TOKEN_ENV: &str = "ESCROW_SCOPE_TOKEN";
 
 /// The exec socket beside the gRPC socket.
+#[must_use]
 pub fn exec_socket(socket: &Path) -> PathBuf {
     let mut s = socket.as_os_str().to_os_string();
     s.push(".exec");
@@ -126,6 +127,7 @@ impl Default for Children {
 }
 
 impl Children {
+    #[must_use]
     pub fn new(grace: Duration) -> Self {
         Children {
             inner: Mutex::default(),

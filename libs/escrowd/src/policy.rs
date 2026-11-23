@@ -135,6 +135,7 @@ pub enum Tier {
 }
 
 impl Tier {
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Tier::Software => "software",
@@ -143,6 +144,7 @@ impl Tier {
         }
     }
 
+    #[must_use]
     pub fn parse(s: &str) -> Option<Tier> {
         [Tier::Software, Tier::Llm, Tier::Human]
             .into_iter()
@@ -211,6 +213,7 @@ impl ReviewerDef {
     pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
     /// The run's timeout; `Policy::parse` has checked the text.
+    #[must_use]
     pub fn timeout(&self) -> Duration {
         self.timeout
             .as_deref()
@@ -218,6 +221,7 @@ impl ReviewerDef {
             .unwrap_or(Self::DEFAULT_TIMEOUT)
     }
 
+    #[must_use]
     pub fn on_failure(&self) -> OnFailure {
         self.on_failure.unwrap_or_default()
     }
@@ -288,6 +292,7 @@ fn is_executable(p: &Path) -> bool {
 }
 
 /// A reviewer name: a lowercase letter, then lowercase letters, digits and `-`.
+#[must_use]
 pub fn valid_reviewer_name(name: &str) -> bool {
     let mut chars = name.chars();
     chars.next().is_some_and(|c| c.is_ascii_lowercase())
@@ -387,6 +392,7 @@ impl DiffRules {
         1024 * 1024
     }
 
+    #[must_use]
     pub fn caps(&self) -> crate::diff::Caps {
         crate::diff::Caps {
             file_bytes: self.file_bytes,

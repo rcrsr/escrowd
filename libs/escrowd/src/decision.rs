@@ -180,9 +180,9 @@ pub struct Decisions {
     children: Arc<Children>,
     diff: diff::Caps,
     /// Bumped after every decision and review: an open waiting behind a held scope,
-    /// and the clients following one (AwaitDecision), check again.
+    /// and the clients following one (`AwaitDecision`), check again.
     changed: watch::Sender<u64>,
-    /// Set at shutdown: calls that wait (an open behind a held scope, AwaitDecision)
+    /// Set at shutdown: calls that wait (an open behind a held scope, `AwaitDecision`)
     /// end with `Stopping`, or the server would wait on them forever.
     stopping: watch::Sender<bool>,
     /// Each scope's lock, while someone holds or waits for it.
@@ -262,12 +262,12 @@ impl Decisions {
             };
             tokio::select! {
                 _ = changed.changed() => {}
-                _ = &mut expired => {
+                () = &mut expired => {
                     return Err(Error::State(format!(
                         "session {session}: scope {held} is held for review; the next scope opens after its verdict"
                     )));
                 }
-                _ = self.stopped() => return Err(Error::Stopping),
+                () = self.stopped() => return Err(Error::Stopping),
             }
         }
         self.blocking(move |v| {
@@ -339,13 +339,14 @@ impl Decisions {
                 v.identity(&scope)
             })
             .await?;
-        let keep = match !who.session.is_empty() || who.hold.is_some() {
-            true => Some(Kept {
+        let keep = if !who.session.is_empty() || who.hold.is_some() {
+            Some(Kept {
                 change_set: self.closed_record(&who.id).await?,
-                reviews: who.hold.as_ref().map(|h| h.reviews.clone()).unwrap_or_default(),
+                reviews: who.hold.as_ref().map_or_default(|h| h.reviews.clone()),
                 who,
-            }),
-            false => None,
+            })
+        } else {
+            None
         };
         let out = self.propose(id, verdict, reasons, wait, keep).await?;
         if out.status != Status::Held {
@@ -559,8 +560,8 @@ impl Decisions {
             }
             tokio::select! {
                 r = changed.changed() => if r.is_err() { return },
-                _ = tx.closed() => return,
-                _ = self.stopped() => {
+                () = tx.closed() => return,
+                () = self.stopped() => {
                     let _ = tx.send(Err(Error::Stopping)).await;
                     return;
                 }
@@ -572,7 +573,7 @@ impl Decisions {
 
     /// Every held scope, oldest hold first.
     pub async fn list_held(&self) -> error::Result<Vec<Identity>> {
-        self.blocking(|v| v.held_scopes()).await
+        self.blocking(super::views::Views::held_scopes).await
     }
 
     /// A held scope with its change set and its session's last decisions.
@@ -742,13 +743,12 @@ impl Decisions {
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_millis() as u64);
-        match deadline_ms.checked_sub(now_ms).filter(|left| *left > 0) {
-            Some(left) => self.arm_expiry(id, &name, attempt, command, std::time::Duration::from_millis(left)),
-            None => {
-                // `expire` takes the scope's lock itself.
-                drop(lock);
-                self.clone().expire(id.to_string(), name, attempt, command).await;
-            }
+        if let Some(left) = deadline_ms.checked_sub(now_ms).filter(|left| *left > 0) {
+            self.arm_expiry(id, &name, attempt, command, std::time::Duration::from_millis(left));
+        } else {
+            // `expire` takes the scope's lock itself.
+            drop(lock);
+            self.clone().expire(id.to_string(), name, attempt, command).await;
         }
         Ok(())
     }
@@ -936,8 +936,8 @@ impl Decisions {
         let (id, reviewer) = (id.to_string(), reviewer.to_string());
         tokio::spawn(async move {
             tokio::select! {
-                _ = tokio::time::sleep(delay) => {}
-                _ = me.stopped() => return,
+                () = tokio::time::sleep(delay) => {}
+                () = me.stopped() => return,
             }
             me.expire(id, reviewer, attempt, command).await;
         });
@@ -1018,9 +1018,10 @@ fn apply_now(
     match verdict {
         Decision::Commit => {
             let frozen = frozen.expect("apply resolves the frozen record for a commit");
-            let committed = match keep {
-                true => v.commit_kept(id, &frozen.change_set),
-                false => v.commit_closed(id, &frozen.change_set),
+            let committed = if keep {
+                v.commit_kept(id, &frozen.change_set)
+            } else {
+                v.commit_closed(id, &frozen.change_set)
             };
             match committed.inspect(|_| children.release(id))? {
                 commit::Outcome::Committed(generation, changed) => {

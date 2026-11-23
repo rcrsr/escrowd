@@ -25,7 +25,11 @@ pub(crate) const OWN_FAILURE: i32 = 125;
 /// The canonical name of a gRPC code (`FAILED_PRECONDITION`), as `docs/protocol.md` writes
 /// it; tonic's `Display` for a code is a sentence.
 fn code_name(code: tonic::Code) -> &'static str {
-    use tonic::Code::*;
+    use tonic::Code::{
+        Aborted, AlreadyExists, Cancelled, DataLoss, DeadlineExceeded, FailedPrecondition, Internal, InvalidArgument,
+        NotFound, Ok, OutOfRange, PermissionDenied, ResourceExhausted, Unauthenticated, Unavailable, Unimplemented,
+        Unknown,
+    };
     match code {
         Ok => "OK",
         Cancelled => "CANCELLED",

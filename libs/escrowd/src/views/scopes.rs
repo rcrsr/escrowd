@@ -1,7 +1,11 @@
 //! The scope lifecycle: open, close (the change set and its review), commit,
 //! return and discard, as the decision layer drives them.
 
-use super::*;
+use super::{
+    Arc, AsFd, BTreeMap, ChangeSet, ConflictVerdict, Error, File, Frozen, HashMap, JoinHandle, Kind, OFlags, Opened,
+    Ordering, Outcome, PROJECT, Path, PathBuf, RootView, ScopeHandle, ScopeState, ScopeStore, Sender, UNSCOPED,
+    UNSCOPED_ROOT, Views, changeset, diff, error, fs, history, io, review, roots, sys, token_sha256,
+};
 
 /// How long a close waits for the handles of dead or stopped processes to release.
 const SETTLE_WITHIN: std::time::Duration = std::time::Duration::from_secs(5);
@@ -343,7 +347,7 @@ impl Views {
         cs: &ChangeSet,
         keep: bool,
     ) -> error::Result<Outcome> {
-        let hs: Vec<&ScopeHandle> = hs.iter().map(|h| h.as_ref()).collect();
+        let hs: Vec<&ScopeHandle> = hs.iter().map(std::convert::AsRef::as_ref).collect();
         let show = |root: usize, p: &Path| self.shown(root, p);
         // A failed commit rolled back in place: the scope is still closed, and the
         // caller may decide again. A failed rollback is the host's problem.

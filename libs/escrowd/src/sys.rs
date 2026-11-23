@@ -204,7 +204,7 @@ pub fn timespec(t: SystemTime) -> Timespec {
     let d = t.duration_since(UNIX_EPOCH).unwrap_or_default();
     Timespec {
         tv_sec: d.as_secs() as i64,
-        tv_nsec: d.subsec_nanos() as i64,
+        tv_nsec: i64::from(d.subsec_nanos()),
     }
 }
 
@@ -276,7 +276,7 @@ pub fn copy_entry(
 }
 
 /// Flush the whole filesystem holding `dir` (the journal's barrier between steps).
-/// `dir` may be an O_PATH fd, which syncfs refuses, so it reopens the directory.
+/// `dir` may be an `O_PATH` fd, which syncfs refuses, so it reopens the directory.
 pub fn syncfs(dir: BorrowedFd) -> io::Result<()> {
     let fd = rfs::openat(
         dir,

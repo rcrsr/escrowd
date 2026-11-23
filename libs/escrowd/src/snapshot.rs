@@ -142,7 +142,7 @@ impl Generations {
     pub fn unregister(&self, generation: u64) {
         let mut ix = self.index.write();
         let mut emptied = Vec::new();
-        for (p, gens) in ix.paths.iter_mut() {
+        for (p, gens) in &mut ix.paths {
             if gens.remove(&generation).is_some() && gens.is_empty() {
                 emptied.push(p.clone());
             }
@@ -202,10 +202,7 @@ impl Generations {
         if since >= ix.latest {
             return Vec::new();
         }
-        ix.children
-            .get(rel)
-            .map(|n| n.iter().cloned().collect())
-            .unwrap_or_default()
+        ix.children.get(rel).map_or_default(|n| n.iter().cloned().collect())
     }
 }
 

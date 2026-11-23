@@ -1,7 +1,9 @@
 //! Held scopes: a closed scope reviewers have, each reviewer's verdict, and the
 //! session's next scope waiting behind a hold with a wait.
 
-use super::*;
+use std::path::{Path, PathBuf};
+
+use super::{Decision, Error, HashMap, Hold, PROJECT, TierReview, Views, error, review, token_sha256};
 use crate::store::Run;
 
 /// A scope as reviewers see it.
@@ -138,13 +140,12 @@ impl Views {
         let Some(mut hold) = store.hold().cloned() else {
             return Err(Error::State(format!("scope {id} is not held")));
         };
-        let token = match delegate {
-            true => {
-                let mut bytes = [0u8; 32];
-                crate::sys::random(&mut bytes)?;
-                Some(crate::diff::hex(&bytes))
-            }
-            false => None,
+        let token = if delegate {
+            let mut bytes = [0u8; 32];
+            crate::sys::random(&mut bytes)?;
+            Some(crate::diff::hex(&bytes))
+        } else {
+            None
         };
         let cwd = store.write_review_files(files)?;
         let attempt = hold.next_attempt(reviewer);
@@ -308,13 +309,16 @@ impl Views {
             .map(|h| &h.group)
             .collect();
         ids.sort();
-        ids.first().map(|id| id.to_string())
+        ids.first().map(|id| (*id).clone())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
+    use crate::diff;
 
     const CAPS: diff::Caps = diff::Caps {
         file_bytes: 1 << 20,

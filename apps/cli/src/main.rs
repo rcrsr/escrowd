@@ -35,7 +35,7 @@ enum Command {
         /// What happens to the implicit default scope when the command exits.
         #[arg(long, value_enum, default_value = "discard")]
         on_exit: OnExit,
-        /// Daemon socket [default: $XDG_RUNTIME_DIR/escrowd/<project-id>/escrow.sock].
+        /// Daemon socket [default: $`XDG_RUNTIME_DIR/escrowd`/<project-id>/escrow.sock].
         #[arg(long)]
         socket: Option<PathBuf>,
         /// The command and its arguments.
@@ -50,7 +50,7 @@ enum Command {
         /// Daemon socket.
         #[arg(long, env = "ESCROW_SOCKET")]
         socket: PathBuf,
-        /// The scope's token (from OpenScope); the command does not get it. The
+        /// The scope's token (from `OpenScope`); the command does not get it. The
         /// unscoped scope needs none.
         #[arg(long, env = TOKEN_ENV, hide = true, hide_env_values = true, default_value = "")]
         token: String,
