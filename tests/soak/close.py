@@ -10,6 +10,9 @@ Latency: close of a scope with 0, 1 and 10 running children (each exits on SIGTE
 50 closes each, 50th and 99th percentiles.
 """
 
+# A CLI whose stdout is its report: print is the point.
+# ruff: noqa: T201
+
 import argparse
 import os
 import random

@@ -3,6 +3,7 @@
 import hashlib
 import os
 import subprocess
+from pathlib import Path
 
 
 def leftovers(root):
@@ -15,11 +16,11 @@ def fingerprint(root):
     out = []
     for dirpath, dirnames, filenames in os.walk(root):
         for name in dirnames + filenames:
-            p = os.path.join(dirpath, name)
-            st = os.lstat(p)
+            p = Path(dirpath, name)
+            st = p.lstat()
             digest = ""
-            if os.path.isfile(p) and not os.path.islink(p):
-                digest = hashlib.sha256(open(p, "rb").read()).hexdigest()
+            if p.is_file() and not p.is_symlink():
+                digest = hashlib.sha256(p.read_bytes()).hexdigest()
             out.append((os.path.relpath(p, root), st.st_mode, st.st_size, st.st_mtime_ns, digest))
     return sorted(out)
 
@@ -29,12 +30,12 @@ def tree(root):
     out = []
     for dirpath, dirnames, filenames in os.walk(root):
         for name in dirnames + filenames:
-            p = os.path.join(dirpath, name)
-            st = os.lstat(p)
-            if os.path.islink(p):
-                body = os.readlink(p)
-            elif os.path.isfile(p):
-                body = open(p, "rb").read()
+            p = Path(dirpath, name)
+            st = p.lstat()
+            if p.is_symlink():
+                body = os.readlink(p)  # noqa: PTH115  Path.readlink normalises the target; compare it raw
+            elif p.is_file():
+                body = p.read_bytes()
             else:
                 body = b""
             out.append((os.path.relpath(p, root), st.st_mode, body))
@@ -57,22 +58,22 @@ def seed(project):
     for rel, text in files.items():
         (project / rel).parent.mkdir(parents=True, exist_ok=True)
         (project / rel).write_text(text)
-    os.symlink("keep.txt", project / "link")
+    (project / "link").symlink_to("keep.txt")
 
 
 def mutate(root):
     """Writes, a rename, deletes, a no-op rewrite, a chmod and a symlink swap."""
     (root / "edit.txt").write_text("edited\n")
     (root / "gone.txt").unlink()
-    os.rename(root / "old.txt", root / "renamed.txt")
+    (root / "old.txt").rename(root / "renamed.txt")
     (root / "same.txt").write_text("same\n")  # copied up, content unchanged
     (root / "new" / "deep").mkdir(parents=True)
     (root / "new" / "deep" / "f.txt").write_text("f\n")
-    os.chmod(root / "mode.txt", 0o600)
+    (root / "mode.txt").chmod(0o600)
     subprocess.run(["rm", "-r", root / "tree"], check=True)
     (root / "dir" / "a.txt").unlink()
-    os.unlink(root / "link")
-    os.symlink("edit.txt", root / "link")
+    (root / "link").unlink()
+    (root / "link").symlink_to("edit.txt")
 
 
 EXPECTED = [

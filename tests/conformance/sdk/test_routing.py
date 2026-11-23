@@ -13,6 +13,7 @@ import os
 import shutil
 import threading
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -33,6 +34,13 @@ def fingerprint(root: Path) -> list[str]:
 
 class Run:
     """Everything the checks inspect, gathered in one pass like spike 0.4's test_04.py."""
+
+    # Set by setup_and_run; gather() adds the rest.
+    daemon: Any
+    project: Path
+    before: list[str]
+    after: list[str]
+    not_restored: list[str]
 
 
 @pytest.fixture(scope="module")
@@ -60,7 +68,7 @@ def setup_and_run(d, escrow_bin) -> Run:
     r = Run()
     r.daemon, r.project = d, project
     r.before = fingerprint(project)
-    cwd = os.getcwd()
+    cwd = Path.cwd()
     saved_attrs = {(o, n): getattr(o, n) for o, n, _ in _patch._REGISTRY}
     env = {"ESCROW_SOCKET": str(d.socket), "ESCROW_EXE": str(escrow_bin)}
     saved = {k: os.environ.get(k) for k in env}
@@ -93,17 +101,19 @@ async def worker(r, name, readme, extra):
     async with escrow.scope(name, decide=keep) as s:
         seen["id"] = s.id
         r.threads.add(threading.get_ident())
-        with open(os.path.join(r.project, "README.md"), "w") as f:  # absolute path
+        # The SDK wraps builtin open and the os functions: these call them directly, on str
+        # paths, absolute and relative (the pathlib write below is the third form).
+        with open(os.path.join(r.project, "README.md"), "w") as f:  # noqa: ASYNC230, PTH118, PTH123
             f.write(readme)
         await asyncio.sleep(0)
-        seen["readme"] = open("README.md").read()  # relative path, cwd is the project
+        seen["readme"] = open("README.md").read()  # noqa: ASYNC230, PTH123, SIM115  relative, cwd is the project
         (r.project / extra).write_text(name)  # pathlib
         await asyncio.sleep(0)
         proc = await asyncio.create_subprocess_exec("bash", "-c", f"echo built{name} > build.log", cwd=r.project)
         await proc.wait()
         await asyncio.sleep(0)
-        seen["build"] = open("build.log").read()
-        seen["ino"] = os.stat("base.txt").st_ino
+        seen["build"] = open("build.log").read()  # noqa: ASYNC230, PTH123, SIM115  wrapped builtin open
+        seen["ino"] = os.stat("base.txt").st_ino  # noqa: PTH116  the wrapped os.stat
     return seen
 
 
@@ -115,26 +125,26 @@ async def gather(r):
     async with escrow.scope("c", decide=keep) as s:
         r.c = s.id
         try:
-            open(".env").read()
+            open(".env").read()  # noqa: ASYNC230, PTH123, SIM115  a denied read through the wrapped open
             r.env_error = None
         except PermissionError as e:
             r.env_error = e
         proc = await asyncio.create_subprocess_exec("cat", ".env", cwd=r.project, stderr=asyncio.subprocess.PIPE)
         _, r.cat_err = await proc.communicate()
         r.cat_rc = proc.returncode
-        r.allowed_read = open("README.md").read()
+        r.allowed_read = open("README.md").read()  # noqa: ASYNC230, PTH123, SIM115  wrapped builtin open
 
     n = 4 * 1024 * 1024
     r.n = n
     async with escrow.scope("d", decide=keep) as s:
         up = r.daemon.upper(s.id)
-        f = open("big.bin", "wb")
+        f = open("big.bin", "wb")  # noqa: ASYNC230, PTH123, SIM115  held open across s.flush()
         f.write(b"x" * n)
         f.flush()  # Python buffer -> kernel page cache; file still open
         s.flush()  # fsync of the scope's open files
         r.after_flush = (up / "big.bin").stat().st_size
         f.close()
-        g = open("closed.bin", "wb")
+        g = open("closed.bin", "wb")  # noqa: ASYNC230, PTH123, SIM115  wrapped builtin open, closed before the check
         g.write(b"y" * n)
         g.close()
         r.after_close = (up / "closed.bin").stat().st_size

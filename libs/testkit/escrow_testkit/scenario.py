@@ -6,7 +6,6 @@ can compare the two.
 """
 
 import json
-import os
 from pathlib import Path
 
 SCENARIOS = Path(__file__).resolve().parents[2] / "fixtures" / "scenarios"
@@ -32,12 +31,12 @@ def apply(ops: list[dict], root: Path, dir: str) -> None:
                 path = _fill(dir, op["path"])
                 (root / path).write_text(_fill(dir, op["text"], path))
             case "rename":
-                os.rename(root / _fill(dir, op["from"]), root / _fill(dir, op["to"]))
+                (root / _fill(dir, op["from"])).rename(root / _fill(dir, op["to"]))
             case "remove":
-                os.remove(root / _fill(dir, op["path"]))
+                (root / _fill(dir, op["path"])).unlink()
             case "chmod":
-                os.chmod(root / _fill(dir, op["path"]), int(op["mode"], 8))
+                (root / _fill(dir, op["path"])).chmod(int(op["mode"], 8))
             case "symlink":
-                os.symlink(_fill(dir, op["target"]), root / _fill(dir, op["path"]))
+                (root / _fill(dir, op["path"])).symlink_to(_fill(dir, op["target"]))
             case _:
                 raise ValueError(f"unknown op {kind!r}")

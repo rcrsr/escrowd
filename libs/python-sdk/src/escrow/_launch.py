@@ -16,26 +16,28 @@ def _symlinks_on_the_way(path: str) -> list[str]:
     """Every symlink met while resolving `path` (itself or an ancestor, hop by hop): the
     sandbox must show those paths too, not only the resolved target."""
     out: list[str] = []
-    p = os.path.abspath(path)
+    p = os.path.abspath(path)  # noqa: PTH100  normalises `..` without following symlinks, as the walk needs
     for _ in range(40):
         for a in (p, *map(str, pathlib.Path(p).parents)):
-            if os.path.islink(a) and a not in out:
+            if pathlib.Path(a).is_symlink() and a not in out:
                 out.append(a)
-        if not os.path.islink(p):
+        link = pathlib.Path(p)
+        if not link.is_symlink():
             break
-        p = os.path.normpath(os.path.join(os.path.dirname(p), os.readlink(p)))
+        p = os.path.normpath(link.parent / link.readlink())
     return out
 
 
 def _read_paths(extra) -> list[str]:
     """What the sandbox must show of the host for this interpreter to run."""
     paths = [sys.prefix, sys.base_prefix, sys.exec_prefix]
-    paths += [os.path.dirname(os.path.realpath(sys.executable))]
-    paths += [p for p in sys.path if p and os.path.isabs(p)]
+    paths += [str(pathlib.Path(os.path.realpath(sys.executable)).parent)]
+    paths += [p for p in sys.path if p and pathlib.Path(p).is_absolute()]
     paths += [os.fspath(p) for p in extra]
     out: list[str] = []
     for p in map(os.path.realpath, paths):
-        if os.path.exists(p) and p != "/" and p not in out:
+        # os.path.exists is False on any OSError; Path.exists raises on EACCES (3.11).
+        if os.path.exists(p) and p != "/" and p not in out:  # noqa: PTH110  sys.path may hold unreadable entries
             out.append(p)
     # A symlink inside a bound path needs nothing more (bwrap cannot mount over it).
     for link in _symlinks_on_the_way(sys.executable):
@@ -81,7 +83,7 @@ def _absolute_script(argv: list[str]) -> tuple[list[str], str | None]:
     idx = _script_index(argv)
     if idx is None:
         return argv, None
-    script = os.path.abspath(argv[idx])
+    script = os.path.abspath(argv[idx])  # noqa: PTH100  normalises without following symlinks
     return [*argv[:idx], script, *argv[idx + 1 :]], script
 
 
@@ -107,7 +109,7 @@ def init(
     init_cwd = os.environ.pop(_INIT_CWD, None) if socket else None
     project = os.fspath(project)
     if init_cwd:
-        project = os.path.join(init_cwd, project)
+        project = str(pathlib.Path(init_cwd, project))
     project = os.path.realpath(project)
     if not socket:
         exe = _escrow_exe()
@@ -124,13 +126,14 @@ def init(
             args += ["--read", p]
         sys.stdout.flush()
         sys.stderr.flush()
-        os.environ[_INIT_CWD] = os.getcwd()
+        os.environ[_INIT_CWD] = str(pathlib.Path.cwd())
         os.execv(exe, [*args, "--", sys.executable, *argv])
     for var, want in (("ESCROW_PROJECT", project), ("ESCROW_UNSCOPED", unscoped)):
         got = os.environ.get(var)
         if got and got != want:
             raise EscrowError(f"escrow run serves {var}={got}, init() asked for {want}")
-    if init_cwd and os.path.isdir(init_cwd):
+    # os.path.isdir is False on any OSError; Path.is_dir raises on EACCES (3.11).
+    if init_cwd and os.path.isdir(init_cwd):  # noqa: PTH112  the first pass's cwd may be hidden in the sandbox
         os.chdir(init_cwd)
     with Client(socket) as client:
         version = client.ping().protocol_version

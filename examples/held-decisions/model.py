@@ -46,7 +46,7 @@ T0 = time.monotonic()
 
 
 def log(who: str, msg: str) -> None:
-    print(f"  [{time.monotonic() - T0:4.2f}s] {who:<8} {msg}")
+    print(f"  [{time.monotonic() - T0:4.2f}s] {who:<8} {msg}")  # noqa: T201  a runnable demo: stdout is its output
 
 
 def tighter(a: str, b: str) -> str:
@@ -299,7 +299,7 @@ async def monotonic(d: Escrowd) -> None:
     d.write(s, "src/auth/login.py", CALLER)
     await d.close(s, s.token, COMMIT, can_wait=True)
     await d.await_decision(s, s.token)
-    print("  ledger overrides:", [x for x in d.ledger if "override" in x] or "none")
+    print("  ledger overrides:", [x for x in d.ledger if "override" in x] or "none")  # noqa: T201  a runnable demo: stdout is its output
 
 
 async def continuing_costs(d: Escrowd) -> None:
@@ -325,7 +325,7 @@ async def split_across_turns(d: Escrowd) -> None:
 async def scenario(title: str, body, *, human=None, history=True) -> None:
     global T0
     T0 = time.monotonic()
-    print(f"\n== {title}")
+    print(f"\n== {title}")  # noqa: T201  a runnable demo: stdout is its output
     d = Escrowd(POLICY, BASE)
     workers = [
         asyncio.create_task(llm_reviewer(d, history)),

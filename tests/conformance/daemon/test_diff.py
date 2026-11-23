@@ -7,10 +7,10 @@ the staged tree, which is what `diff -ru` between the two would show.
 """
 
 import hashlib
-import os
 import shutil
 import stat
 import subprocess
+from typing import cast
 
 import grpc
 import pytest
@@ -46,10 +46,10 @@ def edit(root):
     newline, a rename with an edit, a rename over an existing file, a space in a name."""
     (root / "multi.txt").write_text("".join(f"line {i}\n" for i in range(20)).replace("10", "X"))
     (root / "nonl.txt").write_text("a\nc")
-    os.rename(root / "mv.txt", root / "moved.txt")
-    with open(root / "moved.txt", "a") as f:
+    (root / "mv.txt").rename(root / "moved.txt")
+    with (root / "moved.txt").open("a") as f:
         f.write("appended\n")
-    os.rename(root / "over-src.txt", root / "over-dst.txt")
+    (root / "over-src.txt").rename(root / "over-dst.txt")
     (root / "space name.txt").write_text("two\n")
 
 
@@ -195,7 +195,7 @@ def test_escrow_diff_prints_a_closed_scope(daemon):
         c.discard(sid)
         with pytest.raises(grpc.RpcError) as e:
             c.get_change_set(sid)
-        assert e.value.code() == grpc.StatusCode.NOT_FOUND
+        assert cast(grpc.Call, e.value).code() == grpc.StatusCode.NOT_FOUND
 
 
 FROZEN_RULES = """\

@@ -413,4 +413,4 @@ class Outcome:
         return self.changes.unscoped
 
 
-Decide = Callable[[ChangeSet], "Decision | None | Awaitable[Decision | None]"]
+Decide = Callable[[ChangeSet], "Decision | Awaitable[Decision | None] | None"]

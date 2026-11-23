@@ -8,6 +8,8 @@ needs every tier from llm up to the highest its paths need (a commit of one that
 any is held: `test_held.py`).
 """
 
+from typing import cast
+
 import grpc
 import pytest
 
@@ -90,7 +92,7 @@ def test_denied_content_turns_a_return_into_a_discard(start_daemon):
         assert (out.status, out.reopened) == (pb.OUTCOME_STATUS_DISCARDED, False)
         with pytest.raises(grpc.RpcError) as err:
             c.close_scope(s)
-    assert err.value.code() == grpc.StatusCode.NOT_FOUND
+    assert cast(grpc.Call, err.value).code() == grpc.StatusCode.NOT_FOUND
     assert "op=write-content path=notes.bin decision=deny" in decision_lines(d, s)
 
 

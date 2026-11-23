@@ -158,8 +158,21 @@ def test_check_prints_the_protected_paths_and_creates_no_state(escrow_bin, runti
     state, mount = runtime_dir / "state", runtime_dir / "mnt"
 
     r = subprocess.run(
-        [escrow_bin, "daemon", "--check", "--unscoped", "implicit", "--project", project]
-        + ["--state", state, "--mount", mount, "--policy", policy],
+        [
+            escrow_bin,
+            "daemon",
+            "--check",
+            "--unscoped",
+            "implicit",
+            "--project",
+            project,
+            "--state",
+            state,
+            "--mount",
+            mount,
+            "--policy",
+            policy,
+        ],
         capture_output=True,
         text=True,
         timeout=30,

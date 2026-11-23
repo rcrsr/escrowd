@@ -147,7 +147,7 @@ class Daemon:
         self._start()
 
     def _start(self) -> None:
-        self.log = open(self.work / "daemon.log", "ab")
+        self.log = (self.work / "daemon.log").open("ab")
         env = {**os.environ, **(self.env or {})}
         self.proc = subprocess.Popen(self.argv, stderr=self.log, env=env)
         self.wait_ready()
@@ -238,4 +238,4 @@ class Daemon:
 
     def generations(self) -> list[str]:
         """Generation directories holding pre-images, in every root."""
-        return sorted(f"{d.name}/{g}" for d in self.state.glob("generations*") for g in os.listdir(d))
+        return sorted(f"{d.name}/{g.name}" for d in self.state.glob("generations*") for g in d.iterdir())

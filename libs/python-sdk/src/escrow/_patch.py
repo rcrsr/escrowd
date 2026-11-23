@@ -57,7 +57,7 @@ def _unscoped_error(e: OSError, *paths) -> OSError:
         if isinstance(p, int):
             continue
         p = os.fsdecode(os.fspath(p))
-        if _under(os.path.abspath(p), _cfg.project):
+        if _under(os.path.abspath(p), _cfg.project):  # noqa: PTH100  literal match: must not follow symlinks
             msg = "project writes outside a scope are refused (unscoped=deny): open an escrow.scope"
             return EscrowUnscopedError(errno.EROFS, msg, p)
     return e
@@ -190,7 +190,8 @@ class _Popen(subprocess.Popen):
                 if shell:
                     argv = ["/bin/sh", "-c", *argv]
             cwd = kw.pop("cwd", None)
-            kw["cwd"] = _rewrite_to(s, os.path.abspath(os.fspath(cwd) if cwd else os.getcwd()))
+            cwd = os.fspath(cwd) if cwd else os.getcwd()  # noqa: PTH109  the wrapped getcwd maps a view back
+            kw["cwd"] = _rewrite_to(s, os.path.abspath(cwd))  # noqa: PTH100  literal match: must not follow symlinks
             args = _exec_argv(s, [os.fsdecode(x) for x in argv])
             kw["env"] = _exec_env(s, kw.get("env"))
         super().__init__(args, *a, **kw)

@@ -141,7 +141,7 @@ class Scope:
             self.outcome = _await(self.outcome, self._scope_token, timeout)
         return self.outcome
 
-    async def decided(self, timeout: float | None = None) -> Outcome:
+    async def decided(self, timeout: float | None = None) -> Outcome:  # noqa: ASYNC109  public API, mirrors wait_decided
         """`wait_decided` without blocking the event loop."""
         return await asyncio.to_thread(self.wait_decided, timeout)
 
@@ -207,7 +207,7 @@ def current() -> Scope | None:
 
 def _view(path: str) -> str:
     """A view's path as this process sees it (under /escrow in `escrow run`'s sandbox)."""
-    return os.path.join(_cfg.views, os.path.basename(path)) if _cfg.views else path
+    return str(pathlib.Path(_cfg.views, pathlib.Path(path).name)) if _cfg.views else path
 
 
 def _under(p: str, root: str) -> bool:
@@ -216,13 +216,13 @@ def _under(p: str, root: str) -> bool:
 
 def _move(p: str, src: str, dst: str) -> str:
     rel = os.path.relpath(p, src)
-    return dst if rel == "." else os.path.join(dst, rel)
+    return dst if rel == "." else str(pathlib.Path(dst, rel))
 
 
 def _rewrite_to(s: Scope, p):
     if isinstance(p, bytes):
         return os.fsencode(_rewrite_to(s, os.fsdecode(p)))
-    a = os.path.abspath(p)
+    a = os.path.abspath(p)  # noqa: PTH100  literal match: must not follow symlinks
     # The project first: it may lie inside $HOME.
     if _under(a, _cfg.project):
         return _move(a, _cfg.project, s.root)

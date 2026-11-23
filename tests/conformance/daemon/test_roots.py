@@ -6,7 +6,6 @@ decision, denied paths get EACCES (logged), passthrough paths are the host's own
 ephemeral paths never reach the change set. `roots.tmp` does the same for /tmp.
 """
 
-import os
 import subprocess
 import threading
 import uuid
@@ -76,7 +75,7 @@ def test_home_capture_commits_with_the_project_change(homed, home):
     assert sorted(out.paths) == ["f.txt", "~/.gitconfig"]
     assert "name = Scope" in (home / ".gitconfig").read_text()
     assert (d.project / "f.txt").read_text() == "x\n"
-    assert not [n for n in os.listdir(home) if n.startswith(".escrow-")]
+    assert not [e.name for e in home.iterdir() if e.name.startswith(".escrow-")]
 
 
 def test_home_capture_discards_with_the_project_change(homed, home):
@@ -145,7 +144,7 @@ def test_concurrent_scopes_share_a_passthrough_cache(homed, home):
     for t in threads:
         t.join()
     assert all(r.returncode == 0 for r in results.values()), results
-    assert len(os.listdir(home / ".npm")) == 100  # on the host at once: not escrowed
+    assert len(list((home / ".npm").iterdir())) == 100  # on the host at once: not escrowed
     with d.client() as c:
         for sid in (a, b):
             assert not c.close_scope(sid).changes
@@ -226,7 +225,7 @@ def test_tmp_is_a_per_scope_scratch_layer(tmp_rooted):
             assert c.commit(a).status == pb.OUTCOME_STATUS_COMMITTED
         assert Path(name).read_text() == "host\n"
     finally:
-        os.unlink(name)
+        Path(name).unlink()
 
 
 def test_passthrough_root_default_needs_no_lists(escrow_bin, runtime_dir):

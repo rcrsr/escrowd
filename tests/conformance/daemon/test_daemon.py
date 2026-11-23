@@ -24,9 +24,8 @@ def test_connect_reads_escrow_socket(daemon, monkeypatch):
 
 
 def test_settle_unscoped_needs_the_implicit_mode(daemon):
-    with daemon.client() as client:
-        with pytest.raises(lowlevel.EscrowStateError) as err:
-            client.settle_unscoped(timeout=5)
+    with daemon.client() as client, pytest.raises(lowlevel.EscrowStateError) as err:
+        client.settle_unscoped(timeout=5)
     assert err.value.code() == grpc.StatusCode.FAILED_PRECONDITION
 
 

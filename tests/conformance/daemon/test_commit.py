@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
+from typing import cast
 
 import grpc
 import pytest
@@ -21,7 +22,7 @@ from escrow_testkit import EXPECTED, Daemon, fingerprint, make_runtime_dir, muta
 
 def leftovers(root):
     """Temporary files of a commit left in the project."""
-    return [os.path.join(dp, n) for dp, dns, fns in os.walk(root) for n in dns + fns if n.startswith(".escrow-")]
+    return [str(Path(dp, n)) for dp, dns, fns in os.walk(root) for n in dns + fns if n.startswith(".escrow-")]
 
 
 def reference(work, seed_fn, mutate_fn):
@@ -61,7 +62,7 @@ def test_commit_needs_a_closed_scope(daemon):
         sid = c.open_scope().scope_id
         with pytest.raises(grpc.RpcError) as err:
             c.commit(sid)
-    assert err.value.code() == grpc.StatusCode.FAILED_PRECONDITION
+    assert cast(grpc.Call, err.value).code() == grpc.StatusCode.FAILED_PRECONDITION
 
 
 def test_empty_commit_drops_the_scope(daemon):
@@ -75,7 +76,7 @@ def test_empty_commit_drops_the_scope(daemon):
         assert out.status == pb.OUTCOME_STATUS_COMMITTED and list(out.paths) == []
         with pytest.raises(grpc.RpcError) as err:
             c.close_scope(sid)
-    assert err.value.code() == grpc.StatusCode.NOT_FOUND
+    assert cast(grpc.Call, err.value).code() == grpc.StatusCode.NOT_FOUND
     assert fingerprint(daemon.project) == before
 
 
@@ -98,7 +99,7 @@ def test_second_writer_of_a_path_hits_the_conflict_policy(daemon):
         assert "f.txt" in out.reasons[0]
         with pytest.raises(grpc.RpcError) as err:
             c.close_scope(b)  # the default conflict policy discards the scope
-    assert err.value.code() == grpc.StatusCode.NOT_FOUND
+    assert cast(grpc.Call, err.value).code() == grpc.StatusCode.NOT_FOUND
     assert (d.project / "f.txt").read_text() == "from a\n"
     assert (d.project / "g.txt").read_text() == "g\n"  # nothing of b was written
     assert any(f" scope={b} op=conflict path=f.txt decision=deny" in line for line in d.ledger)
@@ -130,7 +131,7 @@ def test_disjoint_scopes_both_commit(daemon):
         c.close_scope(b)
         assert c.commit(a).status == pb.OUTCOME_STATUS_COMMITTED
         assert c.commit(b).status == pb.OUTCOME_STATUS_COMMITTED
-    assert sorted(os.listdir(d.project / "dir")) == ["a.txt", "b.txt"]
+    assert sorted(e.name for e in (d.project / "dir").iterdir()) == ["a.txt", "b.txt"]
 
 
 def test_deleting_a_directory_that_gained_entries_conflicts(daemon):
@@ -146,7 +147,7 @@ def test_deleting_a_directory_that_gained_entries_conflicts(daemon):
         c.close_scope(b)
         assert c.commit(a).status == pb.OUTCOME_STATUS_COMMITTED
         assert c.commit(b).status == pb.OUTCOME_STATUS_CONFLICT
-    assert sorted(os.listdir(d.project / "dir")) == ["new.txt", "old.txt"]
+    assert sorted(e.name for e in (d.project / "dir").iterdir()) == ["new.txt", "old.txt"]
 
 
 def snapshot_seed(project):
@@ -168,7 +169,7 @@ def assert_old_base(root):
     assert (root / "g.txt").read_text() == "g\n"
     assert not (root / "n.txt").exists()
     assert (root / "dir" / "x.txt").read_text() == "x\n"
-    assert sorted(os.listdir(root)) == ["dir", "f.txt", "g.txt"]
+    assert sorted(e.name for e in root.iterdir()) == ["dir", "f.txt", "g.txt"]
 
 
 def test_scope_keeps_its_snapshot_through_another_commit(daemon):
@@ -180,11 +181,11 @@ def test_scope_keeps_its_snapshot_through_another_commit(daemon):
         snapshot_change(ra)
         c.close_scope(a)
         c.commit(a)
-        assert sorted(os.listdir(d.project)) == ["f.txt", "n.txt"]
+        assert sorted(e.name for e in d.project.iterdir()) == ["f.txt", "n.txt"]
         assert_old_base(rold)
-        assert os.stat(rold / "f.txt").st_size == 4  # the pre-image's size, not the new file's
-        new, rnew = open_root(d, c)
-        assert sorted(os.listdir(rnew)) == ["f.txt", "n.txt"]
+        assert (rold / "f.txt").stat().st_size == 4  # the pre-image's size, not the new file's
+        _new, rnew = open_root(d, c)
+        assert sorted(e.name for e in rnew.iterdir()) == ["f.txt", "n.txt"]
         assert (rnew / "f.txt").read_text() == "new content\n"
         assert d.generations() != []
         c.discard(old)
@@ -217,7 +218,7 @@ def test_snapshot_survives_a_daemon_restart(start_daemon):
     d = start_daemon()
     snapshot_seed(d.project)
     with d.client() as c:
-        old, rold = open_root(d, c)
+        old, _rold = open_root(d, c)
         a, ra = open_root(d, c)
         snapshot_change(ra)
         c.close_scope(a)
@@ -244,7 +245,7 @@ def small_seed(project):
     }.items():
         (project / rel).parent.mkdir(parents=True, exist_ok=True)
         (project / rel).write_text(text)
-    os.symlink("a.txt", project / "link")
+    (project / "link").symlink_to("a.txt")
 
 
 def small_mutate(root):
@@ -252,15 +253,15 @@ def small_mutate(root):
     replaced by a file, a symlink swap."""
     (root / "a.txt").write_text("a2\n")
     (root / "b.txt").unlink()
-    os.rename(root / "c.txt", root / "c2.txt")
+    (root / "c.txt").rename(root / "c2.txt")
     subprocess.run(["rm", "-r", root / "d"], check=True)
     (root / "new").mkdir()
     (root / "new" / "n.txt").write_text("n\n")
-    os.chmod(root / "e", 0o700)
+    (root / "e").chmod(0o700)
     subprocess.run(["rm", "-r", root / "t"], check=True)
     (root / "t").write_text("t is a file now\n")
-    os.unlink(root / "link")
-    os.symlink("c2.txt", root / "link")
+    (root / "link").unlink()
+    (root / "link").symlink_to("c2.txt")
 
 
 def test_a_renamed_file_keeps_its_inode(daemon):
@@ -276,10 +277,10 @@ def test_a_renamed_file_keeps_its_inode(daemon):
 
     def change(root):
         (root / "new").mkdir()
-        os.rename(root / "old" / "a.txt", root / "new" / "a.txt")
+        (root / "old" / "a.txt").rename(root / "new" / "a.txt")
         shutil.rmtree(root / "old")
-        os.rename(root / "b.txt", root / "b2.txt")
-        with open(root / "b2.txt", "a") as f:
+        (root / "b.txt").rename(root / "b2.txt")
+        with (root / "b2.txt").open("a") as f:
             f.write("more\n")
         (root / "n.txt").write_text("n\n")
 
@@ -322,7 +323,7 @@ def run_with_fault(escrow_bin, spec: str, home: bool = False) -> bool:
             try:
                 c.commit(sid, timeout=10)
             except grpc.RpcError as err:
-                code = err.code()
+                code = cast(grpc.Call, err).code()
             else:
                 d.stop()
                 assert all(tree(t) == want for t in trees)
@@ -374,7 +375,7 @@ def test_crash_after_done_finishes_the_commit_on_restart(escrow_bin):
         with d.client() as c:
             c.open_scope()  # reuses the scope index; recovery must not drop it on the next start
         d.restart()
-        assert os.listdir(d.state / "scopes") == [sid]
+        assert [e.name for e in (d.state / "scopes").iterdir()] == [sid]
         d.stop()
     finally:
         subprocess.run(["fusermount3", "-u", "-z", work / "mnt"], capture_output=True)

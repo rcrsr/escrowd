@@ -8,11 +8,12 @@ follows its held scope with `AwaitDecision`. The model's rules 1.2 (reviewer sid
 1.3, 1.4 and 1.5 are checked here; 1.1 and the opener's side of 1.2 in `test_held.py`.
 """
 
-import os
 import stat
 import subprocess
 import threading
 import time
+from pathlib import Path
+from typing import cast
 
 import grpc
 import pytest
@@ -46,7 +47,8 @@ def held_scope(d, c, path="src/util.py", session="agent-1", text="change\n", **k
 def code(fn):
     with pytest.raises(grpc.RpcError) as err:
         fn()
-    return err.value.code(), err.value.details()
+    call = cast(grpc.Call, err.value)
+    return call.code(), call.details()
 
 
 def ledger_ops(d, scope):
@@ -58,7 +60,7 @@ def ledger_ops(d, scope):
 def test_the_review_socket_is_private_and_separate(start_daemon):
     d = start_daemon(policy=RULES)
     review = f"{d.socket}.review"
-    assert stat.S_IMODE(os.stat(review).st_mode) == 0o600
+    assert stat.S_IMODE(Path(review).stat().st_mode) == 0o600
     with d.client() as c:
         s = c.open_scope().scope_id
         # A sandboxed process cannot see it.
@@ -70,8 +72,8 @@ def test_the_review_socket_is_private_and_separate(start_daemon):
     assert code(lambda: stub.ListHeld(pb.ListHeldRequest(), timeout=5))[0] == (grpc.StatusCode.UNIMPLEMENTED)
     channel.close()
     with d.reviewer() as rv:
-        stub = escrow_pb2_grpc.EscrowServiceStub(rv._channel)
-        assert code(lambda: stub.Ping(pb.PingRequest(), timeout=5))[0] == (grpc.StatusCode.UNIMPLEMENTED)
+        escrow_stub = escrow_pb2_grpc.EscrowServiceStub(rv._channel)
+        assert code(lambda: escrow_stub.Ping(pb.PingRequest(), timeout=5))[0] == (grpc.StatusCode.UNIMPLEMENTED)
 
 
 def test_a_reviewer_lists_and_reads_held_scopes(start_daemon):
@@ -91,7 +93,7 @@ def test_a_reviewer_lists_and_reads_held_scopes(start_daemon):
         assert got.held.scope_id == a
         assert [ch.path for ch in got.change_set.changes] == ["src", "src/util.py"]
         assert "+change" in got.change_set.diff
-        (w,) = [ch for ch in got.change_set.changes if ch.path == "src/util.py"][0].writers
+        (w,) = next(ch for ch in got.change_set.changes if ch.path == "src/util.py").writers
         assert {p.id for p in got.change_set.processes} >= {w}
         assert list(got.history) == []
         # An unheld scope is not the reviewers'.

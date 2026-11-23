@@ -9,7 +9,6 @@ fails the check.
 """
 
 import importlib.util
-import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -64,14 +63,14 @@ def test_unknown_op_is_rejected_by_both_interpreters(tmp_path):
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    module.P = tmp_path
+    vars(module)["P"] = tmp_path  # the app's project global, set by its __main__
     with pytest.raises(ValueError, match="teleport"):
         module.apply(bad, "d")
 
 
 def test_1_project_is_unchanged_until_commit(app):
     seed(app.project, "w")
-    base = sorted(os.listdir(app.project / "w"))
+    base = sorted(e.name for e in (app.project / "w").iterdir())
     want = expected(app.project, app.work, "w")
     out = app.run("escrowed")
     assert out["own_read"] == "w:w/edit.txt\n"

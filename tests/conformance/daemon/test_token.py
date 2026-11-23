@@ -6,6 +6,7 @@ decide or start children in that scope. The unscoped scope has no token.
 """
 
 import sqlite3
+from typing import cast
 
 import grpc
 import pytest
@@ -18,8 +19,9 @@ from escrow_testkit import Daemon
 def denied(call) -> str:
     with pytest.raises(grpc.RpcError) as err:
         call()
-    assert err.value.code() == grpc.StatusCode.PERMISSION_DENIED
-    return err.value.details()
+    rpc = cast(grpc.Call, err.value)
+    assert rpc.code() == grpc.StatusCode.PERMISSION_DENIED
+    return rpc.details()
 
 
 def test_open_returns_a_fresh_random_token(daemon):
@@ -121,7 +123,7 @@ def test_a_scope_stored_without_a_token_is_discarded_at_start(escrow_bin, runtim
         with d.client() as c:
             with pytest.raises(grpc.RpcError) as err:
                 c.close_scope(a.scope_id, token="")
-            assert err.value.code() == grpc.StatusCode.NOT_FOUND
+            assert cast(grpc.Call, err.value).code() == grpc.StatusCode.NOT_FOUND
             scopes = d.state / "scopes"
             assert not (scopes / a.scope_id).exists()
             assert not (scopes / f"{a.scope_id}.home").exists()

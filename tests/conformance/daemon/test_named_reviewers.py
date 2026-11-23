@@ -7,6 +7,7 @@ still show as `tiers`, beside `reviewers`.
 
 import os
 import subprocess
+from typing import cast
 
 import grpc
 import pytest
@@ -63,7 +64,7 @@ def review_as(rv, scope, reviewer="", tier=0, verdict=COMMIT, **kw):
 def code(fn):
     with pytest.raises(grpc.RpcError) as err:
         fn()
-    return err.value.code()
+    return cast(grpc.Call, err.value).code()
 
 
 def ledger_ops(d, scope):

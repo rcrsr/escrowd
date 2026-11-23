@@ -7,6 +7,8 @@ snapshot. In `passthrough` mode the ledger says once, at start, that IO outside 
 goes unescrowed.
 """
 
+from typing import cast
+
 import grpc
 import pytest
 
@@ -33,7 +35,7 @@ def test_conflict_discards_by_default(daemon):
         assert (out.status, out.reopened) == (pb.OUTCOME_STATUS_CONFLICT, False)
         with pytest.raises(grpc.RpcError) as err:
             c.close_scope(b)
-    assert err.value.code() == grpc.StatusCode.NOT_FOUND
+    assert cast(grpc.Call, err.value).code() == grpc.StatusCode.NOT_FOUND
 
 
 def test_conflict_verdict_return_reopens_the_scope_with_its_changes(start_daemon):

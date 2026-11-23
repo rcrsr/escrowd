@@ -13,7 +13,6 @@ entry that names a scope for an operation it did not perform.
 
 import asyncio
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -54,13 +53,13 @@ def apply(ops: list[dict], d: str) -> None:
                 path = fill(op["path"], d)
                 (P / path).write_text(fill(op["text"], d, path))
             case "rename":
-                os.rename(P / fill(op["from"], d), P / fill(op["to"], d))
+                (P / fill(op["from"], d)).rename(P / fill(op["to"], d))
             case "remove":
-                os.remove(P / fill(op["path"], d))
+                (P / fill(op["path"], d)).unlink()
             case "chmod":
-                os.chmod(P / fill(op["path"], d), int(op["mode"], 8))
+                (P / fill(op["path"], d)).chmod(int(op["mode"], 8))
             case "symlink":
-                os.symlink(fill(op["target"], d), P / fill(op["path"], d))
+                (P / fill(op["path"], d)).symlink_to(fill(op["target"], d))
             case _:
                 raise ValueError(f"unknown op {kind!r}")
 
@@ -78,7 +77,7 @@ def escrowed() -> None:
     """1: writes, reads, renames and deletes leave the project unchanged until commit."""
 
     def gate(cs: escrow.ChangeSet) -> escrow.Decision:
-        out["project_at_decide"] = sorted(os.listdir(P / "w"))  # unscoped: the live base
+        out["project_at_decide"] = sorted(f.name for f in (P / "w").iterdir())  # unscoped: the live base
         return escrow.commit()
 
     out["scopes"]["unscoped"] = ["w"]  # the gate's listing
@@ -88,7 +87,7 @@ def escrowed() -> None:
         out["own_read"] = (P / "w" / "edit.txt").read_text()
         with escrow.scope("peek", decide=lambda cs: escrow.discard()) as peek:
             owns(peek, "w")
-            out["other_scope_sees"] = sorted(os.listdir(P / "w"))
+            out["other_scope_sees"] = sorted(f.name for f in (P / "w").iterdir())
     out["writes"] = outcome(s)
 
 
@@ -145,7 +144,7 @@ def atomic() -> None:
             owns(s, "d")
             mutate("d")
         out["atomic"] = outcome(s)
-    except Exception as e:  # the daemon aborts the commit: grpc ABORTED
+    except Exception as e:  # noqa: BLE001  the check reports any failure: the daemon aborts the commit (ABORTED)
         out["atomic"] = {"status": "error", "error": type(e).__name__}
 
 
@@ -196,7 +195,7 @@ def snapshot() -> None:
             write("s/f.txt", "new")
         out["new"] = outcome(new)
         out["after"] = (P / "s" / "f.txt").read_text()
-        out["listing"] = sorted(os.listdir(P / "s"))
+        out["listing"] = sorted(f.name for f in (P / "s").iterdir())
     out["old"] = outcome(old)
 
 
@@ -206,8 +205,9 @@ def held() -> None:
     commit it, and the session's next scope opens only after the verdict."""
     with escrow.scope("guarded", session="agent", wait=False) as s:
         owns(s, "h")
-        os.makedirs(P / "h" / "auth")
+        (P / "h" / "auth").mkdir(parents=True)
         write("h/auth/login.py", "guarded")
+    assert s.outcome is not None
     out["held"] = outcome(s) | {"tiers": s.outcome.tiers, "wait": s.outcome.wait}
     with escrow.connect() as c:
         try:
@@ -235,7 +235,8 @@ def held_continue() -> None:
         owns(b, "n")
         out["turn2_sees"] = (P / "n" / "guide.md").read_text()
         write("n/guide.md", "turn2")
-    out["held"] = [a.outcome.status, b.outcome.status]  # ty: ignore[possibly-missing-attribute]
+    assert a.outcome is not None and b.outcome is not None
+    out["held"] = [a.outcome.status, b.outcome.status]
     a.wait_decided()
     b.wait_decided()
     out["turn1"], out["turn2"] = outcome(a), outcome(b)
@@ -243,8 +244,19 @@ def held_continue() -> None:
 
 CHECKS = {
     f.__name__.replace("_", "-"): f
-    for f in (escrowed, child, concurrent, discarded, atomic, conflict, denied_read)
-    + (unscoped, snapshot, held, held_continue)
+    for f in (
+        escrowed,
+        child,
+        concurrent,
+        discarded,
+        atomic,
+        conflict,
+        denied_read,
+        unscoped,
+        snapshot,
+        held,
+        held_continue,
+    )
 }
 
 if __name__ == "__main__":
@@ -253,4 +265,4 @@ if __name__ == "__main__":
     escrow.init(P, unscoped=MODE, policy=POLICY, on_exit="discard", read=(SCENARIO_FILE,))
     SCENARIO = json.loads(Path(SCENARIO_FILE).read_text())
     CHECKS[CHECK]()
-    print(json.dumps(out))
+    print(json.dumps(out))  # noqa: T201  stdout is the JSON result the harness reads

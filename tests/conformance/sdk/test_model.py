@@ -1,13 +1,13 @@
 """The public client and reviewer hand back model types and take string verdicts and
 tiers; values a later daemon adds read as "unknown"."""
 
-from typing import get_args
+from typing import cast, get_args
 
 import pytest
 from google.protobuf.message import Message
 
 import escrow
-from escrow import _launch, _model
+from escrow import _launch, _model, lowlevel
 from escrow.v1 import escrow_pb2 as pb
 
 RULES = "review:\n  - {paths: ['src/**'], tier: llm}\n"
@@ -36,13 +36,13 @@ def test_unknown_values_are_not_decided_yet():
     cs = _model.ChangeSet.from_proto(
         pb.ChangeSet(
             scope_id="s",
-            changes=[pb.Change(kind=99, path="a")],  # ty: ignore[invalid-argument-type]
-            review=pb.Review(tiers=[pb.TIER_LLM, 9]),  # ty: ignore[invalid-argument-type]
+            changes=[pb.Change(kind=99, path="a")],
+            review=pb.Review(tiers=[pb.TIER_LLM, 9]),
         )
     )
     assert cs.changes[0].kind == "unknown"
     assert cs.review.tiers == ["llm", "unknown"]
-    bad = pb.Outcome(status=42, tiers=[7])  # ty: ignore[invalid-argument-type]
+    bad = pb.Outcome(status=42, tiers=[7])
     out = _model.Outcome.from_result(_model.Result.from_proto(bad), cs)
     assert (out.status, out.tiers) == ("held", ["unknown"])
     returned = _model.Result.from_proto(pb.Outcome(status=pb.OUTCOME_STATUS_RETURNED))
@@ -52,9 +52,9 @@ def test_unknown_values_are_not_decided_yet():
 def test_unknown_verdicts_and_tiers_of_a_held_scope_read_unknown():
     h = _model.HeldScope.from_proto(
         pb.HeldScope(
-            verdict=9,  # ty: ignore[invalid-argument-type]
-            tiers=[8],  # ty: ignore[invalid-argument-type]
-            reviews=[pb.TierReview(tier=7, verdict=6)],  # ty: ignore[invalid-argument-type]
+            verdict=9,
+            tiers=[8],
+            reviews=[pb.TierReview(tier=7, verdict=6)],
         )
     )
     assert (h.verdict, h.tiers) == ("unknown", ["unknown"])
@@ -102,7 +102,7 @@ def test_string_verdicts_commit_discard_and_return_work_through_decide(daemon):
         got = {}
         for verdict in ("commit", "discard", "return"):
             sid = closed(daemon, c, path=f"{verdict}.txt")
-            got[verdict] = c.decide(sid, verdict, reasons=[verdict])  # ty: ignore[invalid-argument-type]
+            got[verdict] = c.decide(sid, verdict, reasons=[verdict])
     assert {v: r.status for v, r in got.items()} == {
         "commit": "committed",
         "discard": "discarded",
@@ -136,13 +136,13 @@ def test_an_invalid_string_raises_before_any_rpc(runtime_dir):
     absent = str(runtime_dir / "absent.sock")  # a call would raise EscrowUnavailableError
     with escrow.Client(absent) as c, escrow.Reviewer(absent) as rv:
         with pytest.raises(ValueError) as err:
-            c.decide("s", "x")  # ty: ignore[invalid-argument-type]
+            c.decide("s", "x")
         assert str(err.value) == "verdict must be one of: commit, discard, return (got 'x')"
         with pytest.raises(ValueError) as err:
-            rv.review("s", "x", "commit")  # ty: ignore[invalid-argument-type]
+            rv.review("s", "x", "commit")
         assert str(err.value) == "tier must be one of: software, llm, human (got 'x')"
         with pytest.raises(ValueError, match="verdict must be one of"):
-            rv.review("s", "llm", "x")  # ty: ignore[invalid-argument-type]
+            rv.review("s", "llm", "x")
 
 
 def test_review_as_rejects_an_invalid_name_or_verdict_before_any_rpc(runtime_dir):
@@ -152,13 +152,13 @@ def test_review_as_rejects_an_invalid_name_or_verdict_before_any_rpc(runtime_dir
             with pytest.raises(ValueError, match="reviewer must match"):
                 rv.review_as("s", bad, "commit")
         with pytest.raises(ValueError, match="verdict must be one of"):
-            rv.review_as("s", "llm", "x")  # ty: ignore[invalid-argument-type]
+            rv.review_as("s", "llm", "x")
 
 
 def test_review_keeps_rejecting_a_reviewer_name_as_a_tier(runtime_dir):
     absent = str(runtime_dir / "absent.sock")
     with escrow.Reviewer(absent) as rv, pytest.raises(ValueError, match="tier must be one of"):
-        rv.review("s", "security", "commit")  # ty: ignore[invalid-argument-type]
+        rv.review("s", "security", "commit")
 
 
 def test_review_as_sends_the_name_the_token_and_no_tier():
@@ -173,7 +173,7 @@ def test_review_as_sends_the_name_the_token_and_no_tier():
             pass
 
     rv = escrow.Reviewer.__new__(escrow.Reviewer)
-    rv._low = Low()
+    rv._low = cast(lowlevel.Reviewer, Low())  # a stand-in that records the call
     result = rv.review_as("s", "oncall", "return", reasons=["no"], override=True, token="tok")
     (args, kw) = sent[0]
     assert args[0] == "s" and args[1] == pb.TIER_UNSPECIFIED and args[2] == pb.VERDICT_RETURN

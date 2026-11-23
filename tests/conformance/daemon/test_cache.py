@@ -31,28 +31,28 @@ def test_names_come_and_go_through_the_cache(daemon):
     with d.client() as c:
         sid = c.open_scope().scope_id
     root = d.mount / sid
-    assert os.listdir(root) == []  # a cached listing
+    assert [e.name for e in root.iterdir()] == []  # a cached listing
     assert not (root / "n.txt").exists()  # cached as absent
     (root / "n.txt").write_text("n\n")
     assert (root / "n.txt").read_text() == "n\n"
-    assert os.listdir(root) == ["n.txt"]
-    os.unlink(root / "n.txt")
+    assert [e.name for e in root.iterdir()] == ["n.txt"]
+    (root / "n.txt").unlink()
     assert not (root / "n.txt").exists()
-    assert os.listdir(root) == []
+    assert [e.name for e in root.iterdir()] == []
 
 
 def test_a_reset_root_shows_what_the_discarded_scope_deleted(start_daemon):
     d = start_daemon(unscoped="implicit")
     (d.project / "g.txt").write_text("g\n")
     root = d.mount / "unscoped"
-    os.unlink(root / "g.txt")
+    (root / "g.txt").unlink()
     assert not (root / "g.txt").exists()
-    assert os.listdir(root) == []
+    assert [e.name for e in root.iterdir()] == []
     with d.client() as c:
         c.settle_unscoped()
         c.discard("unscoped")
     assert (root / "g.txt").read_text() == "g\n"
-    assert os.listdir(root) == ["g.txt"]
+    assert [e.name for e in root.iterdir()] == ["g.txt"]
 
 
 def test_a_large_listing_is_whole_with_attributes(daemon):
@@ -66,7 +66,7 @@ def test_a_large_listing_is_whole_with_attributes(daemon):
         sid = c.open_scope().scope_id
     big = d.mount / sid / "big"
     for i in range(0, 1500, 3):
-        os.unlink(big / f"base-{i:04}-{'x' * 40}")
+        (big / f"base-{i:04}-{'x' * 40}").unlink()
     for i in range(500):
         (big / f"new-{i:04}").write_text("n" * (i % 5))
     want = {f"base-{i:04}-{'x' * 40}": i % 7 for i in range(1500) if i % 3}

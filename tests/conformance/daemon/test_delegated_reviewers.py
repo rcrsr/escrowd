@@ -14,6 +14,7 @@ import sqlite3
 import subprocess
 import time
 from functools import partial
+from typing import cast
 
 import grpc
 import pytest
@@ -99,7 +100,7 @@ def give(rv, scope, token, reviewer="oncall", verdict=COMMIT, **kw):
 def code_of(fn):
     with pytest.raises(grpc.RpcError) as err:
         fn()
-    return err.value.code()
+    return cast(grpc.Call, err.value).code()
 
 
 def sha256(token):
@@ -307,7 +308,7 @@ def test_the_sdk_reviewer_gives_a_delegates_verdict_with_review_as_and_a_token(s
 
         with pytest.raises(grpc.RpcError) as err:
             rv.review_as(s, "oncall", "commit", token="0" * 64)
-        assert err.value.code() == DENIED
+        assert cast(grpc.Call, err.value).code() == DENIED
         result = rv.review_as(s, "oncall", "commit", reasons=["ok"], token=token)
 
         assert (result.scope_id, result.status) == (s, "committed")

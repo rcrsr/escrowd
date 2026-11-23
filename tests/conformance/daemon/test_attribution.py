@@ -55,7 +55,7 @@ def test_a_sandboxed_command_is_the_writer(daemon):
     assert (mkdir.program, mkdir.args, mkdir.parent) == (real("mkdir"), ["mkdir", "d"], sh.id)
     (cp,) = writers(cs, "d/b.txt")
     assert (cp.program, cp.args) == (real("cp"), ["cp", "a.txt", "d/b.txt"])
-    st = os.stat(real("cp"))
+    st = Path(real("cp")).stat()
     assert (cp.dev, cp.ino) == (st.st_dev, st.st_ino)
     # cp was started by the shell; the chain stops before the daemon, at the sandbox.
     ancestors = chain(cs, cp)
@@ -96,7 +96,7 @@ def test_git_commit_is_attributed_to_git(daemon):
     assert gits == {real("git")}
     commit = [p for c in cs.changes if c.path.startswith(".git/") for p in writers(cs, c.path)]
     args = ["git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty"]
-    assert args + ["-m", "m"] in [p.args for p in commit]
+    assert [*args, "-m", "m"] in [p.args for p in commit]
     assert all(p.program == real("git") for p in commit)
     assert all(chain(cs, p)[1].args[:2] == ["sh", "-c"] for p in commit)
 
@@ -121,7 +121,10 @@ def test_a_rename_carries_the_writers_of_its_source(daemon):
         r = d.exec(s, "sh", "-c", "mv tmp final; mv old.txt new.txt")
         assert r.returncode == 0, r.stderr
         cs = c.close_scope(s)
-    progs = lambda path: sorted(p.program for p in writers(cs, path))  # noqa: E731
+
+    def progs(path):
+        return sorted(p.program for p in writers(cs, path))
+
     mv = real("mv")  # a symlink on some hosts (gnumv on Ubuntu 26.04)
     assert progs("final") == sorted([os.path.realpath(sys.executable), mv])
     kinds = {ch.path: (ch.kind, ch.from_path) for ch in cs.changes}

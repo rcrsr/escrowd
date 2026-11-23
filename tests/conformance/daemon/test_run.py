@@ -137,7 +137,7 @@ def test_run_failing_to_start_the_sandbox_exits_125_and_leaves_nothing_behind(ap
     assert err.startswith("escrow run: ") or "\nescrow run: " in err, err
     assert not os.path.ismount(a.mount)
     # The state lock is released: a second run on the same state starts.
-    b, code, _, err = run(app, "implicit", "echo ok > g.txt")
+    _b, code, _, err = run(app, "implicit", "echo ok > g.txt")
     assert code == 0, err
 
 
@@ -148,7 +148,7 @@ def test_commit_at_exit_holds_for_review(app):
     assert "2 unscoped change(s) held for review (llm,human)" in err
     assert not (a.project / "src").exists()
     # The next run would get a frozen project: it refuses until the reviewers decide.
-    a2, code, _, err = run(app, "implicit", "true", on_exit="commit", policy=policy)
+    _a2, code, _, err = run(app, "implicit", "true", on_exit="commit", policy=policy)
     assert code == 125 and "escrow run: " in err and "held for llm review" in err
 
 
@@ -175,11 +175,11 @@ def test_deny_refuses_writes_and_gates_reads(app, runtime_dir):
     for name, text in {"f.txt": "base\n", ".env": "SECRET=1\n"}.items():
         (runtime_dir / "proj" / name).write_text(text)
     script = "cat f.txt; cat .env; echo x > g.txt; echo x >> f.txt; mkdir d"
-    a, code, out, err = run(app, "deny", script)
+    a, _code, out, err = run(app, "deny", script)
     assert out == "base\n"
     assert ".env: Permission denied" in err
     assert err.count("Read-only file system") == 3
-    assert sorted(os.listdir(a.project)) == [".env", "f.txt"]
+    assert sorted(e.name for e in a.project.iterdir()) == [".env", "f.txt"]
     assert (a.project / "f.txt").read_text() == "base\n"
     assert any(" scope=unscoped op=read path=.env decision=deny" in line for line in a.ledger)
 
@@ -195,7 +195,7 @@ def test_app_sees_scopes_and_socket_but_not_escrowd_state(app, runtime_dir):
         f"ls -A {runtime_dir}/state | wc -l; ls -A {runtime_dir}/mnt | wc -l; "
         f"cat {runtime_dir}/canary.txt"
     )
-    _, code, out, err = run(app, "deny", script, sandbox_read=(str(runtime_dir),))
+    _, _code, out, err = run(app, "deny", script, sandbox_read=(str(runtime_dir),))
     assert out.splitlines() == ["unscoped", "socket", "0", "0", "c"], out + err  # c: a read path
 
 

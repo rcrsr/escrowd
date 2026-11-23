@@ -35,6 +35,9 @@ id. After the restart the reviews are drained, and then:
   daemon recording a run and the program starting leaves one number missing per kill.
 """
 
+# A CLI whose stdout is its report: print is the point.
+# ruff: noqa: T201
+
 import argparse
 import hashlib
 import os
@@ -167,7 +170,7 @@ class CmdScope:
         h = int(hashlib.sha256(self.id.encode()).hexdigest()[:8], 16)
         verdict = ["commit", "commit", "return", "discard"][h % 4]
         if self.kind == "ops" and verdict != "discard":
-            verdict = max(verdict, ["commit", "return", "discard"][(h >> 8) % 3], key=ORDER.get)
+            verdict = max(verdict, ["commit", "return", "discard"][(h >> 8) % 3], key=lambda v: ORDER[v])
         return verdict
 
 
@@ -191,7 +194,7 @@ def command_reviewers(work: Path) -> str:
 
 
 def after_review(s: State, tier: int, verdict: int, over: bool) -> State:
-    v = verdict if over else max(s.verdict, verdict, key=RANK.__getitem__)
+    v = verdict if over else max(s.verdict, verdict, key=lambda v: RANK[v])
     # A human's verdict also stands for the llm tier still pending.
     left = () if tier == HUMAN else tuple(t for t in s.tiers if t != tier)
     if left:
@@ -374,7 +377,7 @@ def check(d: Daemon, scopes: list[Scope]) -> tuple[list[str], str]:
             blocking = [
                 s
                 for s in scopes
-                if s.session == session and isinstance(seen[s.id], State) and not seen[s.id].final and seen[s.id].wait  # ty: ignore[possibly-missing-attribute]
+                if s.session == session and isinstance(st := seen[s.id], State) and not st.final and st.wait
             ]
             try:
                 o = c.open_scope(session=session, timeout=0.5)
@@ -503,7 +506,7 @@ def one(bin: Path, kill_after: float | None, double: bool, rng_seed: int):
         bad = check_commands(d, cmd, before, errors, 0 if kill_after is None else 1 + double)
         more, inflight = check(d, scopes)
         bad += more
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001  any failure of the check fails the run and keeps its directory
         bad = [f"check failed: {e!r}"]
     d.stop()
     if not bad:

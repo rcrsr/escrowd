@@ -201,7 +201,7 @@ def test_child_cannot_find_another_scopes_files(contained):
 
 
 def test_child_sees_no_state_views_or_socket(contained):
-    d, a, b = contained
+    d, _a, b = contained
     for hidden in (d.state, d.mount):
         r = d.exec(b, "ls", "-A", str(hidden))
         assert (r.returncode, r.stdout) == (0, ""), f"{hidden}: {r.stdout}{r.stderr}"

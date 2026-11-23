@@ -8,7 +8,6 @@ project and the ledger. The exit tests themselves run through the test app
 (`test_app.py`); these checks cover the rest of the SDK's API.
 """
 
-import os
 import subprocess
 import sys
 
@@ -104,7 +103,7 @@ def test_async_decide_and_exception_discards(sdk):
     """)
     assert out["ok"] == "committed"
     assert out["boom"] == ["discarded", ["ValueError: tool crashed"]]
-    assert sorted(os.listdir(sdk.project)) == ["ok.txt"]
+    assert sorted(e.name for e in sdk.project.iterdir()) == ["ok.txt"]
 
 
 def test_paths_map_back_to_the_project(sdk):
@@ -161,7 +160,7 @@ def test_settle_unscoped_in_implicit_mode(sdk):
         mode="implicit",
     )
     assert out["settled"] == ["committed", ["loose.txt"]]
-    assert sorted(os.listdir(sdk.project)) == ["loose.txt"]
+    assert sorted(e.name for e in sdk.project.iterdir()) == ["loose.txt"]
 
 
 def test_home_paths_are_rewritten_into_the_scope(escrow_bin, runtime_dir):

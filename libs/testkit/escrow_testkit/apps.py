@@ -13,6 +13,7 @@ import textwrap
 import threading
 import time
 from pathlib import Path
+from typing import cast
 
 import grpc
 
@@ -162,7 +163,7 @@ class App:
                     try:
                         reviewer(rv)
                     except grpc.RpcError as e:
-                        if e.code() != grpc.StatusCode.UNAVAILABLE:  # the app exited
+                        if cast(grpc.Call, e).code() != grpc.StatusCode.UNAVAILABLE:  # the app exited
                             raise
                 time.sleep(0.05)
         finally:
