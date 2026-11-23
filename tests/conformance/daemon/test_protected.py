@@ -52,10 +52,7 @@ def open_scope(d) -> str:
 
 def denied(d, scope: str, op: str, path: str) -> bool:
     """A `decision=deny` line of `scope` for `op` on `path` (a `proc=` field may sit between)."""
-    return any(
-        f" scope={scope} op={op} path={path} " in line and line.endswith(" decision=deny")
-        for line in d.ledger
-    )
+    return any(f" scope={scope} op={op} path={path} " in line and line.endswith(" decision=deny") for line in d.ledger)
 
 
 @pytest.fixture

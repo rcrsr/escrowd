@@ -109,9 +109,7 @@ def test_an_optional_wait_blocks_only_when_the_client_waits(start_daemon):
         c.open_scope(session="agent-1", timeout=2)  # the agent continues
         s, out = held_scope(d, c, "docs/more.md", session="agent-3", wait=True)
         assert out.wait
-        assert code(lambda: c.open_scope(session="agent-3", timeout=0.5))[0] == (
-            grpc.StatusCode.FAILED_PRECONDITION
-        )
+        assert code(lambda: c.open_scope(session="agent-3", timeout=0.5))[0] == (grpc.StatusCode.FAILED_PRECONDITION)
 
 
 def test_a_hold_survives_a_daemon_restart(start_daemon):
@@ -121,9 +119,7 @@ def test_a_hold_survives_a_daemon_restart(start_daemon):
         token = c.tokens[s]
     d.restart()
     with d.client() as c:
-        assert code(lambda: c.open_scope(session="agent-1", timeout=0.5))[0] == (
-            grpc.StatusCode.FAILED_PRECONDITION
-        )
+        assert code(lambda: c.open_scope(session="agent-1", timeout=0.5))[0] == (grpc.StatusCode.FAILED_PRECONDITION)
         assert code(lambda: c.commit(s, token=token))[0] == grpc.StatusCode.PERMISSION_DENIED
         assert c.discard(s, token=token).status == pb.OUTCOME_STATUS_DISCARDED
         c.open_scope(session="agent-1", timeout=2)

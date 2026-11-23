@@ -197,9 +197,7 @@ class Escrowd:
             raise PermissionDenied(f"{s.id} is already decided")
         status = {COMMIT: "committed", RETURN: "returned", DISCARD: "discarded"}[verdict]
         if verdict == COMMIT:
-            stale = [
-                p for p in s.writes if self.base.get(p, ("", 0))[1] != s.snapshot.get(p, ("", 0))[1]
-            ]
+            stale = [p for p in s.writes if self.base.get(p, ("", 0))[1] != s.snapshot.get(p, ("", 0))[1]]
             if stale:
                 status, why = "conflict", f"{', '.join(stale)} changed since {s.id} opened"
             else:
@@ -317,9 +315,7 @@ async def continuing_costs(d: Escrowd) -> None:
 
 
 async def split_across_turns(d: Escrowd) -> None:
-    for turn, (path, content) in enumerate(
-        [("src/util.py", HELPER), ("src/auth/login.py", CALLER)], 1
-    ):
+    for turn, (path, content) in enumerate([("src/util.py", HELPER), ("src/auth/login.py", CALLER)], 1):
         s = await d.open_scope("agent-1")
         d.write(s, path, content)
         await d.close(s, s.token, COMMIT, can_wait=True)
@@ -343,13 +339,9 @@ async def scenario(title: str, body, *, human=None, history=True) -> None:
 
 
 async def main() -> None:
-    await scenario(
-        "1. Negotiated wait: the policy requires it, escrowd enforces it", negotiated_wait
-    )
+    await scenario("1. Negotiated wait: the policy requires it, escrowd enforces it", negotiated_wait)
     await scenario("2. Independence: the agent cannot approve its own held scope", independence)
-    await scenario(
-        "3a. Monotonic: the LLM discards, the human confirms", monotonic, human={"s1": DISCARD}
-    )
+    await scenario("3a. Monotonic: the LLM discards, the human confirms", monotonic, human={"s1": DISCARD})
     await scenario("3b. Monotonic: loosening the LLM's discard is a recorded override", monotonic)
     await scenario("4. Not waiting has a cost: turn 2 works on a stale snapshot", continuing_costs)
     await scenario(

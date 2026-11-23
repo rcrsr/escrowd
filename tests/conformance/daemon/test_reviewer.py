@@ -52,11 +52,7 @@ def code(fn):
 def ledger_ops(d, scope):
     """The scope's hold, review, override and decide lines, without timestamp and scope."""
     ops = (" op=hold ", " op=review-", " op=override ", " op=decide ")
-    return [
-        " ".join(x.split()[2:])
-        for x in d.ledger
-        if f" scope={scope} " in x and any(op in x for op in ops)
-    ]
+    return [" ".join(x.split()[2:]) for x in d.ledger if f" scope={scope} " in x and any(op in x for op in ops)]
 
 
 def test_the_review_socket_is_private_and_separate(start_daemon):
@@ -69,19 +65,13 @@ def test_the_review_socket_is_private_and_separate(start_daemon):
         r = d.exec(s, "sh", "-c", f"test -e {review} || test -e {d.socket}.exec")
         assert r.returncode != 0
     # Neither socket serves the other's calls: scope tokens give no review rights.
-    channel = grpc.insecure_channel(
-        f"unix:{d.socket}", options=[("grpc.default_authority", "localhost")]
-    )
+    channel = grpc.insecure_channel(f"unix:{d.socket}", options=[("grpc.default_authority", "localhost")])
     stub = escrow_pb2_grpc.ReviewerServiceStub(channel)
-    assert code(lambda: stub.ListHeld(pb.ListHeldRequest(), timeout=5))[0] == (
-        grpc.StatusCode.UNIMPLEMENTED
-    )
+    assert code(lambda: stub.ListHeld(pb.ListHeldRequest(), timeout=5))[0] == (grpc.StatusCode.UNIMPLEMENTED)
     channel.close()
     with d.reviewer() as rv:
         stub = escrow_pb2_grpc.EscrowServiceStub(rv._channel)
-        assert code(lambda: stub.Ping(pb.PingRequest(), timeout=5))[0] == (
-            grpc.StatusCode.UNIMPLEMENTED
-        )
+        assert code(lambda: stub.Ping(pb.PingRequest(), timeout=5))[0] == (grpc.StatusCode.UNIMPLEMENTED)
 
 
 def test_a_reviewer_lists_and_reads_held_scopes(start_daemon):
@@ -118,9 +108,7 @@ def test_each_tier_reviews_in_turn_then_the_scope_is_decided(start_daemon):
         out = rv.review(s, LLM, COMMIT, reasons=["looks fine"])
         assert (out.status, list(out.tiers)) == (pb.OUTCOME_STATUS_HELD, [HUMAN])
         assert code(lambda: rv.review(s, LLM, COMMIT))[0] == grpc.StatusCode.FAILED_PRECONDITION
-        assert code(lambda: rv.review(s, pb.TIER_SOFTWARE, COMMIT))[0] == (
-            grpc.StatusCode.INVALID_ARGUMENT
-        )
+        assert code(lambda: rv.review(s, pb.TIER_SOFTWARE, COMMIT))[0] == (grpc.StatusCode.INVALID_ARGUMENT)
         assert not (d.project / "src").exists()
         out = rv.review(s, HUMAN, COMMIT)
         assert out.status == pb.OUTCOME_STATUS_COMMITTED
@@ -193,9 +181,7 @@ def test_a_reviewers_return_reopens_the_scope_and_unblocks_the_session(start_dae
         # The agent fixes the change in the same scope.
         (d.mount / s / "src" / "util_test.py").write_text("t\n")
         last = list(c.await_decision(s, timeout=5))
-        assert [(o.status, list(o.reasons)) for o in last] == [
-            (pb.OUTCOME_STATUS_RETURNED, ["llm: add a test"])
-        ]
+        assert [(o.status, list(o.reasons)) for o in last] == [(pb.OUTCOME_STATUS_RETURNED, ["llm: add a test"])]
 
 
 def test_await_decision_follows_the_hold_to_its_outcome(start_daemon):
@@ -231,9 +217,7 @@ def test_await_decision_follows_the_hold_to_its_outcome(start_daemon):
         )
         # A scope that is not held has nothing to follow.
         u = c.open_scope().scope_id
-        assert code(lambda: list(c.await_decision(u, timeout=5)))[0] == (
-            grpc.StatusCode.FAILED_PRECONDITION
-        )
+        assert code(lambda: list(c.await_decision(u, timeout=5)))[0] == (grpc.StatusCode.FAILED_PRECONDITION)
 
 
 def test_a_withdrawn_hold_ends_its_stream(start_daemon):
@@ -279,9 +263,7 @@ def test_a_reviewer_sees_the_sessions_earlier_change_sets(start_daemon):
         (h,) = got.history
         assert h.outcome.status == pb.OUTCOME_STATUS_COMMITTED
         assert "requests.post" in h.change_set.diff
-        assert [(r.tier, r.verdict, list(r.reasons)) for r in h.reviews] == [
-            (LLM, COMMIT, ["a helper"])
-        ]
+        assert [(r.tier, r.verdict, list(r.reasons)) for r in h.reviews] == [(LLM, COMMIT, ["a helper"])]
         assert other not in [x.scope_id for x in got.history]
 
 
@@ -317,10 +299,7 @@ def test_escrow_review_lists_shows_and_decides(start_daemon, escrow_bin):
 
     with d.client() as c:
         earlier = held_scope(d, c, "src/util.py")
-        assert (
-            review("commit", earlier, "--tier", "llm")
-            == f"{earlier} committed\n  src\n  src/util.py\n"
-        )
+        assert review("commit", earlier, "--tier", "llm") == f"{earlier} committed\n  src\n  src/util.py\n"
         s = held_scope(d, c, "src/auth/login.py")
         (line,) = review("list").splitlines()
         assert line.startswith(f"{s} tiers=llm,human wait verdict=commit session=agent-1 held=")
@@ -361,9 +340,7 @@ def test_a_kill_during_the_final_review_keeps_its_decision(start_daemon, fault, 
         s = held_scope(d, c)
         token = c.tokens[s]
     with d.reviewer() as rv:
-        assert code(lambda: rv.review(s, LLM, verdict, reasons=["r"]))[0] == (
-            grpc.StatusCode.UNAVAILABLE
-        )
+        assert code(lambda: rv.review(s, LLM, verdict, reasons=["r"]))[0] == (grpc.StatusCode.UNAVAILABLE)
     assert d.proc.wait(timeout=10) != 0
     d.stop()
     if then:

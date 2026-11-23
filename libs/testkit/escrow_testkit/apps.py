@@ -52,9 +52,7 @@ class Sdk:
         self.home = runtime_dir / "home" if roots else None
         if self.home:
             self.home.mkdir()
-        self.policy = write_policy(
-            runtime_dir / "app", deny_read=(".env",), roots=roots, extra=policy
-        )
+        self.policy = write_policy(runtime_dir / "app", deny_read=(".env",), roots=roots, extra=policy)
 
     def run(
         self,
@@ -151,9 +149,7 @@ class App:
         return out
 
     def _reviewed(self, argv, env, reviewer):
-        p = subprocess.Popen(
-            argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
-        )
+        p = subprocess.Popen(argv, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         deadline = time.monotonic() + 60
         rv = None
         try:
@@ -184,9 +180,7 @@ class App:
 
     def entries(self, scope_id: str, op: str) -> list[str]:
         return sorted(
-            line.split(" path=")[1].split()[0]
-            for line in self.ledger
-            if f" scope={scope_id} op={op} " in line
+            line.split(" path=")[1].split()[0] for line in self.ledger if f" scope={scope_id} op={op} " in line
         )
 
 

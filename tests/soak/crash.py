@@ -129,16 +129,12 @@ def main() -> int:
     ap.add_argument("runs", type=int, nargs="?", default=100)
     ap.add_argument("--files", type=int, default=2000)
     ap.add_argument("--seed", type=int, default=None)
-    ap.add_argument(
-        "--bin", default=os.environ.get("ESCROW_BIN", ROOT / "target" / "debug" / "escrow")
-    )
+    ap.add_argument("--bin", default=os.environ.get("ESCROW_BIN", ROOT / "target" / "debug" / "escrow"))
     a = ap.parse_args()
     seed_ = a.seed if a.seed is not None else random.randrange(1 << 30)
     random.seed(seed_)
     bin = Path(a.bin)
-    host = subprocess.run(
-        ["sh", "-c", ". /etc/os-release; echo $PRETTY_NAME"], capture_output=True, text=True
-    )
+    host = subprocess.run(["sh", "-c", ". /etc/os-release; echo $PRETTY_NAME"], capture_output=True, text=True)
     where = f"{host.stdout.strip()}, kernel {os.uname().release}"
     print(f"crash soak: {a.runs} runs, {a.files} files, seed {seed_}, {bin}, {where}")
     state, took, _ = one(bin, a.files, None, False)

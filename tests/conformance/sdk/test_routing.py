@@ -99,9 +99,7 @@ async def worker(r, name, readme, extra):
         seen["readme"] = open("README.md").read()  # relative path, cwd is the project
         (r.project / extra).write_text(name)  # pathlib
         await asyncio.sleep(0)
-        proc = await asyncio.create_subprocess_exec(
-            "bash", "-c", f"echo built{name} > build.log", cwd=r.project
-        )
+        proc = await asyncio.create_subprocess_exec("bash", "-c", f"echo built{name} > build.log", cwd=r.project)
         await proc.wait()
         await asyncio.sleep(0)
         seen["build"] = open("build.log").read()
@@ -111,9 +109,7 @@ async def worker(r, name, readme, extra):
 
 async def gather(r):
     r.threads = set()
-    r.a, r.b = await asyncio.gather(
-        worker(r, "a", "A", "notes-a.txt"), worker(r, "b", "B", "notes-b.txt")
-    )
+    r.a, r.b = await asyncio.gather(worker(r, "a", "A", "notes-a.txt"), worker(r, "b", "B", "notes-b.txt"))
     r.base_readme = (r.project / "README.md").read_text()  # outside any scope
 
     async with escrow.scope("c", decide=keep) as s:
@@ -123,9 +119,7 @@ async def gather(r):
             r.env_error = None
         except PermissionError as e:
             r.env_error = e
-        proc = await asyncio.create_subprocess_exec(
-            "cat", ".env", cwd=r.project, stderr=asyncio.subprocess.PIPE
-        )
+        proc = await asyncio.create_subprocess_exec("cat", ".env", cwd=r.project, stderr=asyncio.subprocess.PIPE)
         _, r.cat_err = await proc.communicate()
         r.cat_rc = proc.returncode
         r.allowed_read = open("README.md").read()

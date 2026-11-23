@@ -105,9 +105,7 @@ class Client:
     def _token(self, scope_id: str, token: str | None) -> str:
         return self.tokens.get(scope_id, "") if token is None else token
 
-    def close_scope(
-        self, scope_id: str, token: str | None = None, timeout: float = 30.0
-    ) -> escrow_pb2.ChangeSet:
+    def close_scope(self, scope_id: str, token: str | None = None, timeout: float = 30.0) -> escrow_pb2.ChangeSet:
         """Freeze the scope and return its change set. Fsync the scope's open files first."""
         req = escrow_pb2.CloseScopeRequest(scope_id=scope_id, token=self._token(scope_id, token))
         return _call(self._stub.CloseScope, req, timeout).change_set
@@ -138,24 +136,18 @@ class Client:
         """Apply a closed scope's change set, all or nothing. A conflict drops the scope,
         or reopens it under the policy's `conflict.verdict: return`; a change set that
         needs reviewers is held."""
-        return self.decide(
-            scope_id, escrow_pb2.VERDICT_COMMIT, token=token, timeout=timeout, wait=wait
-        )
+        return self.decide(scope_id, escrow_pb2.VERDICT_COMMIT, token=token, timeout=timeout, wait=wait)
 
     def settle_unscoped(self, timeout: float = 30.0) -> escrow_pb2.ChangeSet:
         """Close the implicit default scope and return its change set (scope id "unscoped")."""
-        return _call(
-            self._stub.SettleUnscoped, escrow_pb2.SettleUnscopedRequest(), timeout
-        ).change_set
+        return _call(self._stub.SettleUnscoped, escrow_pb2.SettleUnscopedRequest(), timeout).change_set
 
     def get_change_set(self, scope_id: str, timeout: float = 30.0) -> escrow_pb2.ChangeSet:
         """A closed, undecided scope's change set and diff; an open scope fails."""
         req = escrow_pb2.GetChangeSetRequest(scope_id=scope_id)
         return _call(self._stub.GetChangeSet, req, timeout).change_set
 
-    def discard(
-        self, scope_id: str, token: str | None = None, timeout: float = 30.0
-    ) -> escrow_pb2.Outcome:
+    def discard(self, scope_id: str, token: str | None = None, timeout: float = 30.0) -> escrow_pb2.Outcome:
         return self.decide(scope_id, escrow_pb2.VERDICT_DISCARD, token=token, timeout=timeout)
 
     def await_decision(

@@ -80,10 +80,7 @@ def test_base_files_read_whole_small_and_large(daemon):
     """A first open stores a small file's pages ahead of the reads; a large one is read
     on demand. Both read back byte for byte, twice."""
     d = daemon
-    blobs = {
-        name: os.urandom(size)
-        for name, size in [("small", 100_000), ("large", 300_000), ("empty", 0)]
-    }
+    blobs = {name: os.urandom(size) for name, size in [("small", 100_000), ("large", 300_000), ("empty", 0)]}
     for name, data in blobs.items():
         (d.project / name).write_bytes(data)
     with d.client() as c:

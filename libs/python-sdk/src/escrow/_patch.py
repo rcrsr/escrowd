@@ -93,9 +93,7 @@ def _wrap2(fn):
 def _symlink(target, link, *args, **kwargs):
     # The target is link content, not a path to rewrite: it must read the same after commit.
     try:
-        return _cfg.orig[(os, "symlink")](
-            target, _rewrite(link, kwargs.get("dir_fd")), *args, **kwargs
-        )
+        return _cfg.orig[(os, "symlink")](target, _rewrite(link, kwargs.get("dir_fd")), *args, **kwargs)
     except OSError as e:
         if kwargs.get("dir_fd") is not None:
             raise
@@ -232,9 +230,7 @@ def _spawner(orig):
         actions = kwargs.get("file_actions")
         if actions:
             kwargs["file_actions"] = [
-                (a[0], a[1], _rewrite_to(s, os.fsdecode(a[2])), *a[3:])
-                if a[0] == os.POSIX_SPAWN_OPEN
-                else a
+                (a[0], a[1], _rewrite_to(s, os.fsdecode(a[2])), *a[3:]) if a[0] == os.POSIX_SPAWN_OPEN else a
                 for a in actions
             ]
         argv = [os.fsdecode(path), *(os.fsdecode(x) for x in list(argv)[1:])]

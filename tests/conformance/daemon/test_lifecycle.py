@@ -24,10 +24,7 @@ KIND = {
 
 
 def changes(cs) -> list[tuple]:
-    return [
-        (KIND[c.kind], c.path, c.from_path) if c.from_path else (KIND[c.kind], c.path)
-        for c in cs.changes
-    ]
+    return [(KIND[c.kind], c.path, c.from_path) if c.from_path else (KIND[c.kind], c.path) for c in cs.changes]
 
 
 def reads(cs) -> list[tuple]:

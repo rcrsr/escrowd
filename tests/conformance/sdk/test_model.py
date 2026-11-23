@@ -207,9 +207,7 @@ def test_new_fields_map_from_the_protocol_messages():
 
 def test_a_protocol_7_message_with_no_reviewers_reads_empty_and_falls_back_to_tiers():
     h = _model.HeldScope.from_proto(
-        pb.HeldScope(
-            tiers=[pb.TIER_LLM, pb.TIER_HUMAN], reviews=[pb.TierReview(tier=pb.TIER_HUMAN)]
-        )
+        pb.HeldScope(tiers=[pb.TIER_LLM, pb.TIER_HUMAN], reviews=[pb.TierReview(tier=pb.TIER_HUMAN)])
     )
     assert h.reviewers == [] and h.tiers == ["llm", "human"]
     assert h.reviews[0].reviewer == "human"

@@ -53,9 +53,7 @@ class Client:
         up to `timeout` (None: no limit), then fails with `EscrowStateError`."""
         return OpenedScope.from_proto(self._low.open_scope(name, labels, timeout, session))
 
-    def close_scope(
-        self, scope_id: str, token: str | None = None, timeout: float = 30.0
-    ) -> ChangeSet:
+    def close_scope(self, scope_id: str, token: str | None = None, timeout: float = 30.0) -> ChangeSet:
         """Freeze the scope and return its change set. Fsync the scope's open files first."""
         return ChangeSet.from_proto(self._low.close_scope(scope_id, token, timeout))
 
@@ -71,13 +69,9 @@ class Client:
         """A commit that needs reviewers returns status "held"; `wait`: the session's
         next scope waits for the verdict. An unknown `verdict` raises ValueError."""
         value = verdict_value(verdict)
-        return Result.from_proto(
-            self._low.decide(scope_id, value, reasons, token, timeout=timeout, wait=wait)
-        )
+        return Result.from_proto(self._low.decide(scope_id, value, reasons, token, timeout=timeout, wait=wait))
 
-    def commit(
-        self, scope_id: str, token: str | None = None, timeout: float = 60.0, wait: bool = False
-    ) -> Result:
+    def commit(self, scope_id: str, token: str | None = None, timeout: float = 60.0, wait: bool = False) -> Result:
         """Apply a closed scope's change set, all or nothing. A conflict drops the scope,
         or reopens it under the policy's `conflict.verdict: return`; a change set that
         needs reviewers is held."""
@@ -94,9 +88,7 @@ class Client:
     def discard(self, scope_id: str, token: str | None = None, timeout: float = 30.0) -> Result:
         return Result.from_proto(self._low.discard(scope_id, token, timeout))
 
-    def await_decision(
-        self, scope_id: str, token: str | None = None, timeout: float | None = None
-    ) -> Iterator[Result]:
+    def await_decision(self, scope_id: str, token: str | None = None, timeout: float | None = None) -> Iterator[Result]:
         """Follow a held scope: status "held" after each tier's review, then the final
         result. A scope decided already yields its last result."""
         for o in self._low.await_decision(scope_id, token, timeout):

@@ -179,8 +179,7 @@ def test_daemon_read_flag_makes_a_path_readable_to_children(escrow_bin, runtime_
     # Daemon builds its own command line, so a wrapper adds --read to the daemon's.
     wrapper = runtime_dir / "escrow-with-read"
     wrapper.write_text(
-        f'#!/bin/sh\nif [ "$1" = daemon ]; then set -- "$@" --read "{shared}"; fi\n'
-        f'exec "{escrow_bin}" "$@"\n'
+        f'#!/bin/sh\nif [ "$1" = daemon ]; then set -- "$@" --read "{shared}"; fi\nexec "{escrow_bin}" "$@"\n'
     )
     wrapper.chmod(0o755)
     d = Daemon(wrapper, runtime_dir)

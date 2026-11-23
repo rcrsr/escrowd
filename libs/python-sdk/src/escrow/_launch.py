@@ -136,7 +136,6 @@ def init(
         version = client.ping().protocol_version
     if version < _MIN_PROTOCOL:
         raise EscrowError(
-            f"the daemon at {socket} speaks protocol {version}; this SDK needs "
-            f"protocol {_MIN_PROTOCOL} or newer"
+            f"the daemon at {socket} speaks protocol {version}; this SDK needs protocol {_MIN_PROTOCOL} or newer"
         )
     _install(project, socket, os.environ.get("ESCROW_VIEWS"), unscoped)

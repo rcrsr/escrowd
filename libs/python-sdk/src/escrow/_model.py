@@ -198,8 +198,7 @@ class ChangeSet:
         return cls(
             scope_id=cs.scope_id,
             changes=[
-                Change(_KINDS.get(c.kind, "unknown"), c.path, c.from_path or None, tuple(c.writers))
-                for c in cs.changes
+                Change(_KINDS.get(c.kind, "unknown"), c.path, c.from_path or None, tuple(c.writers)) for c in cs.changes
             ],
             reads=[Read(r.path, r.decision == pb.READ_DECISION_ALLOW) for r in cs.reads],
             labels=dict(cs.labels),
@@ -207,8 +206,7 @@ class ChangeSet:
             unscoped=cs.unscoped_ops,
             review=Review.from_proto(cs.review),
             processes={
-                p.id: Process(p.id, p.pid, p.program, p.dev, p.ino, list(p.args), p.parent)
-                for p in cs.processes
+                p.id: Process(p.id, p.pid, p.program, p.dev, p.ino, list(p.args), p.parent) for p in cs.processes
             },
         )
 
@@ -384,9 +382,7 @@ class Outcome:
     reviewers: list[str] = field(default_factory=list)
 
     @classmethod
-    def from_result(
-        cls, result: Result, changes: ChangeSet, reasons: tuple[str, ...] | list[str] = ()
-    ) -> Outcome:
+    def from_result(cls, result: Result, changes: ChangeSet, reasons: tuple[str, ...] | list[str] = ()) -> Outcome:
         """`result` for the change set `changes`; `reasons` stand in when the daemon
         gave none."""
         return cls(

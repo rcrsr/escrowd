@@ -43,9 +43,7 @@ def policy(reviewers, rules, extra=""):
         f"  {name}: {{{', '.join(filter(None, [f'run: [{str(program.path)!r}]', options]))}}}\n"
         for name, program, options in reviewers
     )
-    review = "".join(
-        f"  - {{paths: ['{paths}'], reviewers: [{names}]}}\n" for paths, names in rules
-    )
+    review = "".join(f"  - {{paths: ['{paths}'], reviewers: [{names}]}}\n" for paths, names in rules)
     return f"reviewers:\n{declared}review:\n{review}{extra}"
 
 
@@ -81,9 +79,7 @@ def decided(c, scope):
 
 def run_of(program, scope):
     """The run of stand-in `program` on `scope` once it has started."""
-    return eventually(
-        lambda: next((r for r in program.runs() if r.stdin["scope"]["id"] == scope), None)
-    )
+    return eventually(lambda: next((r for r in program.runs() if r.stdin["scope"]["id"] == scope), None))
 
 
 def token_of(program, scope):
@@ -132,18 +128,14 @@ def test_a_pending_delegate_is_ledgered_and_its_token_commits_the_scope(start_da
         assert out.status == COMMITTED
     (pending,) = [x for x in lines(d, s, "review-oncall") if "decision=pending" in x]
     assert f" pid={run.pid} " in pending
-    assert any(x.endswith(" path= decision=commit") for x in lines(d, s, "review-oncall")), lines(
-        d, s, "review-oncall"
-    )
+    assert any(x.endswith(" path= decision=commit") for x in lines(d, s, "review-oncall")), lines(d, s, "review-oncall")
     assert (d.project / "src/util.py").read_text() == "change\n"
     assert len(lines(d, s, "decide")) == 1
 
 
 def test_a_token_is_used_up_by_its_verdict_and_never_stored_in_the_clear(start_daemon, runtime_dir):
     oncall = delegate(runtime_dir)
-    d = start_daemon(
-        policy=policy([("oncall", oncall, "delegate: true")], [("src/**", "oncall, human")])
-    )
+    d = start_daemon(policy=policy([("oncall", oncall, "delegate: true")], [("src/**", "oncall, human")]))
     with d.client() as c, d.reviewer() as rv:
         s = held_scope(d, c)
         waiting(d, s)
@@ -182,9 +174,7 @@ def test_a_wrong_missing_or_foreign_token_is_denied_and_ledgered(start_daemon, r
     with d.client() as c, d.reviewer() as rv:
         a, b, other, linted = (held_scope(d, c, f"{x}/f.txt") for x in "abcd")
         for s in (a, other):
-            eventually(
-                lambda s=s: any("decision=pending" in x for x in lines(d, s, "review-oncall"))
-            )
+            eventually(lambda s=s: any("decision=pending" in x for x in lines(d, s, "review-oncall")))
         eventually(lambda: any("decision=pending" in x for x in lines(d, b, "review-ops")))
         mine = token_of(oncall, a)
         refused = [
@@ -246,9 +236,7 @@ def test_a_commit_that_is_rolled_back_does_not_use_up_the_token(start_daemon, ru
 
 def test_no_verdict_within_the_timeout_gives_the_on_failure_verdict(start_daemon, runtime_dir):
     oncall = delegate(runtime_dir)
-    d = start_daemon(
-        policy=one_delegate(oncall, "delegate: true, timeout: 500ms, on_failure: return")
-    )
+    d = start_daemon(policy=one_delegate(oncall, "delegate: true, timeout: 500ms, on_failure: return"))
     with d.client() as c, d.reviewer() as rv:
         s = held_scope(d, c)
         waiting(d, s)
@@ -265,13 +253,9 @@ def test_no_verdict_within_the_timeout_gives_the_on_failure_verdict(start_daemon
     assert len(lines(d, s, "decide")) == 1
 
 
-def test_a_verdict_before_the_timeout_leaves_nothing_for_the_timer_to_apply(
-    start_daemon, runtime_dir
-):
+def test_a_verdict_before_the_timeout_leaves_nothing_for_the_timer_to_apply(start_daemon, runtime_dir):
     oncall = delegate(runtime_dir)
-    d = start_daemon(
-        policy=one_delegate(oncall, "delegate: true, timeout: 1s, on_failure: discard")
-    )
+    d = start_daemon(policy=one_delegate(oncall, "delegate: true, timeout: 1s, on_failure: discard"))
     with d.client() as c, d.reviewer() as rv:
         s = held_scope(d, c)
         waiting(d, s)
@@ -313,9 +297,7 @@ def test_escrow_review_gives_the_verdict_with_the_token_and_socket_from_the_envi
     assert (d.project / "src/util.py").read_text() == "change\n"
 
 
-def test_the_sdk_reviewer_gives_a_delegates_verdict_with_review_as_and_a_token(
-    start_daemon, runtime_dir
-):
+def test_the_sdk_reviewer_gives_a_delegates_verdict_with_review_as_and_a_token(start_daemon, runtime_dir):
     oncall = delegate(runtime_dir)
     d = start_daemon(policy=one_delegate(oncall))
     with d.client() as c, Reviewer(f"{d.socket}.review") as rv:

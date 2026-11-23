@@ -144,9 +144,7 @@ def test_5_second_writer_hits_the_conflict_policy(app):
     out = app.run("conflict")
     assert out["first"]["status"] == "committed"
     assert out["second"]["status"] == "conflict"
-    assert out["second"]["reasons"] == [
-        "conflict: x/shared.txt changed in the project since the scope read it"
-    ]
+    assert out["second"]["reasons"] == ["conflict: x/shared.txt changed in the project since the scope read it"]
     assert (app.project / "x" / "shared.txt").read_text() == "first:x/shared.txt\n"
 
 

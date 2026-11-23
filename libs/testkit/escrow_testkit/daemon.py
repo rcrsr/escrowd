@@ -139,9 +139,7 @@ class Daemon:
         self.env = env
         self.tokens: dict[str, str] = {}
         self.project.mkdir(parents=True, exist_ok=True)
-        self.policy = write_policy(
-            work, deny_read, sandbox_read, sandbox_write, grace_ms, roots, policy
-        )
+        self.policy = write_policy(work, deny_read, sandbox_read, sandbox_write, grace_ms, roots, policy)
         self.argv: list = [bin, "daemon", "--socket", self.socket, "--project", self.project]
         self.argv += ["--state", self.state, "--mount", self.mount, "--policy", self.policy]
         if unscoped:
@@ -240,6 +238,4 @@ class Daemon:
 
     def generations(self) -> list[str]:
         """Generation directories holding pre-images, in every root."""
-        return sorted(
-            f"{d.name}/{g}" for d in self.state.glob("generations*") for g in os.listdir(d)
-        )
+        return sorted(f"{d.name}/{g}" for d in self.state.glob("generations*") for g in os.listdir(d))

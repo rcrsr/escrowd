@@ -21,12 +21,7 @@ from escrow_testkit import EXPECTED, Daemon, fingerprint, make_runtime_dir, muta
 
 def leftovers(root):
     """Temporary files of a commit left in the project."""
-    return [
-        os.path.join(dp, n)
-        for dp, dns, fns in os.walk(root)
-        for n in dns + fns
-        if n.startswith(".escrow-")
-    ]
+    return [os.path.join(dp, n) for dp, dns, fns in os.walk(root) for n in dns + fns if n.startswith(".escrow-")]
 
 
 def reference(work, seed_fn, mutate_fn):

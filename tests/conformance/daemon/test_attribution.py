@@ -151,9 +151,7 @@ def test_the_ledger_names_each_process_once(daemon):
 
 def test_only_by_allows_the_named_program_and_no_other(start_daemon):
     cp = real("cp")
-    d = start_daemon(
-        policy=f"write:\n  only_by:\n    - {{paths: ['locked/**'], programs: ['{cp}']}}\n"
-    )
+    d = start_daemon(policy=f"write:\n  only_by:\n    - {{paths: ['locked/**'], programs: ['{cp}']}}\n")
     (d.project / "locked").mkdir()
     shutil.copy(cp, d.project / "mycp")  # the same program under another inode
     with d.client() as c:
@@ -163,13 +161,9 @@ def test_only_by_allows_the_named_program_and_no_other(start_daemon):
         assert d.exec(copy, "./mycp", "mycp", "locked/z").returncode == 0
         (d.mount / host / "locked" / "w").write_text("w\n")
         assert c.close_scope(ok).review.verdict == pb.VERDICT_COMMIT
-        assert list(c.close_scope(sh).review.reasons) == [
-            f"write.only_by: locked/y changed by {real('sh')}"
-        ]
+        assert list(c.close_scope(sh).review.reasons) == [f"write.only_by: locked/y changed by {real('sh')}"]
         # The program's path as the sandbox sees it: the project, not the daemon's view.
-        assert list(c.close_scope(copy).review.reasons) == [
-            f"write.only_by: locked/z changed by {d.project / 'mycp'}"
-        ]
+        assert list(c.close_scope(copy).review.reasons) == [f"write.only_by: locked/z changed by {d.project / 'mycp'}"]
         assert list(c.close_scope(host).review.reasons) == [
             f"write.only_by: locked/w changed by {os.path.realpath(sys.executable)}"
         ]
@@ -181,9 +175,7 @@ def test_only_by_allows_the_named_program_and_no_other(start_daemon):
 
 def test_only_by_needs_programs_that_exist(start_daemon):
     with pytest.raises(Exception, match="no/such/program"):
-        start_daemon(
-            policy="write:\n  only_by:\n    - {paths: [a], programs: [/no/such/program]}\n"
-        )
+        start_daemon(policy="write:\n  only_by:\n    - {paths: [a], programs: [/no/such/program]}\n")
 
 
 def test_writers_survive_a_restart(start_daemon):

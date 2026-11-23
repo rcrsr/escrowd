@@ -27,9 +27,7 @@ def decision_lines(d, scope):
     """The scope's write-rule and decide lines, without the timestamp and scope."""
     ops = (" op=write-deny ", " op=write-content ", " op=decide ")
     return [
-        " ".join(line.split()[2:])
-        for line in d.ledger
-        if f" scope={scope} " in line and any(op in line for op in ops)
+        " ".join(line.split()[2:]) for line in d.ledger if f" scope={scope} " in line and any(op in line for op in ops)
     ]
 
 

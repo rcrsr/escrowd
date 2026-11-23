@@ -23,9 +23,7 @@ from escrow._model import (
     discard,
 )
 
-_current: contextvars.ContextVar[Scope | None] = contextvars.ContextVar(
-    "escrow_scope", default=None
-)
+_current: contextvars.ContextVar[Scope | None] = contextvars.ContextVar("escrow_scope", default=None)
 
 
 def settle_unscoped(decide: Decide | None = None, *, wait: bool = True) -> Outcome:
@@ -49,9 +47,7 @@ def _apply(c: Client, cs: ChangeSet, d: Decision | None, token: str, wait: bool)
 def _await(held: Outcome, token: str, timeout: float | None = None) -> Outcome:
     """Follow a held scope to its verdict (the daemon's AwaitDecision stream)."""
     last = None
-    for last in _shared_client().await_decision(
-        held.changes.scope_id, token=token, timeout=timeout
-    ):
+    for last in _shared_client().await_decision(held.changes.scope_id, token=token, timeout=timeout):
         if last.status != "held":
             break
     if last is None:
@@ -103,9 +99,7 @@ class Scope:
 
     def _enter(self) -> Scope:
         if not self.id:
-            s = _shared_client().open_scope(
-                self.name, self.labels, timeout=None, session=self.session
-            )
+            s = _shared_client().open_scope(self.name, self.labels, timeout=None, session=self.session)
             self.id = s.scope_id
             self._scope_token = s.token
             self.root = _view(s.root)

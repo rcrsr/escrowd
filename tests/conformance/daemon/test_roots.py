@@ -62,9 +62,7 @@ def test_child_sees_the_scope_home_view(homed, home):
 def test_home_capture_commits_with_the_project_change(homed, home):
     d = homed
     sid = open_scope(d)
-    r = d.exec(
-        sid, "sh", "-c", "git config --global user.name Scope && echo x > f.txt", env=GIT_ENV
-    )
+    r = d.exec(sid, "sh", "-c", "git config --global user.name Scope && echo x > f.txt", env=GIT_ENV)
     assert r.returncode == 0, r.stderr
     assert "Base" in (home / ".gitconfig").read_text()  # held in escrow
     with d.client() as c:
@@ -84,9 +82,7 @@ def test_home_capture_commits_with_the_project_change(homed, home):
 def test_home_capture_discards_with_the_project_change(homed, home):
     d = homed
     sid = open_scope(d)
-    r = d.exec(
-        sid, "sh", "-c", "git config --global user.name Scope && echo x > f.txt", env=GIT_ENV
-    )
+    r = d.exec(sid, "sh", "-c", "git config --global user.name Scope && echo x > f.txt", env=GIT_ENV)
     assert r.returncode == 0, r.stderr
     with d.client() as c:
         c.close_scope(sid)
@@ -195,8 +191,7 @@ def test_git_commit_signs_with_a_listed_helper(start_daemon, home, listed):
     helper.write_text(SIGN)
     helper.chmod(0o755)
     (home / ".gitconfig").write_text(
-        f"[user]\n\tname = T\n\temail = t@example.com\n"
-        f"[gpg]\n\tprogram = {helper}\n[commit]\n\tgpgsign = true\n"
+        f"[user]\n\tname = T\n\temail = t@example.com\n[gpg]\n\tprogram = {helper}\n[commit]\n\tgpgsign = true\n"
     )
     capture = "['~/.gitconfig', '~/bin']" if listed else "['~/.gitconfig']"
     d = start_daemon(roots=f"  home:\n    capture: {capture}\n", env={"HOME": str(home)})
