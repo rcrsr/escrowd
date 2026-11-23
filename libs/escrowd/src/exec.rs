@@ -49,6 +49,10 @@ pub fn exec_socket(socket: &Path) -> PathBuf {
 }
 
 /// Write one frame: a little-endian u32 length, then the message.
+///
+/// # Errors
+///
+/// Writing to `w` fails, or the encoded message does not fit a `u32` length (`InvalidData`).
 pub fn write_frame(w: &mut impl Write, msg: &impl Message) -> io::Result<()> {
     let body = msg.encode_to_vec();
     let len = u32::try_from(body.len()).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "frame too large"))?;
@@ -67,6 +71,10 @@ fn read_body<M: Message + Default>(r: &mut impl Read, len: usize) -> io::Result<
 }
 
 /// The next frame, or None at a clean end of stream.
+///
+/// # Errors
+///
+/// Reading fails, the frame exceeds the size limit, or its body does not decode (`InvalidData`).
 pub fn read_frame<M: Message + Default>(r: &mut impl Read) -> io::Result<Option<M>> {
     let mut len = [0u8; 4];
     match r.read_exact(&mut len) {
@@ -210,6 +218,11 @@ pub struct ExecServer {
 
 impl ExecServer {
     /// Serve one connection: start the child, relay signals, report its exit.
+    ///
+    /// # Errors
+    ///
+    /// The request cannot be read, or an event cannot be written to `stream`; a child that fails to start is
+    /// reported to the client as an error event, not returned.
     pub fn handle(&self, stream: &UnixStream) -> io::Result<()> {
         let (len, fds) = recv_len_with_fds(stream)?;
         let mut reader = stream;

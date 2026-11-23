@@ -72,6 +72,11 @@ impl Views {
         }
     }
 
+    /// The open file behind handle `fh`.
+    ///
+    /// # Errors
+    ///
+    /// `EBADF` if `fh` is not an open handle.
     pub fn file(&self, fh: u64) -> R<Arc<File>> {
         self.files
             .lock()
@@ -82,6 +87,10 @@ impl Views {
     }
 
     /// A handle to write through: the tag is fixed at open, and a closed scope takes no writes.
+    ///
+    /// # Errors
+    ///
+    /// `EBADF` if `fh` is not an open handle, or `EROFS` if its scope is closed.
     pub fn file_for_write(&self, fh: u64) -> R<Arc<File>> {
         let (h, f) = self.files.lock().open.get(&fh).cloned().ok_or(Errno::EBADF)?;
         if h.is_closed() {
@@ -110,6 +119,11 @@ impl Views {
         }
     }
 
+    /// The file system statistics of the project's base.
+    ///
+    /// # Errors
+    ///
+    /// `EIO` if the project has no base directory, otherwise the `Errno` of `statvfs`.
     pub fn statfs(&self) -> R<rustix::fs::StatVfs> {
         sys::statvfs(self.roots[PROJECT].lower.as_ref().ok_or(Errno::EIO)?.as_fd()).map_err(errno)
     }

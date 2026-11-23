@@ -239,6 +239,11 @@ impl Decisions {
 
     /// Open a scope. In a session, wait while another of its scopes is held with a
     /// wait, until `until` (then `State`) or shutdown.
+    ///
+    /// # Errors
+    ///
+    /// `State` if a held scope of the session still holds the next scope back at `until`, `Stopping` at
+    /// shutdown, or the error of opening the scope.
     pub async fn open(
         &self,
         name: String,
@@ -279,6 +284,10 @@ impl Decisions {
     }
 
     /// Stop the scope's children (their last writes flush on exit), then freeze it.
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, `Denied` for a wrong token, or the error of freezing it.
     pub async fn close(&self, id: String, token: String) -> error::Result<Arc<Frozen>> {
         let (children, caps) = (self.children.clone(), self.diff);
         self.blocking(move |v| {
@@ -290,6 +299,10 @@ impl Decisions {
     }
 
     /// Close the implicit default scope; it is decided as scope `unscoped`.
+    ///
+    /// # Errors
+    ///
+    /// `State` unless `unscoped` is `implicit`, or the errors of [`Decisions::close`].
     pub async fn settle_unscoped(&self) -> error::Result<Arc<Frozen>> {
         if self.views.unscoped() != Unscoped::Implicit {
             return Err(Error::State("settle_unscoped needs unscoped = implicit".into()));
@@ -298,6 +311,10 @@ impl Decisions {
     }
 
     /// A closed scope's change set and diff (`State` if it is open).
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, or `State` if it is open.
     pub async fn change_set(&self, id: String) -> error::Result<Arc<Frozen>> {
         let caps = self.diff;
         self.blocking(move |v| v.frozen(&id, caps)).await
@@ -323,6 +340,12 @@ impl Decisions {
     /// The opener's decision (`verdict` None: unspecified). A commit runs the review
     /// and may hold the scope; a held scope can only be withdrawn (discarded). The
     /// decision of a scope in a session, or held, is kept.
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, `Denied` for a wrong token or a held scope the opener does not
+    /// discard, `Invalid` if `verdict` is unset, `State` if the scope is not in the state the verdict needs,
+    /// `Aborted` if a commit rolled back, or an `Io` error.
     pub async fn decide(
         self: &Arc<Self>,
         id: String,
@@ -462,6 +485,11 @@ impl Decisions {
 
     /// A held scope's updates until its verdict; a decided scope's last outcome.
     /// The stream ends after the verdict, an error, or shutdown.
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is neither a scope nor a decision for `id`, `State` if the scope is not held and
+    /// has no decision, `Denied` for a wrong token, or an `Io` error.
     pub async fn follow(
         self: &Arc<Self>,
         id: String,
@@ -572,11 +600,20 @@ impl Decisions {
     // ---- reviewers ----
 
     /// Every held scope, oldest hold first.
+    ///
+    /// # Errors
+    ///
+    /// The error of reading the held scopes.
     pub async fn list_held(&self) -> error::Result<Vec<Identity>> {
         self.blocking(super::views::Views::held_scopes).await
     }
 
     /// A held scope with its change set and its session's last decisions.
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, `State` if it is not held, or the error of building its change
+    /// set.
     pub async fn get_held(&self, id: String) -> error::Result<HeldScope> {
         let scope = id.clone();
         let (who, history) = self
@@ -599,6 +636,12 @@ impl Decisions {
     /// `reviewer`'s verdict on held scope `id`: from the review socket, or (`token`) from
     /// a delegate; after the last pending reviewer, the scope is decided with the
     /// verdict of every reviewer and their reasons.
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, `State` if it is not held or `reviewer` is not pending, `Denied`
+    /// for a wrong token or a verdict `reviewer` may not give, `Aborted` if the final commit rolled back, or
+    /// an `Io` error.
     pub async fn review(
         self: &Arc<Self>,
         id: String,
@@ -689,6 +732,10 @@ impl Decisions {
     ///   armed again, or fires at once if the deadline passed while the daemon was down.
     ///
     /// A scope that cannot be resumed is reported on stderr and keeps its hold.
+    ///
+    /// # Errors
+    ///
+    /// Reading the held scopes fails; a scope that cannot be resumed is reported on stderr, not returned.
     pub async fn resume(self: &Arc<Self>) -> error::Result<()> {
         for held in self.list_held().await? {
             if let Err(e) = self.resume_scope(&held.id).await {

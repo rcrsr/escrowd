@@ -178,6 +178,11 @@ pub struct Views {
 }
 impl Views {
     /// `roots` (indexed by root) must be opened before the view is mounted anywhere over them.
+    ///
+    /// # Errors
+    ///
+    /// The scope directories, journal or history cannot be opened, or a previous run's scopes cannot be
+    /// loaded.
     pub fn new(
         roots: Vec<RootSpec>,
         state_dir: &Path,

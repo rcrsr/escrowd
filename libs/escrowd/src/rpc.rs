@@ -43,6 +43,10 @@ impl Service {
     }
 
     /// Pick up the reviews of the scopes held at start (`Decisions::resume`).
+    ///
+    /// # Errors
+    ///
+    /// The error of [`Decisions::resume`].
     pub async fn resume_reviews(&self) -> crate::error::Result<()> {
         self.0.resume().await
     }
@@ -235,6 +239,10 @@ impl ReviewerService for Service {
 
 /// Remove a stale socket file left by a dead daemon; fail if a live one still accepts
 /// connections on it.
+///
+/// # Errors
+///
+/// The socket file cannot be inspected or removed, or a live daemon still accepts connections on it.
 pub fn clear_stale(socket: &Path) -> anyhow::Result<()> {
     if std::fs::symlink_metadata(socket).is_err() {
         return Ok(());
@@ -246,6 +254,10 @@ pub fn clear_stale(socket: &Path) -> anyhow::Result<()> {
 }
 
 /// Bind a Unix socket, replacing a stale socket file left by a previous daemon.
+///
+/// # Errors
+///
+/// A stale socket cannot be cleared, or the socket cannot be bound or given its mode.
 pub fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
     clear_stale(socket)?;
     UnixListener::bind(socket).with_context(|| format!("binding {}", socket.display()))
@@ -267,6 +279,10 @@ fn bind_private(socket: &Path) -> anyhow::Result<UnixListener> {
 /// Serve clients on `socket` and reviewers on its review socket until `shutdown`
 /// resolves; the sockets are removed on exit. Waiting calls end at once; calls still
 /// running after `GRACE` are abandoned, so the caller can unmount and flush.
+///
+/// # Errors
+///
+/// A socket cannot be bound, or serving fails.
 pub async fn serve(socket: &Path, service: Service, shutdown: impl Future<Output = ()>) -> anyhow::Result<()> {
     let review_path = review_socket(socket);
     let review_listener = bind_private(&review_path)?;

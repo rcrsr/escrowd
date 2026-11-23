@@ -157,10 +157,20 @@ pub enum Node {
 impl Views {
     // ---- lookups ----
 
+    /// The open scope view named `id`.
+    ///
+    /// # Errors
+    ///
+    /// `ENOENT` if there is no such scope.
     pub fn scope(&self, id: &str) -> R<Arc<ScopeHandle>> {
         self.scopes.read().get(id).cloned().ok_or(Errno::ENOENT)
     }
 
+    /// What inode `ino` stands for: the root, a scope's view, or an entry inside one.
+    ///
+    /// # Errors
+    ///
+    /// `ENOENT` if the inode is unknown or its scope is gone.
     pub fn node(&self, ino: u64) -> R<Node> {
         if ino == ROOT {
             return Ok(Node::Root);
@@ -199,6 +209,10 @@ impl Views {
     }
 
     /// The scope and path of an entry inside a scope; the mount root itself holds no files.
+    ///
+    /// # Errors
+    ///
+    /// `ENOENT` for the mount root or an unknown inode.
     pub fn key(&self, ino: u64) -> R<(Arc<ScopeHandle>, PathBuf)> {
         match self.node(ino)? {
             Node::Root => Err(Errno::EPERM),
@@ -206,12 +220,21 @@ impl Views {
         }
     }
 
+    /// The scope and path of `name` in directory inode `parent`.
+    ///
+    /// # Errors
+    ///
+    /// `ENOENT` if `parent` is unknown or the mount root holds no such view.
     pub fn child(&self, parent: u64, name: &OsStr) -> R<(Arc<ScopeHandle>, PathBuf)> {
         let (h, p) = self.key(parent)?;
         Ok((h, p.join(name)))
     }
     /// The scope's inode for `rel`: a pinned number, else the base `st_ino`, else a new
     /// upper number (pinned). The table learns it when the kernel looks it up.
+    ///
+    /// # Errors
+    ///
+    /// The `Errno` of reading the base or the pin table.
     pub fn ino_for(&self, h: &ScopeHandle, rel: &Path) -> R<u64> {
         if h.group == UNSCOPED && rel.as_os_str().is_empty() {
             return Ok(UNSCOPED_ROOT + h.root as u64);

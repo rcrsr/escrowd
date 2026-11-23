@@ -61,6 +61,10 @@ fn inside(a: &Path, b: &Path) -> bool {
 }
 
 /// `$XDG_STATE_HOME/escrowd/<project-id>` (or `~/.local/state/…`) for a canonical project path.
+///
+/// # Errors
+///
+/// `XDG_STATE_HOME` is unset (or empty) and the home directory is unknown.
 pub fn default_state_dir(project: &Path) -> anyhow::Result<PathBuf> {
     Ok(env_dir("XDG_STATE_HOME", || {
         std::env::home_dir().map(|h| h.join(".local/state"))
@@ -70,6 +74,10 @@ pub fn default_state_dir(project: &Path) -> anyhow::Result<PathBuf> {
 }
 
 /// `$XDG_RUNTIME_DIR/escrowd/<project-id>`: the views (`view/`) and sockets of `escrow run`.
+///
+/// # Errors
+///
+/// `XDG_RUNTIME_DIR` is unset or empty.
 pub fn default_runtime_dir(project: &Path) -> anyhow::Result<PathBuf> {
     Ok(env_dir("XDG_RUNTIME_DIR", || None)?
         .join("escrowd")
@@ -355,11 +363,20 @@ pub struct Checked {
 
 /// Check that `config` would start: the policy loads and compiles and the paths do not
 /// overlap. Creates no directory, takes no lock, opens no store and mounts nothing.
+///
+/// # Errors
+///
+/// The policy does not load or compile, a path is invalid, or the project, state and mount overlap.
 pub fn check(config: &Config) -> anyhow::Result<Checked> {
     validate(config).map(|v| Checked { protected: v.protected })
 }
 
 /// Mount the views and load the scopes (rolling back an interrupted commit).
+///
+/// # Errors
+///
+/// `config` fails the same checks as [`check`], or a directory, lock, store, mount or journal recovery step
+/// fails.
 pub fn start(config: Config) -> anyhow::Result<Daemon> {
     let Validated {
         project,
@@ -579,6 +596,11 @@ impl Daemon {
 
     /// Serve the gRPC and exec sockets until `shutdown` resolves, then stop every
     /// child and unmount.
+    ///
+    /// # Errors
+    ///
+    /// A socket cannot be bound or served, the scope stores cannot be flushed, or the views cannot be
+    /// unmounted.
     pub async fn serve(self, shutdown: impl Future<Output = ()>) -> anyhow::Result<()> {
         let exec_path = exec::exec_socket(&self.socket);
         let exec_listener = rpc::bind(&exec_path)?;
@@ -618,6 +640,11 @@ impl Daemon {
     }
 }
 
+/// Start the daemon from `config` and serve until `shutdown` resolves.
+///
+/// # Errors
+///
+/// [`start`] or [`Daemon::serve`] fails.
 pub async fn run(config: Config, shutdown: impl Future<Output = ()>) -> anyhow::Result<()> {
     start(config)?.serve(shutdown).await
 }

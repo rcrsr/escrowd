@@ -63,11 +63,19 @@ impl Views {
     }
 
     /// The hold of scope `id`, if reviewers have it (`NoScope` if no such scope).
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope.
     pub fn held(&self, id: &str) -> error::Result<Option<Hold>> {
         Ok(self.handles(id)?[0].store_read().hold().cloned())
     }
 
     /// Scope `id`'s name, session, token hash and hold (`NoScope` if no such scope).
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope.
     pub fn identity(&self, id: &str) -> error::Result<Identity> {
         let hs = self.handles(id)?;
         let store = hs[0].store_read();
@@ -82,6 +90,10 @@ impl Views {
     }
 
     /// Every held scope, oldest hold first.
+    ///
+    /// # Errors
+    ///
+    /// An `Io` error from reading the scope stores.
     pub fn held_scopes(&self) -> error::Result<Vec<Identity>> {
         let ids: Vec<String> = {
             let scopes = self.scopes.read();
@@ -106,6 +118,11 @@ impl Views {
 
     /// Hold closed scope `id` for `reviewers` (in review order); `wait`: its session's
     /// next scope does not open until the verdict.
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, `State` if it is not closed or is already held, or an `Io` error
+    /// from writing the hold.
     pub fn hold_scope(&self, id: &str, reviewers: Vec<String>, wait: bool) -> error::Result<Hold> {
         let hs = self.closed_handles(id)?;
         let decision = format!("{}{}", reviewers.join(","), if wait { ",wait" } else { "" });
@@ -128,6 +145,11 @@ impl Views {
     /// Record a run of command reviewer `reviewer` on held scope `id`, replacing any
     /// recorded run, and write `files` (name, bytes) to the scope's review directory.
     /// A `delegate` run gets a token (32 random bytes, hex); the hold keeps its hash.
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, `State` if it is not held, or an `Io` error from writing the run,
+    /// its files or the hold.
     pub fn start_run(
         &self,
         id: &str,
@@ -163,6 +185,11 @@ impl Views {
     /// A delegated run of `reviewer` (process `pid`) answered `pending`: its verdict comes
     /// by token until `deadline_ms` (milliseconds since the Unix epoch). False if that run
     /// is no longer the current, running one.
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, `State` if it is not held, or an `Io` error from writing the
+    /// hold.
     pub fn await_delegate(
         &self,
         id: &str,
@@ -207,6 +234,11 @@ impl Views {
     /// A socket giver cannot answer for a command reviewer (`Denied`: its run does).
     /// A run's answer for a run that is no longer the current one is `Stale`, and so
     /// is the expiry of a token that is not (or no longer) waiting.
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, `State` if it is not held or `reviewer` is not pending, `Denied`
+    /// as described above, or an `Io` error from writing the hold.
     pub fn review_scope(
         &self,
         id: &str,
