@@ -53,9 +53,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: |
-            sdk/python/.venv
+            libs/python-sdk/.venv
             ${{ env.UV_PYTHON_INSTALL_DIR }}
-          key: venv-${{ matrix.os }}-py${{ matrix.python }}-${{ hashFiles('.python-version') }}-${{ hashFiles('sdk/python/uv.lock') }}
+          key: venv-${{ matrix.os }}-py${{ matrix.python }}-${{ hashFiles('.python-version') }}-${{ hashFiles('libs/python-sdk/uv.lock') }}
 
       - uses: ./.github/actions/setup-nx
 
@@ -74,11 +74,11 @@ jobs:
 
       - name: Crash soak, 50 random kills mid-commit
         if: inputs.soak
-        run: uv run --project sdk/python --frozen python tests/soak/crash.py 50
+        run: uv run --frozen python tests/soak/crash.py 50
 
       - name: Held soak, 50 random kills mid-review
         if: inputs.soak
-        run: uv run --project sdk/python --frozen python tests/soak/held.py 50
+        run: uv run --frozen python tests/soak/held.py 50
 
       # Release builds compile fault injection out unless the `fault-injection` feature
       # is on; this checks the optimized commit and recovery paths under the same faults.
@@ -96,13 +96,13 @@ jobs:
         if: inputs.soak
         env:
           ESCROW_BIN: ${{ github.workspace }}/target/release/escrow
-        run: uv run --project sdk/python --frozen python tests/soak/crash.py 20
+        run: uv run --frozen python tests/soak/crash.py 20
 
       - name: Held soak, release build, 20 random kills mid-review
         if: inputs.soak
         env:
           ESCROW_BIN: ${{ github.workspace }}/target/release/escrow
-        run: uv run --project sdk/python --frozen python tests/soak/held.py 20
+        run: uv run --frozen python tests/soak/held.py 20
 
       # A failed run keeps its directory (state, ledger, history, daemon.log) under
       # XDG_RUNTIME_DIR; keep them past the runner for a week. Sockets and the

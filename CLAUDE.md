@@ -14,17 +14,17 @@ escrowd captures every filesystem write a program makes inside a **scope**, hold
 
 | Path | What |
 | --- | --- |
-| `crates/escrowd/` | The daemon library (Rust). Each module opens with a `//!` doc comment; read it before changing the module. |
-| `crates/escrow-cli/` | The `escrow` binary: `run`, `daemon`, `exec`, `diff`, `review`, `log`. |
+| `libs/escrowd/` | The daemon library (Rust). Each module opens with a `//!` doc comment; read it before changing the module. |
+| `apps/cli/` | The `escrow` binary: `run`, `daemon`, `exec`, `diff`, `review`, `log`. |
 | `proto/escrow/v1/escrow.proto` | The one protocol schema, gRPC over a Unix socket. |
-| `sdk/python/` | Python SDK (uv project, package `escrow`). Generated stubs in `src/escrow/v1/` are committed. |
+| `libs/python-sdk/` | Python SDK (uv project, package `escrow`). Generated stubs in `src/escrow/v1/` are committed. |
 | `tests/conformance/` | pytest suite against the built binary. `daemon/` is Python only and drives escrowd through `escrow.lowlevel`; `sdk/` runs per SDK. One shared `conftest.py`. |
-| `tests/support/` | `escrow_testkit`: the daemon harness, project trees, scenarios, and the SDK app harnesses (`apps.py`). |
+| `libs/testkit/` | `escrow_testkit`: the daemon harness, project trees, scenarios, and the SDK app harnesses (`apps.py`). |
 | `tests/fixtures/` | Declarative scenarios (`scenarios/*.json`) that the testkit and the test apps apply. |
 | `tests/soak/` | Crash, held-decision and close soaks (`crash.py N`, `held.py N`, `close.py N`). |
 | `bench/` | Real-repo benchmark (`run.sh`, `lima.sh`, `summarize.py`). |
 | `packaging/ubuntu/` | escrowd's bwrap copy and AppArmor profile. |
-| `nx.json`, `package.json`, `pnpm-workspace.yaml`, `project.json` files | The nx workspace. Root `project.json` is `protocol`; `crates/`, `sdk/python/` and `tests/conformance/{daemon,sdk}/` each hold a `project.json` (`rust`, `python-sdk`, `conformance-daemon`, `conformance-sdk`). Tool commands live in the targets; `.github/actions/setup-nx` sets up CI. |
+| `nx.json`, `package.json`, `pnpm-workspace.yaml`, `project.json` files | The nx workspace. Root `project.json` is `protocol`; `crates/`, `libs/python-sdk/` and `tests/conformance/{daemon,sdk}/` each hold a `project.json` (`rust`, `python-sdk`, `conformance-daemon`, `conformance-sdk`). Tool commands live in the targets; `.github/actions/setup-nx` sets up CI. |
 | `spikes/` | Phase 0 throwaway code, a separate Cargo workspace. Only `spikes/lima/` (VM templates) is used outside it. |
 
 ## Commands
@@ -36,7 +36,7 @@ pnpm exec nx run rust:lint                                         # cargo fmt -
 pnpm exec nx run python-sdk:lint                                   # ruff check, ruff format --check, ty check (python-sdk:test diffs the generated stubs)
 pnpm exec nx run protocol:lint                                     # buf lint and buf format; protocol:test runs buf breaking against protocol-v1
 pnpm exec nx show project <project> --json                         # list a project's targets
-sdk/python/gen.sh                                                  # after editing proto/; CI diffs the stubs
+libs/python-sdk/gen.sh                                                  # after editing proto/; CI diffs the stubs
 tests/conformance/lima.sh ubuntu-24.04                             # suite in one host-matrix VM
 cargo build --release -p escrow-cli --features fault-injection     # release binary that honors ESCROWD_FAULT (soaks: ESCROW_BIN=target/release/escrow)
 ```
@@ -60,7 +60,7 @@ These were measured or decided; do not reopen them without new evidence. Phase 0
 - **Kernel 6.8 minimum.** WSL2 is the dev host only; targets are Linux, then macOS.
 - **Library errors are typed.** Return `crate::error::Result<T>`, never `io::ErrorKind` as a status code; `anyhow` is only for policy parsing, the CLI and daemon start-up, bind and serve.
 - **Locks never poison.** Use `parking_lot::Mutex` for sync locks; never `std::sync::Mutex` or `.lock().unwrap()`.
-- **Every `unsafe` block in `crates/escrowd` has a one-line `// SAFETY:` comment** above it stating its precondition.
+- **Every `unsafe` block in `libs/escrowd` has a one-line `// SAFETY:` comment** above it stating its precondition.
 - **No blocking calls on the runtime.** Filesystem and SQLite work in an async fn goes through the `blocking` helper in `decision.rs`.
 - **Calls go inward:** `rpc.rs`, then `decision.rs`, then `views/`, then storage, then `sys.rs`. New code adds no upward `use crate::` import, and `rpc.rs` holds no ordering, lock or policy logic.
 - **All SQLite goes through `db::open` and `db::migrate`.** Append a new migration step to change a schema; never edit an existing step or call `Connection::open` elsewhere.
@@ -77,7 +77,7 @@ These were measured or decided; do not reopen them without new evidence. Phase 0
 
 - `main` takes squash-merged PRs only. CI (`.github/workflows/ci.yml`) runs on PRs, not on pushes to `main`; the `CI Gate` job is the required check.
 - Add the `ci:repeat` label (10 consecutive suite runs plus the crash and held soaks) when a PR touches the commit path, FUSE, the sandbox or concurrency, or ends a sub-phase whose exit needs 10 passes. Re-add it after each new push. Never on docs-only or tooling PRs.
-- `daemon-frozen.yml` fails a PR labeled `phase-5` that changes `crates/escrowd/` or `proto/`.
+- `daemon-frozen.yml` fails a PR labeled `phase-5` that changes `libs/escrowd/` or `proto/`.
 - Lint workflows with `actionlint`.
 
 ## Environment

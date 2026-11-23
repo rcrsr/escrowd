@@ -1,6 +1,6 @@
 """Held soak (phase 3, check 4): SIGKILL the daemon while reviewers decide held scopes.
 
-    uv run --project sdk/python --frozen python tests/soak/held.py [RUNS]
+    uv run --frozen python tests/soak/held.py [RUNS]
 
 Each run holds 8 scopes for review (`src/auth/` needs llm and human, `src/` llm, `docs/`
 llm with an optional wait; sessions a and b and none), each staging 150 new files. A

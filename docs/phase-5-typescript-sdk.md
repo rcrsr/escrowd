@@ -12,7 +12,7 @@ The suite is one pytest suite in two parts, decided Oct 19, 2026 (reversing the 
 
 ## Exit criteria
 
-1. **No daemon changes.** From the end of phase 4 (tag `protocol-8`) to the end of phase 5, `crates/escrowd/` and `proto/` are unchanged: a CI check fails any phase 5 PR that touches them. A daemon bug found by the TypeScript work is fixed in its own PR, which moves the tag and restarts this count.
+1. **No daemon changes.** From the end of phase 4 (tag `protocol-8`) to the end of phase 5, `libs/escrowd/` and `proto/` are unchanged: a CI check fails any phase 5 PR that touches them. A daemon bug found by the TypeScript work is fixed in its own PR, which moves the tag and restarts this count.
 2. **The suite, per SDK.** The pytest suite passes: `daemon/` once against the daemon, `sdk/` against the Python SDK and the TypeScript SDK (the test app parametrized over `app.py` and `app.ts`), held-decision checks included. `nx run-many -t conformance` runs it, 10 consecutive times on each CI runner (`ci:repeat`) and once on each Lima host.
 3. **pi's IO is covered.** Each call pi's built-in bash, read, write and edit tools make (an inventory taken in 5.2) is either captured in the scope or listed in `LIMITATIONS.md` with what it falls to.
 4. **No regression.** The daemon-level checks and the Python SDK pass as at the end of phase 4.
@@ -43,7 +43,7 @@ With three languages (Rust, Python, TypeScript), each with its own build, lint a
 
 **As built, Oct 25, 2026.** Decisions D-DX-1 to D-DX-11:
 
-- **D-DX-1** Five nx projects, each with its own `project.json`: `rust` (`crates/`), `python-sdk` (`sdk/python/`), `protocol` (root `project.json`), `conformance-daemon` and `conformance-sdk` (`tests/conformance/{daemon,sdk}/`). Workspace settings in `nx.json`, with `neverConnectToCloud`.
+- **D-DX-1** Five nx projects, each with its own `project.json`: `rust` (`crates/`), `python-sdk` (`libs/python-sdk/`), `protocol` (root `project.json`), `conformance-daemon` and `conformance-sdk` (`tests/conformance/{daemon,sdk}/`). Workspace settings in `nx.json`, with `neverConnectToCloud`.
 - **D-DX-2** Commands live in `project.json` through `nx:run-commands`, run from the workspace root. The root `package.json` has no scripts; always `pnpm exec nx`.
 - **D-DX-3** nx `24.0.6` pinned exactly in root `devDependencies`; `packageManager` is `pnpm@12.23.0`, mirroring `mise.toml`; `"type": "module"`; nx is not in `mise.toml`. `pnpm-workspace.yaml` allows nx's build script.
 - **D-DX-4** Cached: `rust:lint`, `rust:test`, `python-sdk:lint`, `protocol:lint`, `protocol:test`, each with explicit `inputs` (including `mise.toml` and, for Rust, `rust-toolchain.toml` and `RUSTUP_TOOLCHAIN`; for Python, `.python-version`) and `outputs: []`. `cache: false` on `rust:build`, `python-sdk:build`, `python-sdk:test` and the conformance targets. `python-sdk:test` is the generated-stub diff (`gen.sh && git diff --exit-code`); `python-sdk:build` builds the wheel and checks it ships `py.typed`.
@@ -53,7 +53,7 @@ With three languages (Rust, Python, TypeScript), each with its own build, lint a
 - **D-DX-8** Deviation: `lefthook.yml` pre-commit is unchanged. Pre-push calls `nx run rust:lint`, `python-sdk:lint` and `protocol:lint` behind narrow globs, not `nx affected`; the `lockfiles` job also runs `pnpm install --frozen-lockfile`.
 - **D-DX-9** Deviation: `protocol:test` runs `buf breaking --against '.git#tag=protocol-v1'` unconditionally; the protocol-v1 guard is dropped.
 - **D-DX-10** Deviation: no placeholder build targets; `protocol` and the conformance projects have no `build`.
-- **D-DX-11** Nothing under `crates/escrowd/` or `proto/` changed; the daemon stays frozen for phase 5.
+- **D-DX-11** Nothing under `libs/escrowd/` or `proto/` changed; the daemon stays frozen for phase 5.
 
 Not verified in this change (ENV): the CI Gate and the `ci:repeat` runs run on PR #42. Open gap: `tests/conformance/lima-guest.sh` still runs pytest directly through `uv` (the Lima guest is not yet routed through nx).
 

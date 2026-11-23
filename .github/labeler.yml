@@ -2,8 +2,8 @@
 # Every label whose glob matches a changed path is applied; a PR spanning areas
 # carries several. PR titles keep conventional-commit format (`feat(daemon): …`).
 #
-#   area:daemon   crates/escrowd and proto/: capture, scopes, journal, gate, ledger, protocol
-#   area:cli      crates/escrow-cli: the `escrow` command
+#   area:daemon   libs/escrowd and proto/: capture, scopes, journal, gate, ledger, protocol
+#   area:cli      apps/cli: the `escrow` command
 #   area:sdk      sdk/: language SDKs
 #   area:sandbox  packaging/: escrowd's bwrap and AppArmor profile
 #   area:tests    tests/ and examples/: the conformance suite and test app
@@ -13,11 +13,11 @@
 
 area:daemon:
   - changed-files:
-      - any-glob-to-any-file: ["crates/escrowd/**", "proto/**"]
+      - any-glob-to-any-file: ["libs/escrowd/**", "proto/**"]
 
 area:cli:
   - changed-files:
-      - any-glob-to-any-file: ["crates/escrow-cli/**"]
+      - any-glob-to-any-file: ["apps/cli/**"]
 
 area:sdk:
   - changed-files:

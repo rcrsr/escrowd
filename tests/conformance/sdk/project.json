@@ -7,7 +7,7 @@
     "conformance": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "uv run --project sdk/python --frozen pytest -v --rootdir tests/conformance tests/conformance/sdk"
+        "command": "uv run --frozen pytest -v --rootdir tests/conformance tests/conformance/sdk"
       }
     }
   }

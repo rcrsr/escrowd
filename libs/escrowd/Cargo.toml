@@ -7,6 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[lints]
+workspace = true
+
 [features]
 # ESCROWD_FAULT crash points in release builds (debug builds always have them).
 fault-injection = []

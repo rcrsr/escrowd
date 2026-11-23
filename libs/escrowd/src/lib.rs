@@ -6,6 +6,10 @@
 //! scope. Scope children start in their own bwrap sandbox through the exec
 //! socket; IO outside any scope follows the unscoped mode.
 
+// FFI crate: libc and rustix calls for namespaces, fds and signals (sys.rs, exec.rs, proc.rs);
+// every unsafe block carries a // SAFETY: comment.
+#![allow(unsafe_code)]
+
 pub(crate) mod changeset;
 pub(crate) mod commit;
 pub(crate) mod convert;

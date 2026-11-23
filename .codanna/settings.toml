@@ -181,7 +181,7 @@ extensions = [
 # Module resolution via pyproject.toml (Poetry, Hatch, Maturin, setuptools)
 # Resolves imports like mypackage.utils, src.models
 # config_files = ["/path/to/project/pyproject.toml"]
-config_files = ["./sdk/python/pyproject.toml"]
+config_files = ["./libs/python-sdk/pyproject.toml"]
 enabled = true
 extensions = [
     "py",

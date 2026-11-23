@@ -51,7 +51,7 @@ jobs:
               - '.github/actions/**'
               - '.github/workflows/ci.yml'
             python:
-              - 'sdk/python/**'
+              - 'libs/python-sdk/**'
               - 'tests/**'
               - 'examples/**'
               - 'bench/**'
@@ -79,18 +79,18 @@ jobs:
             # The commit path and held decisions: run the crash and held soaks (50 random
             # kills each) after the suite.
             soak:
-              - 'crates/escrowd/src/commit/**'
-              - 'crates/escrowd/src/history.rs'
-              - 'crates/escrowd/src/journal.rs'
-              - 'crates/escrowd/src/snapshot.rs'
-              - 'crates/escrowd/src/fault.rs'
+              - 'libs/escrowd/src/commit/**'
+              - 'libs/escrowd/src/history.rs'
+              - 'libs/escrowd/src/journal.rs'
+              - 'libs/escrowd/src/snapshot.rs'
+              - 'libs/escrowd/src/fault.rs'
               - 'tests/soak/**'
-              - 'tests/support/**'
+              - 'libs/testkit/**'
               - 'tests/fixtures/**'
             conformance:
               - 'crates/**'
               - 'proto/**'
-              - 'sdk/python/**'
+              - 'libs/python-sdk/**'
               - 'tests/**'
               - 'examples/**'
               - 'packaging/**'
@@ -199,12 +199,12 @@ jobs:
         uses: actions/cache@v6
         with:
           path: |
-            sdk/python/.venv
+            libs/python-sdk/.venv
             ${{ env.UV_PYTHON_INSTALL_DIR }}
-          key: venv-${{ runner.os }}-py${{ hashFiles('.python-version') }}-${{ hashFiles('sdk/python/uv.lock') }}
+          key: venv-${{ runner.os }}-py${{ hashFiles('.python-version') }}-${{ hashFiles('libs/python-sdk/uv.lock') }}
 
       - name: Install dependencies
-        run: uv sync --project sdk/python --frozen
+        run: uv sync --frozen
 
       - uses: ./.github/actions/setup-nx
 
@@ -230,7 +230,7 @@ jobs:
           sparse-checkout: |
             crates
             sdk
-            tests/support
+            libs/testkit
             .github
             package.json
             pnpm-lock.yaml
@@ -250,7 +250,7 @@ jobs:
         uses: ./.github/actions/setup-nx
 
       - name: uv.lock in sync with pyproject.toml
-        run: uv lock --check --project sdk/python
+        run: uv lock --check
 
       - name: Cargo.lock in sync with manifests
         run: cargo metadata --locked --format-version=1 > /dev/null

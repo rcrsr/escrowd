@@ -1,18 +1,27 @@
 [workspace]
 resolver = "3"
-members = ["crates/escrowd", "crates/escrow-cli"]
+members = ["libs/escrowd", "apps/cli"]
 exclude = ["spikes"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.95"
+rust-version = "1.100"
 license = "Apache-2.0"
 publish = false
 
+# APP-SQ-9. Crates opt in with [lints] workspace = true; no crate-level #![deny].
+[workspace.lints.rust]
+unsafe_code = "deny" # FFI crates opt out with #![allow(unsafe_code)] plus a reason
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+
 [workspace.dependencies]
 parking_lot = "0.13.0"
-escrowd = { path = "crates/escrowd" }
+escrowd = { path = "libs/escrowd" }
 anyhow = "1"
 clap = { version = "4.6", features = ["derive", "env"] }
 prost = "0.14"

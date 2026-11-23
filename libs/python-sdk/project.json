@@ -9,9 +9,9 @@
       "inputs": [
         "{workspaceRoot}/**/*.py",
         "{workspaceRoot}/ruff.toml",
-        "{workspaceRoot}/sdk/python/pyproject.toml",
-        "{workspaceRoot}/sdk/python/uv.lock",
-        "{workspaceRoot}/tests/support/pyproject.toml",
+        "{workspaceRoot}/libs/python-sdk/pyproject.toml",
+        "{workspaceRoot}/libs/python-sdk/uv.lock",
+        "{workspaceRoot}/libs/testkit/pyproject.toml",
         "{workspaceRoot}/.python-version",
         "{workspaceRoot}/mise.toml"
       ],
@@ -19,9 +19,9 @@
       "options": {
         "parallel": false,
         "commands": [
-          "uv run --project sdk/python --frozen ruff check",
-          "uv run --project sdk/python --frozen ruff format --check",
-          "uv run --project sdk/python --frozen ty check --project sdk/python"
+          "uv run --frozen ruff check",
+          "uv run --frozen ruff format --check",
+          "uv run --frozen ty check --project libs/python-sdk"
         ]
       }
     },
@@ -30,7 +30,7 @@
       "cache": false,
       "parallelism": false,
       "options": {
-        "commands": ["sdk/python/gen.sh && git diff --exit-code sdk/python/src"]
+        "commands": ["libs/python-sdk/gen.sh && git diff --exit-code libs/python-sdk/src"]
       }
     },
     "build": {
@@ -39,7 +39,7 @@
       "options": {
         "parallel": false,
         "commands": [
-          "uv build --project sdk/python --wheel --out-dir dist",
+          "uv build --package escrowd --wheel --out-dir dist",
           "python -m zipfile -l dist/*.whl | grep -q escrow/py.typed"
         ]
       }

@@ -49,10 +49,10 @@
     {
       "name": "python-sdk",
       "paths": [
-        "sdk/python/src"
+        "libs/python-sdk/src"
       ],
       "exclude": [
-        "sdk/python/src/escrow/v1/**"
+        "libs/python-sdk/src/escrow/v1/**"
       ],
       "checks": {
         ".py": [
@@ -61,8 +61,6 @@
             "command": "uv",
             "args": [
               "run",
-              "--project",
-              "sdk/python",
               "--frozen",
               "ruff",
               "format",
@@ -77,8 +75,6 @@
             "command": "uv",
             "args": [
               "run",
-              "--project",
-              "sdk/python",
               "--frozen",
               "ruff",
               "check",
@@ -93,13 +89,9 @@
             "command": "uv",
             "args": [
               "run",
-              "--project",
-              "sdk/python",
               "--frozen",
               "ty",
               "check",
-              "--project",
-              "sdk/python",
               "$FILE"
             ],
             "parser": "ty",
@@ -139,8 +131,6 @@
             "command": "uv",
             "args": [
               "run",
-              "--project",
-              "sdk/python",
               "--frozen",
               "ruff",
               "format",
@@ -155,8 +145,6 @@
             "command": "uv",
             "args": [
               "run",
-              "--project",
-              "sdk/python",
               "--frozen",
               "ruff",
               "check",

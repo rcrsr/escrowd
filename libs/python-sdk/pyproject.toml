@@ -27,18 +27,6 @@ Homepage = "https://github.com/rcrsr/escrowd"
 Repository = "https://github.com/rcrsr/escrowd"
 Issues = "https://github.com/rcrsr/escrowd/issues"
 
-[dependency-groups]
-dev = [
-    "escrow-testkit",
-    "grpcio-tools==1.85.3",
-    "pytest==9.2.0",
-    "ruff==0.17.6",
-    "ty==0.0.108",
-]
-
-[tool.uv.sources]
-escrow-testkit = { path = "../../tests/support", editable = true }
-
 [build-system]
 requires = ["uv_build>=0.13.9,<0.14"]
 build-backend = "uv_build"
@@ -47,12 +35,3 @@ build-backend = "uv_build"
 [tool.uv.build-backend]
 module-name = "escrow"
 
-[tool.pytest]
-testpaths = ["../../tests/conformance"]
-
-[tool.ty.environment]
-python-version = "3.11"
-
-[tool.ty.src]
-include = ["src"]
-exclude = ["src/escrow/v1"]

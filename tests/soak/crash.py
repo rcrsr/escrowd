@@ -1,6 +1,6 @@
 """Crash soak (phase 2, check 1): SIGKILL the daemon at a random time inside a commit.
 
-    uv run --project sdk/python --frozen python tests/soak/crash.py [RUNS] [--files N]
+    uv run --frozen python tests/soak/crash.py [RUNS] [--files N]
 
 Each run seeds a project, stages a large change set in one scope (edits, creates,
 deletes, renames, mode changes, a directory replaced by a file), starts the commit and

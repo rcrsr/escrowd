@@ -10,7 +10,7 @@ runs=${2:-100}
 root=$(cd "$(dirname "$0")/../.." && pwd)
 vm=escrow-$host
 uv=$(realpath "$(mise which uv)")
-py=$(realpath "$("$uv" python find --project "$root/sdk/python")")
+py=$(realpath "$("$uv" python find --project "$root")")
 [ -x "$root/target/debug/escrow" ] || {
   echo "build first: cargo build" >&2
   exit 1

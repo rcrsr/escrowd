@@ -1,6 +1,6 @@
 """Close soak (phase 2.2): no acknowledged write lost at close; close latency.
 
-    uv run --project sdk/python --frozen python tests/soak/close.py [RUNS]
+    uv run --frozen python tests/soak/close.py [RUNS]
 
 Loss: RUNS times, a writer in a scope's sandbox (a grandchild of the shell, as under a
 test runner) appends a numbered line and then reports it, without pause; the scope

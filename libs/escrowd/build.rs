@@ -1,3 +1,6 @@
+// FFI: set_var for the vendored protoc; the SAFETY comment below states the precondition.
+#![allow(unsafe_code)]
+
 use std::path::PathBuf;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

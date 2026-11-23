@@ -14,6 +14,6 @@ export UV_PROJECT_ENVIRONMENT=/var/tmp/escrow-venv UV_CACHE_DIR=/var/tmp/uv-cach
 export UV_PYTHON_DOWNLOADS=never PYTHONDONTWRITEBYTECODE=1
 cd "$ROOT"
 if [ $# -gt 0 ]; then
-  exec "$UV" run --project sdk/python --frozen python "$@"
+  exec "$UV" run --frozen python "$@"
 fi
-"$UV" run --project sdk/python --frozen pytest -v -p no:cacheprovider --rootdir tests/conformance tests/conformance
+"$UV" run --frozen pytest -v -p no:cacheprovider --rootdir tests/conformance tests/conformance

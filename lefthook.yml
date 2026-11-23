@@ -18,13 +18,13 @@ pre-commit:
     - name: ruff
       glob: "*.py"
       run: |
-        uv run --project sdk/python --frozen ruff check --fix --force-exclude {staged_files} && \
-        uv run --project sdk/python --frozen ruff format --force-exclude {staged_files}
+        uv run --frozen ruff check --fix --force-exclude {staged_files} && \
+        uv run --frozen ruff format --force-exclude {staged_files}
       stage_fixed: true
 
     - name: proto-stubs
       glob: "proto/**/*.proto"
-      run: sdk/python/gen.sh && git add sdk/python/src/escrow/v1
+      run: libs/python-sdk/gen.sh && git add libs/python-sdk/src/escrow/v1
 
 pre-push:
   parallel: true
@@ -42,8 +42,8 @@ pre-push:
       run: pnpm exec nx run protocol:lint
 
     - name: lockfiles
-      glob: "{Cargo.toml,Cargo.lock,crates/*/Cargo.toml,sdk/python/pyproject.toml,sdk/python/uv.lock,package.json,pnpm-lock.yaml,pnpm-workspace.yaml}"
-      run: cargo metadata --locked --format-version=1 > /dev/null && uv lock --check --project sdk/python && pnpm install --frozen-lockfile --lockfile-only
+      glob: "{Cargo.toml,Cargo.lock,crates/*/Cargo.toml,libs/python-sdk/pyproject.toml,libs/python-sdk/uv.lock,package.json,pnpm-lock.yaml,pnpm-workspace.yaml}"
+      run: cargo metadata --locked --format-version=1 > /dev/null && uv lock --check && pnpm install --frozen-lockfile --lockfile-only
 
     - name: actionlint
       glob: "{.github/workflows/*.yml,.github/actions/**}"

@@ -1,3 +1,5 @@
+// FFI: libc calls in cmd/exec.rs and cmd/run.rs; every unsafe block carries a // SAFETY: comment.
+#![allow(unsafe_code)]
 mod client;
 mod cmd;
 
