@@ -40,9 +40,9 @@ pub struct Config {
 /// `<project basename>-<FNV-1a 64 of the canonical path>`: stable and readable.
 #[must_use]
 pub fn project_id(project: &Path) -> String {
-    let mut h: u64 = 0xcbf29ce484222325;
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in project.as_os_str().as_bytes() {
-        h = (h ^ u64::from(*b)).wrapping_mul(0x100000001b3);
+        h = (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
     }
     let base = project.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
     format!("{base}-{h:016x}")
@@ -148,17 +148,16 @@ fn resolve_lexical(path: &Path) -> anyhow::Result<PathBuf> {
         if let Ok(mut base) = head.canonicalize() {
             base.extend(tail.iter().rev());
             return Ok(base);
-        } else {
-            let (Some(parent), Some(name)) = (head.parent(), head.file_name()) else {
-                if head.parent().is_some() {
-                    // A `..` after a missing directory cannot be resolved without creating it.
-                    bail!("{} has `..` after a directory that does not exist", path.display());
-                }
-                return Ok(abs);
-            };
-            tail.push(name);
-            head = parent;
         }
+        let (Some(parent), Some(name)) = (head.parent(), head.file_name()) else {
+            if head.parent().is_some() {
+                // A `..` after a missing directory cannot be resolved without creating it.
+                bail!("{} has `..` after a directory that does not exist", path.display());
+            }
+            return Ok(abs);
+        };
+        tail.push(name);
+        head = parent;
     }
 }
 
@@ -205,9 +204,9 @@ fn protected_in(host: &Path, protected: &[PathBuf]) -> Option<Arc<Protected>> {
     (!rel.is_empty()).then(|| Arc::new(Protected::new(rel)))
 }
 
-/// Load and compile the policy and check the paths against one another. Creates no
-/// directory, takes no lock, opens no store and mounts nothing.
-fn validate(config: &Config) -> anyhow::Result<Validated> {
+/// The canonical project, the resolved state directory and the resolved mount point,
+/// checked not to contain one another.
+fn resolve_dirs(config: &Config) -> anyhow::Result<(PathBuf, PathBuf, PathBuf)> {
     let project = config
         .project
         .canonicalize()
@@ -230,6 +229,53 @@ fn validate(config: &Config) -> anyhow::Result<Validated> {
             mount.display()
         );
     }
+    Ok((project, state, mount))
+}
+
+/// Each passthrough path resolved and checked never to reach the project or escrowd's own
+/// state and views.
+fn resolve_writes(
+    passthrough: Vec<PathBuf>,
+    project: &Path,
+    state: &Path,
+    mount: &Path,
+) -> anyhow::Result<Vec<PathBuf>> {
+    let mut write = Vec::new();
+    for w in passthrough {
+        let w = resolve_lexical(&w)?;
+        // A writable bind must never reach the project or escrowd's own state and views.
+        for (name, p) in [("project", project), ("state", state), ("mount", mount)] {
+            if inside(&w, p) || inside(p, &w) {
+                bail!("passthrough {} overlaps the {name} {}", w.display(), p.display());
+            }
+        }
+        write.push(w);
+    }
+    Ok(write)
+}
+
+/// The protected paths that the unscoped mode and the writable binds must not expose.
+fn check_protected(protected: &[PathBuf], config: &Config, project: &Path, write: &[PathBuf]) -> anyhow::Result<()> {
+    if config.unscoped == Unscoped::Passthrough
+        && let Some(p) = protected.iter().find(|p| inside(p, project))
+    {
+        bail!(
+            "unscoped passthrough: {} is protected and lies in the project",
+            p.display()
+        );
+    }
+    for w in write {
+        if let Some(p) = protected.iter().find(|p| inside(p, w)) {
+            bail!("passthrough {} contains protected {}", w.display(), p.display());
+        }
+    }
+    Ok(())
+}
+
+/// Load and compile the policy and check the paths against one another. Creates no
+/// directory, takes no lock, opens no store and mounts nothing.
+fn validate(config: &Config) -> anyhow::Result<Validated> {
+    let (project, state, mount) = resolve_dirs(config)?;
     let policy = match &config.policy {
         Some(p) => Policy::load(p)?,
         None => Policy {
@@ -259,17 +305,7 @@ fn validate(config: &Config) -> anyhow::Result<Validated> {
         Some("/tmp".into()),
         &mut passthrough,
     )?;
-    let mut write = Vec::new();
-    for w in passthrough {
-        let w = resolve_lexical(&w)?;
-        // A writable bind must never reach the project or escrowd's own state and views.
-        for (name, p) in [("project", &project), ("state", &state), ("mount", &mount)] {
-            if inside(&w, p) || inside(p, &w) {
-                bail!("passthrough {} overlaps the {name} {}", w.display(), p.display());
-            }
-        }
-        write.push(w);
-    }
+    let write = resolve_writes(passthrough, &project, &state, &mount)?;
     for resolved in [&home, &tmp].into_iter().flatten() {
         let host = &resolved.host;
         if inside(host, &project) || inside(host, &state) || inside(host, &mount) {
@@ -291,19 +327,7 @@ fn validate(config: &Config) -> anyhow::Result<Validated> {
         }
     }
     let protected = protected_forms(config.policy.iter().cloned().chain(programs))?;
-    if config.unscoped == Unscoped::Passthrough
-        && let Some(p) = protected.iter().find(|p| inside(p, &project))
-    {
-        bail!(
-            "unscoped passthrough: {} is protected and lies in the project",
-            p.display()
-        );
-    }
-    for w in &write {
-        if let Some(p) = protected.iter().find(|p| inside(p, w)) {
-            bail!("passthrough {} contains protected {}", w.display(), p.display());
-        }
-    }
+    check_protected(&protected, config, &project, &write)?;
     let review =
         review::Rules::new(&policy.review, &policy.reviewers, &policy.write).context("policy review: or write:")?;
     Ok(Validated {
@@ -580,7 +604,7 @@ impl Daemon {
         });
         let runner = Runner::new(self.reviewers_parallel, rpc::review_socket(&self.socket));
         let service = rpc::Service::new(self.views.clone(), self.children.clone(), self.diff, runner);
-        let served = rpc::serve(&self.socket, service, shutdown).await;
+        let outcome = rpc::serve(&self.socket, service, shutdown).await;
         accept.abort();
         let _ = std::fs::remove_file(&exec_path);
         let children = self.children.clone();
@@ -590,7 +614,7 @@ impl Daemon {
             .await?
             .context("unmounting views")?;
         self.views.flush().context("writing scope stores")?;
-        served
+        outcome
     }
 }
 

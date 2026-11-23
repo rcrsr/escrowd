@@ -147,7 +147,7 @@ fn v1_roots(tx: &Transaction) -> rusqlite::Result<()> {
 
 fn version(r: &rusqlite::Row, at: usize) -> rusqlite::Result<Version> {
     Ok(Version {
-        ino: r.get::<_, i64>(at)? as u64,
+        ino: r.get::<_, i64>(at)?.cast_unsigned(),
         size: r.get(at + 1)?,
         mtime_ns: r.get(at + 2)?,
         ctime_ns: r.get(at + 3)?,
@@ -167,7 +167,7 @@ impl Journal {
             .query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
             .optional()
             .map_err(sql)?;
-        Ok(v.unwrap_or(0) as u64)
+        Ok(v.unwrap_or(0).cast_unsigned())
     }
 
     /// The generation the base is at: the last commit that finished.
@@ -192,12 +192,12 @@ impl Journal {
         let tx = self.db.transaction().map_err(sql)?;
         tx.execute(
             "INSERT INTO meta VALUES ('last', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            [generation as i64],
+            [generation.cast_signed()],
         )
         .map_err(sql)?;
         tx.execute(
             "INSERT INTO gens VALUES (?1, ?2, ?3)",
-            params![generation as i64, scope, GenState::Journaled.as_str()],
+            params![generation.cast_signed(), scope, GenState::Journaled.as_str()],
         )
         .map_err(sql)?;
         {
@@ -216,12 +216,12 @@ impl Journal {
                     ctime_ns: 0,
                 });
                 st.execute(params![
-                    generation as i64,
-                    e.root as i64,
+                    generation.cast_signed(),
+                    db::index_param(e.root)?,
                     sys::path_bytes(&e.path),
                     e.pre.is_some(),
                     m.mode,
-                    m.ino as i64,
+                    m.ino.cast_signed(),
                     m.size,
                     m.uid,
                     m.gid,
@@ -237,8 +237,8 @@ impl Journal {
                 .map_err(sql)?;
             for d in dirs {
                 st.execute(params![
-                    generation as i64,
-                    d.root as i64,
+                    generation.cast_signed(),
+                    db::index_param(d.root)?,
                     sys::path_bytes(&d.path),
                     d.atime_ns,
                     d.mtime_ns
@@ -253,13 +253,13 @@ impl Journal {
         let tx = self.db.transaction().map_err(sql)?;
         tx.execute(
             "UPDATE gens SET state = ?2 WHERE gen = ?1",
-            params![generation as i64, state.as_str()],
+            params![generation.cast_signed(), state.as_str()],
         )
         .map_err(sql)?;
         if state == GenState::Done {
             tx.execute(
                 "INSERT INTO meta VALUES ('current', ?1) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                [generation as i64],
+                [generation.cast_signed()],
             )
             .map_err(sql)?;
         }
@@ -274,7 +274,7 @@ impl Journal {
             .map_err(sql)?;
         let rows = st
             .query_map([], |r| {
-                Ok((r.get::<_, i64>(0)? as u64, r.get(1)?, r.get::<_, String>(2)?))
+                Ok((r.get::<_, i64>(0)?.cast_unsigned(), r.get(1)?, r.get::<_, String>(2)?))
             })
             .map_err(sql)?;
         rows.map(|r| {
@@ -287,9 +287,11 @@ impl Journal {
     pub fn state(&self, generation: u64) -> io::Result<Option<GenState>> {
         let s: Option<String> = self
             .db
-            .query_row("SELECT state FROM gens WHERE gen = ?1", [generation as i64], |r| {
-                r.get(0)
-            })
+            .query_row(
+                "SELECT state FROM gens WHERE gen = ?1",
+                [generation.cast_signed()],
+                |r| r.get(0),
+            )
             .optional()
             .map_err(sql)?;
         s.map(|s| GenState::parse(&s)).transpose()
@@ -304,13 +306,13 @@ impl Journal {
             )
             .map_err(sql)?;
         let rows = st
-            .query_map([generation as i64], |r| {
+            .query_map([generation.cast_signed()], |r| {
                 let present: bool = r.get(1)?;
                 let pre = present
                     .then(|| -> rusqlite::Result<Meta> {
                         Ok(Meta {
                             mode: r.get(2)?,
-                            ino: r.get::<_, i64>(3)? as u64,
+                            ino: r.get::<_, i64>(3)?.cast_unsigned(),
                             size: r.get(4)?,
                             uid: r.get(5)?,
                             gid: r.get(6)?,
@@ -321,7 +323,7 @@ impl Journal {
                     })
                     .transpose()?;
                 Ok(JournalEntry {
-                    root: r.get::<_, i64>(11)? as usize,
+                    root: db::get_index(r, 11)?,
                     path: sys::path_from(r.get(0)?),
                     pre,
                     tmp: r.get::<_, Option<Vec<u8>>>(10)?.map(sys::path_from),
@@ -337,9 +339,9 @@ impl Journal {
             .prepare("SELECT path, atime_ns, mtime_ns, root FROM dirs WHERE gen = ?1")
             .map_err(sql)?;
         let rows = st
-            .query_map([generation as i64], |r| {
+            .query_map([generation.cast_signed()], |r| {
                 Ok(DirTimes {
-                    root: r.get::<_, i64>(3)? as usize,
+                    root: db::get_index(r, 3)?,
                     path: sys::path_from(r.get(0)?),
                     atime_ns: r.get(1)?,
                     mtime_ns: r.get(2)?,
@@ -359,12 +361,12 @@ impl Journal {
     pub fn forget_all(&mut self, generations: &[u64], restored: bool, dropped: Option<u64>) -> io::Result<()> {
         let tx = self.db.transaction().map_err(sql)?;
         if let Some(g) = dropped {
-            tx.execute("UPDATE gens SET scope = '' WHERE gen = ?1", [g as i64])
+            tx.execute("UPDATE gens SET scope = '' WHERE gen = ?1", [g.cast_signed()])
                 .map_err(sql)?;
         }
         for g in generations {
             for table in ["gens", "entries", "dirs"] {
-                tx.execute(&format!("DELETE FROM {table} WHERE gen = ?1"), [*g as i64])
+                tx.execute(&format!("DELETE FROM {table} WHERE gen = ?1"), [g.cast_signed()])
                     .map_err(sql)?;
             }
         }
@@ -376,7 +378,7 @@ impl Journal {
 
     pub fn clear_scope(&self, generation: u64) -> io::Result<()> {
         self.db
-            .execute("UPDATE gens SET scope = '' WHERE gen = ?1", [generation as i64])
+            .execute("UPDATE gens SET scope = '' WHERE gen = ?1", [generation.cast_signed()])
             .map_err(sql)?;
         Ok(())
     }
@@ -386,13 +388,13 @@ impl Journal {
             .execute(
                 "INSERT OR REPLACE INTO restored VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
-                    root as i64,
+                    db::index_param(root)?,
                     sys::path_bytes(path),
-                    old.ino as i64,
+                    old.ino.cast_signed(),
                     old.size,
                     old.mtime_ns,
                     old.ctime_ns,
-                    new.ino as i64,
+                    new.ino.cast_signed(),
                     new.size,
                     new.mtime_ns,
                     new.ctime_ns
@@ -408,7 +410,7 @@ impl Journal {
         let rows = st
             .query_map([], |r| {
                 Ok((
-                    r.get::<_, i64>(0)? as usize,
+                    db::get_index(r, 0)?,
                     sys::path_from(r.get(1)?),
                     version(r, 2)?,
                     version(r, 6)?,

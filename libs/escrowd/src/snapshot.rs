@@ -49,9 +49,9 @@ impl Meta {
             size: st.st_size,
             uid: st.st_uid,
             gid: st.st_gid,
-            atime_ns: ns(st.st_atime, st.st_atime_nsec as i64),
-            mtime_ns: ns(st.st_mtime, st.st_mtime_nsec as i64),
-            ctime_ns: ns(st.st_ctime, st.st_ctime_nsec as i64),
+            atime_ns: ns(st.st_atime, sys::wide(st.st_atime_nsec)),
+            mtime_ns: ns(st.st_mtime, sys::wide(st.st_mtime_nsec)),
+            ctime_ns: ns(st.st_ctime, sys::wide(st.st_ctime_nsec)),
         }
     }
 
@@ -81,11 +81,11 @@ impl Meta {
         st.st_uid = self.uid;
         st.st_gid = self.gid;
         let (s, n) = split(self.atime_ns);
-        (st.st_atime, st.st_atime_nsec) = (s, n as _);
+        (st.st_atime, st.st_atime_nsec) = (s, n.try_into().unwrap_or_default());
         let (s, n) = split(self.mtime_ns);
-        (st.st_mtime, st.st_mtime_nsec) = (s, n as _);
+        (st.st_mtime, st.st_mtime_nsec) = (s, n.try_into().unwrap_or_default());
         let (s, n) = split(self.ctime_ns);
-        (st.st_ctime, st.st_ctime_nsec) = (s, n as _);
+        (st.st_ctime, st.st_ctime_nsec) = (s, n.try_into().unwrap_or_default());
     }
 }
 

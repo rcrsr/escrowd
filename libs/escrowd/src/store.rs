@@ -235,7 +235,7 @@ fn write_version(db: &Connection, rel: &Path, seen: Seen, v: Version) -> io::Res
             sys::path_bytes(rel),
             seen.read,
             seen.changed,
-            v.ino as i64,
+            v.ino.cast_signed(),
             v.size,
             v.mtime_ns,
             v.ctime_ns
@@ -292,7 +292,7 @@ impl ScopeStore {
         let tx = db.transaction().map_err(sql)?;
         tx.execute(
             "INSERT INTO meta VALUES ('name', ?1), ('idx', ?2), ('since', ?3), ('readonly', ?4), ('next_upper_ino', 0), ('state', 'open')",
-            params![name, idx as i64, since as i64, i64::from(readonly)],
+            params![name, idx.cast_signed(), since.cast_signed(), i64::from(readonly)],
         )
         .map_err(sql)?;
         if let Some(t) = token_sha256 {
@@ -331,7 +331,7 @@ impl ScopeStore {
                 .ok_or_else(|| io::Error::other(format!("scope {id}: meta.{k} missing")))
         };
         let int = |v: rusqlite::types::Value| match v {
-            rusqlite::types::Value::Integer(i) => Ok(i as u64),
+            rusqlite::types::Value::Integer(i) => Ok(i.cast_unsigned()),
             _ => Err(io::Error::other("bad meta integer")),
         };
         let name = match meta("name")? {
@@ -390,7 +390,7 @@ impl ScopeStore {
                                 attempt: r.get(1)?,
                                 waiting: r.get::<_, String>(2)? == "waiting",
                                 token_sha256: r.get(3)?,
-                                deadline_ms: r.get::<_, Option<i64>>(4)?.map(|d| d as u64),
+                                deadline_ms: r.get::<_, Option<i64>>(4)?.map(i64::cast_unsigned),
                             })
                         },
                     )
@@ -421,7 +421,9 @@ impl ScopeStore {
         let pins = {
             let mut st = db.prepare("SELECT path, ino FROM pins").map_err(sql)?;
             let rows = st
-                .query_map([], |r| Ok((sys::path_from(r.get(0)?), r.get::<_, i64>(1)? as u64)))
+                .query_map([], |r| {
+                    Ok((sys::path_from(r.get(0)?), r.get::<_, i64>(1)?.cast_unsigned()))
+                })
                 .map_err(sql)?;
             rows.collect::<Result<HashMap<_, _>, _>>().map_err(sql)?
         };
@@ -442,7 +444,9 @@ impl ScopeStore {
         {
             let mut st = db.prepare("SELECT path, proc FROM writers").map_err(sql)?;
             let rows = st
-                .query_map([], |r| Ok((sys::path_from(r.get(0)?), r.get::<_, i64>(1)? as u64)))
+                .query_map([], |r| {
+                    Ok((sys::path_from(r.get(0)?), r.get::<_, i64>(1)?.cast_unsigned()))
+                })
                 .map_err(sql)?;
             for row in rows {
                 let (p, id) = row.map_err(sql)?;
@@ -457,13 +461,13 @@ impl ScopeStore {
                 .query_map([], |r| {
                     let args: Vec<u8> = r.get(5)?;
                     let info = Info {
-                        id: r.get::<_, i64>(0)? as u64,
+                        id: r.get::<_, i64>(0)?.cast_unsigned(),
                         pid: r.get(1)?,
                         program: sys::path_from(r.get(2)?),
-                        dev: r.get::<_, i64>(3)? as u64,
-                        ino: r.get::<_, i64>(4)? as u64,
+                        dev: r.get::<_, i64>(3)?.cast_unsigned(),
+                        ino: r.get::<_, i64>(4)?.cast_unsigned(),
                         args: split_nul(&args),
-                        parent: r.get::<_, i64>(6)? as u64,
+                        parent: r.get::<_, i64>(6)?.cast_unsigned(),
                     };
                     Ok((info.id, info))
                 })
@@ -634,7 +638,7 @@ impl ScopeStore {
                         r.attempt,
                         if r.waiting { "waiting" } else { "running" },
                         r.token_sha256,
-                        r.deadline_ms.map(|d| d as i64)
+                        r.deadline_ms.map(u64::cast_signed)
                     ],
                 )
                 .map_err(sql)?;
@@ -779,7 +783,7 @@ impl ScopeStore {
                 Some(ino) => exec(
                     &tx,
                     "INSERT OR REPLACE INTO pins VALUES (?1, ?2)",
-                    params![sys::path_bytes(p), *ino as i64],
+                    params![sys::path_bytes(p), ino.cast_signed()],
                 ),
                 None => exec(&tx, "DELETE FROM pins WHERE path = ?1", [sys::path_bytes(p)]),
             }?;
@@ -788,7 +792,7 @@ impl ScopeStore {
             exec(
                 &tx,
                 "UPDATE meta SET value = ?1 WHERE key = 'next_upper_ino'",
-                [self.next_upper_ino as i64],
+                [self.next_upper_ino.cast_signed()],
             )?;
         }
         for (p, v) in &self.unwritten_reads {
@@ -808,13 +812,13 @@ impl ScopeStore {
                 &tx,
                 "INSERT OR IGNORE INTO procs VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
-                    p.id as i64,
+                    p.id.cast_signed(),
                     p.pid,
                     sys::path_bytes(&p.program),
-                    p.dev as i64,
-                    p.ino as i64,
+                    p.dev.cast_signed(),
+                    p.ino.cast_signed(),
                     p.args.join("\0").into_bytes(),
-                    p.parent as i64
+                    p.parent.cast_signed()
                 ],
             )?;
         }
@@ -823,7 +827,7 @@ impl ScopeStore {
                 exec(
                     &tx,
                     "INSERT OR IGNORE INTO writers VALUES (?1, ?2)",
-                    params![sys::path_bytes(path), *id as i64],
+                    params![sys::path_bytes(path), id.cast_signed()],
                 )?;
             }
         }
@@ -831,7 +835,11 @@ impl ScopeStore {
             let bytes = sys::path_bytes(path);
             exec(&tx, "DELETE FROM writers WHERE path = ?1", [bytes])?;
             for id in self.writers.get(path).into_iter().flatten() {
-                exec(&tx, "INSERT INTO writers VALUES (?1, ?2)", params![bytes, *id as i64])?;
+                exec(
+                    &tx,
+                    "INSERT INTO writers VALUES (?1, ?2)",
+                    params![bytes, id.cast_signed()],
+                )?;
             }
         }
         tx.commit().map_err(sql)?;
@@ -927,7 +935,7 @@ impl ScopeStore {
             .and_then(|mut st| {
                 st.query_row([sys::path_bytes(rel)], |r| {
                     Ok(Version {
-                        ino: r.get::<_, i64>(0)? as u64,
+                        ino: r.get::<_, i64>(0)?.cast_unsigned(),
                         size: r.get(1)?,
                         mtime_ns: r.get(2)?,
                         ctime_ns: r.get(3)?,
@@ -1049,7 +1057,7 @@ mod tests {
         for i in 1..=2048u64 {
             let info = Info {
                 id: i,
-                pid: i as u32,
+                pid: u32::try_from(i).unwrap(),
                 program: PathBuf::from("/bin/true"),
                 dev: 0,
                 ino: 0,
@@ -1071,7 +1079,7 @@ mod tests {
     fn info(id: u64) -> Info {
         Info {
             id,
-            pid: id as u32,
+            pid: u32::try_from(id).unwrap(),
             program: PathBuf::from("/bin/true"),
             dev: 0,
             ino: 0,

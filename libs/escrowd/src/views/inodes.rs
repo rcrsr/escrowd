@@ -121,7 +121,7 @@ impl Inodes {
                     _ if !fresh => Pages::Drop,
                     Some(before) if before == v => Pages::Keep,
                     Some(_) => Pages::Drop,
-                    None => Pages::Empty(st.st_size as u64),
+                    None => Pages::Empty(crate::sys::unsigned(st.st_size)),
                 }
             }
         }
@@ -166,7 +166,10 @@ impl Views {
             return Ok(Node::Root);
         }
         if (UNSCOPED_ROOT..UNSCOPED_ROOT + roots::COUNT as u64).contains(&ino) {
-            let view = roots::view_name(UNSCOPED, (ino - UNSCOPED_ROOT) as usize);
+            let view = roots::view_name(
+                UNSCOPED,
+                usize::try_from(ino - UNSCOPED_ROOT).map_err(|_| Errno::ENOENT)?,
+            );
             return Ok(Node::In(self.scope(&view)?, PathBuf::new()));
         }
         let h = self.view_of(ino).ok_or(Errno::ENOENT)?;

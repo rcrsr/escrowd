@@ -201,7 +201,7 @@ impl Runner {
         };
         let pid = child.id();
         // The program has no group before spawn returns; its pid is its group.
-        let group = pid.and_then(|p| Pid::from_raw(p as i32));
+        let group = pid.and_then(|p| i32::try_from(p).ok().and_then(Pid::from_raw));
         let (Some(mut stdin), Some(mut stdout), Some(stderr)) =
             (child.stdin.take(), child.stdout.take(), child.stderr.take())
         else {
@@ -495,7 +495,7 @@ mod tests {
         );
         // SIGKILL went to the whole group; its last member (the shell's `sleep`, now
         // an orphan) is gone once init reaps it, which a busy host may take a moment for.
-        let pgid = Pid::from_raw(report.pid.unwrap() as i32).unwrap();
+        let pgid = Pid::from_raw(i32::try_from(report.pid.unwrap()).unwrap()).unwrap();
         let reaped_by = Instant::now() + Duration::from_secs(5);
         while rustix::process::test_kill_process_group(pgid).is_ok() && Instant::now() < reaped_by {
             tokio::time::sleep(Duration::from_millis(20)).await;

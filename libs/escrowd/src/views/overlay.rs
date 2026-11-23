@@ -499,7 +499,7 @@ impl Views {
         } else {
             OFlags::RDWR
         };
-        base | OFlags::from_bits_retain(keep as u32)
+        base | OFlags::from_bits_retain(keep.cast_unsigned())
     }
 
     /// Open `rel` (inode `ino`); also returns what the kernel may do with its cached pages.

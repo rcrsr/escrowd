@@ -64,7 +64,7 @@ impl Ledger {
         let mut carry = Vec::new();
         loop {
             let start = end.saturating_sub(SCAN_BLOCK);
-            let mut block = vec![0; (end - start) as usize];
+            let mut block = vec![0; usize::try_from(end - start).map_err(io::Error::other)?];
             f.seek(SeekFrom::Start(start))?;
             f.read_exact(&mut block)?;
             block.extend_from_slice(&carry);

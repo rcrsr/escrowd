@@ -612,9 +612,9 @@ impl Decisions {
         let scope = id.clone();
         let who = self.blocking(move |v| v.identity(&scope)).await?;
         let scope = id.clone();
-        let reviewed = self
+        let filed = self
             .blocking(move |v| {
-                let tokened = token.is_some();
+                let with_token = token.is_some();
                 let giver = match token {
                     Some(t) => Giver::Token(crate::views::token_sha256(&t)),
                     None => Giver::Socket,
@@ -629,7 +629,7 @@ impl Decisions {
                 match v.review_scope(&scope, &reviewer, giver, verdict, reasons, over) {
                     // With a token every refusal reads the same, and is ledgered; so is a
                     // command reviewer named without one.
-                    Err(e) if !e.is_no_scope() && (tokened || (command && matches!(e, Error::Denied(_)))) => {
+                    Err(e) if !e.is_no_scope() && (with_token || (command && matches!(e, Error::Denied(_)))) => {
                         if !matches!(e, Error::Denied(_)) {
                             eprintln!("escrowd: reviewer: {scope}: {reviewer}: {e}");
                         }
@@ -642,11 +642,11 @@ impl Decisions {
                 }
             })
             .await?;
-        if !matches!(reviewed, Reviewed::Stale) {
+        if !matches!(filed, Reviewed::Stale) {
             // The verdict ends or skips the reviewer whose program is running, if any.
             self.runner.cancel(&id);
         }
-        let out = self.conclude(id, who, reviewed).await?;
+        let out = self.conclude(id, who, filed).await?;
         self.notify();
         Ok(out)
     }
@@ -712,7 +712,7 @@ impl Decisions {
             let (scope, missing) = (id.to_string(), name.clone());
             let cause = "not in the policy".to_string();
             let reasons = vec![format!("failed: {cause}")];
-            let reviewed = self
+            let filed = self
                 .blocking(move |v| {
                     let giver = Giver::Missing { cause };
                     v.review_scope(
@@ -725,7 +725,7 @@ impl Decisions {
                     )
                 })
                 .await?;
-            self.conclude(id.to_string(), who, reviewed).await?;
+            self.conclude(id.to_string(), who, filed).await?;
             self.notify();
             return Ok(());
         };
@@ -742,7 +742,7 @@ impl Decisions {
         };
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as u64);
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
         if let Some(left) = deadline_ms.checked_sub(now_ms).filter(|left| *left > 0) {
             self.arm_expiry(id, &name, attempt, command, std::time::Duration::from_millis(left));
         } else {
@@ -885,16 +885,16 @@ impl Decisions {
             }
         };
         let (scope, name) = (id.to_string(), reviewer.to_string());
-        let reviewed = self
+        let filed = self
             .blocking(move |v| {
                 let giver = Giver::Run { attempt, pid, failure };
                 v.review_scope(&scope, &name, giver, verdict, reasons, false)
             })
             .await?;
-        if matches!(reviewed, Reviewed::Stale) {
+        if matches!(filed, Reviewed::Stale) {
             return Ok(false);
         }
-        self.conclude(id.to_string(), who, reviewed).await?;
+        self.conclude(id.to_string(), who, filed).await?;
         Ok(true)
     }
     /// A delegate's `pending` answer: the run waits for its token until the reviewer's
@@ -911,7 +911,7 @@ impl Decisions {
         let deadline = std::time::SystemTime::now() + command.timeout;
         let deadline_ms = deadline
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as u64);
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
         let (scope, name) = (id.to_string(), reviewer.to_string());
         let waiting = self
             .blocking(move |v| v.await_delegate(&scope, &name, attempt, pid, deadline_ms))
@@ -978,16 +978,16 @@ impl Decisions {
         };
         let (scope, name) = (id.to_string(), reviewer.to_string());
         let reasons = vec![format!("failed: {cause}")];
-        let reviewed = self
+        let filed = self
             .blocking(move |v| {
                 let giver = Giver::Expired { attempt, cause };
                 v.review_scope(&scope, &name, giver, on_failure.max(so_far), reasons, false)
             })
             .await?;
-        if matches!(reviewed, Reviewed::Stale) {
+        if matches!(filed, Reviewed::Stale) {
             return Ok(false);
         }
-        self.conclude(id.to_string(), who, reviewed).await?;
+        self.conclude(id.to_string(), who, filed).await?;
         Ok(true)
     }
 }

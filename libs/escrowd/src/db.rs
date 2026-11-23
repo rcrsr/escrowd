@@ -42,7 +42,12 @@ pub fn open(path: &Path, durability: Durability) -> io::Result<Connection> {
 /// Bring `db` (`name` in errors) to version `steps.len()`.
 pub fn migrate(db: &mut Connection, name: &str, steps: &[Step]) -> io::Result<()> {
     let have: i64 = db.query_row("PRAGMA user_version", [], |r| r.get(0)).map_err(sql)?;
-    let want = steps.len() as i64;
+    let want = i64::try_from(steps.len()).map_err(|_| {
+        io::Error::other(format!(
+            "{name}: {} migration steps do not fit a schema version",
+            steps.len()
+        ))
+    })?;
     if have < 0 {
         return Err(io::Error::other(format!("{name}: schema version {have} is not valid")));
     }
@@ -56,11 +61,32 @@ pub fn migrate(db: &mut Connection, name: &str, steps: &[Step]) -> io::Result<()
     }
     // One transaction: a new file costs one sync, not one per table.
     let tx = db.transaction().map_err(sql)?;
-    for step in &steps[have as usize..] {
+    let done =
+        usize::try_from(have).map_err(|_| io::Error::other(format!("{name}: schema version {have} is not valid")))?;
+    for step in &steps[done..] {
         step(&tx).map_err(sql)?;
     }
     tx.pragma_update(None, "user_version", want).map_err(sql)?;
     tx.commit().map_err(sql)
+}
+
+/// Column `at` of `row`, a non-negative index stored as an SQLite INTEGER.
+///
+/// # Errors
+///
+/// The column is not an integer, or its value is negative or does not fit `usize`.
+pub fn get_index(row: &rusqlite::Row, at: usize) -> rusqlite::Result<usize> {
+    let v: i64 = row.get(at)?;
+    usize::try_from(v).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(at, v))
+}
+
+/// `index` as an SQLite INTEGER parameter.
+///
+/// # Errors
+///
+/// `index` does not fit an SQLite INTEGER.
+pub fn index_param(index: usize) -> io::Result<i64> {
+    i64::try_from(index).map_err(|_| io::Error::other(format!("index {index} does not fit an SQLite integer")))
 }
 
 /// `table` exists in `db`.

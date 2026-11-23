@@ -100,7 +100,7 @@ pub fn build(base: &Base, h: &ScopeHandle) -> io::Result<ChangeSet> {
         kinds.insert(d, Kind::Delete);
     }
     let ephemeral = |p: &Path| h.access(p) == Access::Ephemeral;
-    let changes: Vec<Change> = pair_renames(base, &store, kinds)
+    let changes: Vec<Change> = pair_renames(base, &store, &kinds)
         .into_iter()
         .filter_map(|mut c| {
             let from_ephemeral = c.from.as_deref().map(ephemeral);
@@ -200,22 +200,22 @@ fn differs(base: &Base, upper: BorrowedFd, rel: &Path, old: &Stat, up: &Stat) ->
     }
 }
 
-pub(crate) fn same_bytes(mut a: impl Read, mut b: impl Read) -> io::Result<bool> {
-    let (mut x, mut y) = (vec![0u8; 64 * 1024], vec![0u8; 64 * 1024]);
+pub(crate) fn same_bytes(mut left: impl Read, mut right: impl Read) -> io::Result<bool> {
+    let (mut left_buf, mut right_buf) = (vec![0u8; 64 * 1024], vec![0u8; 64 * 1024]);
     loop {
-        let n = a.read(&mut x)?;
+        let n = left.read(&mut left_buf)?;
         if n == 0 {
-            return Ok(b.read(&mut y[..1])? == 0);
+            return Ok(right.read(&mut right_buf[..1])? == 0);
         }
         let mut got = 0;
         while got < n {
-            let m = b.read(&mut y[got..n])?;
-            if m == 0 {
+            let read = right.read(&mut right_buf[got..n])?;
+            if read == 0 {
                 return Ok(false);
             }
-            got += m;
+            got += read;
         }
-        if x[..n] != y[..n] {
+        if left_buf[..n] != right_buf[..n] {
             return Ok(false);
         }
     }
@@ -238,7 +238,7 @@ fn base_descendants(base: &Base, dir: &Path, out: &mut BTreeSet<PathBuf>) -> io:
 
 /// Pair each create or modify that carries a base inode with the delete of the
 /// file that had it: together they are one rename.
-fn pair_renames(base: &Base, store: &ScopeStore, kinds: BTreeMap<PathBuf, Kind>) -> Vec<Change> {
+fn pair_renames(base: &Base, store: &ScopeStore, kinds: &BTreeMap<PathBuf, Kind>) -> Vec<Change> {
     let base_ino_of_delete: HashMap<u64, PathBuf> = kinds
         .iter()
         .filter(|(_, k)| **k == Kind::Delete)
@@ -248,7 +248,7 @@ fn pair_renames(base: &Base, store: &ScopeStore, kinds: BTreeMap<PathBuf, Kind>)
         })
         .collect();
     let mut sources: BTreeMap<PathBuf, PathBuf> = BTreeMap::new(); // to -> from
-    for (p, k) in &kinds {
+    for (p, k) in kinds {
         if !matches!(k, Kind::Create | Kind::Modify) {
             continue;
         }

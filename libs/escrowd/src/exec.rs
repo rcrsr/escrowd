@@ -51,7 +51,8 @@ pub fn exec_socket(socket: &Path) -> PathBuf {
 /// Write one frame: a little-endian u32 length, then the message.
 pub fn write_frame(w: &mut impl Write, msg: &impl Message) -> io::Result<()> {
     let body = msg.encode_to_vec();
-    let mut buf = (body.len() as u32).to_le_bytes().to_vec();
+    let len = u32::try_from(body.len()).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "frame too large"))?;
+    let mut buf = len.to_le_bytes().to_vec();
     buf.extend(body);
     w.write_all(&buf)
 }
@@ -87,18 +88,18 @@ fn kill_group(pgid: i32, signal: i32) {
 fn signal_command(pgid: i32, signal: i32) {
     let Ok(dir) = std::fs::read_dir("/proc") else { return };
     for e in dir.flatten() {
-        let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) else {
+        let Some(member) = e.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) else {
             continue;
         };
-        if pid == pgid {
+        if member == pgid {
             continue;
         }
-        if let Some(st) = crate::proc::stat(pid as u32)
+        if let Some(st) = u32::try_from(member).ok().and_then(crate::proc::stat)
             && st.pgrp == pgid
-            && st.ppid as i32 != pgid
+            && i32::try_from(st.ppid) != Ok(pgid)
         {
             // SAFETY: kill(2) has no memory-safety preconditions.
-            unsafe { libc::kill(pid, signal) };
+            unsafe { libc::kill(member, signal) };
         }
     }
 }
@@ -225,7 +226,7 @@ impl ExecServer {
                 );
             }
         };
-        let pgid = child.id() as i32;
+        let pgid = i32::try_from(child.id()).map_err(io::Error::other)?;
         let exited = Arc::new(AtomicBool::new(false));
         let relay = {
             let (stream, exited) = (stream.try_clone()?, exited.clone());
@@ -331,7 +332,10 @@ impl ExecServer {
             .process_group(0);
         let child = cmd.spawn()?;
         self.views.log_sandbox(id, &self.sandbox.write);
-        g.running.entry(id.clone()).or_default().push(child.id() as i32);
+        g.running
+            .entry(id.clone())
+            .or_default()
+            .push(i32::try_from(child.id()).map_err(io::Error::other)?);
         Ok(child)
     }
 }
@@ -375,7 +379,7 @@ mod tests {
 
     #[test]
     fn frame_over_16_mib_is_rejected() {
-        let buf = ((MAX_FRAME + 1) as u32).to_le_bytes();
+        let buf = u32::try_from(MAX_FRAME + 1).unwrap().to_le_bytes();
         let err = read_frame::<SpawnSignal>(&mut buf.as_slice()).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }

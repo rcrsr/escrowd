@@ -77,7 +77,10 @@ const PREFILL_MAX: u64 = 128 * 1024;
 /// Store the whole file in the kernel's page cache, saving the READ round trips that
 /// would follow the open (most files opened are read whole); false if that failed.
 fn prefill(v: &Views, ino: u64, f: &std::fs::File, size: u64) -> bool {
-    let mut buf = vec![0u8; size as usize];
+    let Ok(len) = usize::try_from(size) else {
+        return false;
+    };
+    let mut buf = vec![0u8; len];
     let mut got = 0;
     while got < buf.len() {
         match f.read_at(&mut buf[got..], got as u64) {
@@ -401,7 +404,10 @@ impl Filesystem for FuseView {
             .file_for_write(fh.0)
             .and_then(|f| f.write_all_at(data, offset).map_err(errno))
         {
-            Ok(()) => reply.written(data.len() as u32),
+            Ok(()) => match u32::try_from(data.len()) {
+                Ok(n) => reply.written(n),
+                Err(_) => reply.error(Errno::EIO),
+            },
             Err(e) => reply.error(e),
         }
     }
@@ -451,8 +457,11 @@ impl Filesystem for FuseView {
             Ok(l) => l,
             Err(e) => return reply.error(e),
         };
+        let Ok(skip) = usize::try_from(offset) else {
+            return reply.error(Errno::EINVAL);
+        };
         // Inode numbers only for the entries that fit: the kernel asks again from the next offset.
-        for (i, (kind, name)) in entries.iter().enumerate().skip(offset as usize) {
+        for (i, (kind, name)) in entries.iter().enumerate().skip(skip) {
             let Ok(child) = entry_ino(v, ino.0, &at, name) else {
                 continue;
             };
@@ -470,7 +479,10 @@ impl Filesystem for FuseView {
             Ok(l) => l,
             Err(e) => return reply.error(e),
         };
-        for (i, (_, name)) in entries.iter().enumerate().skip(offset as usize) {
+        let Ok(skip) = usize::try_from(offset) else {
+            return reply.error(Errno::EINVAL);
+        };
+        for (i, (_, name)) in entries.iter().enumerate().skip(skip) {
             let Ok((ttl, attr, at_path)) = entry_attr(v, ino.0, &at, name) else {
                 continue;
             };
@@ -493,9 +505,9 @@ impl Filesystem for FuseView {
                 s.f_bavail,
                 s.f_files,
                 s.f_ffree,
-                s.f_bsize as u32,
-                s.f_namemax as u32,
-                s.f_frsize as u32,
+                sys::narrow(s.f_bsize),
+                sys::narrow(s.f_namemax),
+                sys::narrow(s.f_frsize),
             ),
             Err(e) => reply.error(e),
         }

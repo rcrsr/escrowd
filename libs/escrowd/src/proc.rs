@@ -365,7 +365,7 @@ mod tests {
         let st = stat(std::process::id()).unwrap();
         // SAFETY: getppid(2) and getpgrp(2) have no preconditions.
         let (ppid, pgrp) = unsafe { (libc::getppid(), libc::getpgrp()) };
-        assert_eq!((st.ppid as i32, st.pgrp), (ppid, pgrp));
+        assert_eq!((i32::try_from(st.ppid).unwrap(), st.pgrp), (ppid, pgrp));
     }
 
     #[test]

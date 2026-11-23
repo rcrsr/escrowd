@@ -203,7 +203,7 @@ pub fn set_times(dir: BorrowedFd, rel: &Path, atime: Timespec, mtime: Timespec) 
 pub fn timespec(t: SystemTime) -> Timespec {
     let d = t.duration_since(UNIX_EPOCH).unwrap_or_default();
     Timespec {
-        tv_sec: d.as_secs() as i64,
+        tv_sec: wide(d.as_secs()),
         tv_nsec: i64::from(d.subsec_nanos()),
     }
 }
@@ -265,7 +265,7 @@ pub fn copy_entry(
     }
     let ts = |s: i64, ns: u64| Timespec {
         tv_sec: s,
-        tv_nsec: ns as _,
+        tv_nsec: wide(ns),
     };
     set_times(
         dst_dir,
@@ -312,7 +312,7 @@ pub fn depth(rel: &Path) -> usize {
 
 fn time(secs: i64, nsecs: i64) -> SystemTime {
     if secs >= 0 {
-        UNIX_EPOCH + Duration::new(secs as u64, nsecs as u32)
+        UNIX_EPOCH + Duration::new(unsigned(secs), narrow(nsecs))
     } else {
         UNIX_EPOCH
     }
@@ -333,19 +333,19 @@ pub fn kind(mode: u32) -> FileType {
 pub fn attr(ino: u64, st: &Stat) -> FileAttr {
     FileAttr {
         ino: INodeNo(ino),
-        size: st.st_size as u64,
-        blocks: st.st_blocks as u64,
-        atime: time(st.st_atime, st.st_atime_nsec as i64),
-        mtime: time(st.st_mtime, st.st_mtime_nsec as i64),
-        ctime: time(st.st_ctime, st.st_ctime_nsec as i64),
-        crtime: time(st.st_ctime, st.st_ctime_nsec as i64),
+        size: unsigned(st.st_size),
+        blocks: unsigned(st.st_blocks),
+        atime: time(st.st_atime, wide(st.st_atime_nsec)),
+        mtime: time(st.st_mtime, wide(st.st_mtime_nsec)),
+        ctime: time(st.st_ctime, wide(st.st_ctime_nsec)),
+        crtime: time(st.st_ctime, wide(st.st_ctime_nsec)),
         kind: kind(st.st_mode),
         perm: (st.st_mode & 0o7777) as u16,
-        nlink: st.st_nlink as u32,
+        nlink: narrow(st.st_nlink),
         uid: st.st_uid,
         gid: st.st_gid,
-        rdev: st.st_rdev as u32,
-        blksize: st.st_blksize as u32,
+        rdev: narrow(st.st_rdev),
+        blksize: narrow(st.st_blksize),
         flags: 0,
     }
 }
@@ -380,6 +380,22 @@ pub struct Version {
     pub ctime_ns: i64,
 }
 
+/// A value as `i64`. The width of a `stat` field differs by target; a value past the
+/// range saturates.
+pub fn wide<T: TryInto<i64>>(v: T) -> i64 {
+    v.try_into().unwrap_or(i64::MAX)
+}
+
+/// A value as `u64`; one past the range (a negative size, say) saturates.
+pub fn unsigned<T: TryInto<u64>>(v: T) -> u64 {
+    v.try_into().unwrap_or(u64::MAX)
+}
+
+/// A value as `u32`; one past the range saturates.
+pub fn narrow<T: TryInto<u32>>(v: T) -> u32 {
+    v.try_into().unwrap_or(u32::MAX)
+}
+
 /// Seconds and nanoseconds since the epoch as nanoseconds, saturating at the `i64` range.
 pub fn ns(secs: i64, nsecs: i64) -> i64 {
     secs.saturating_mul(1_000_000_000).saturating_add(nsecs)
@@ -390,8 +406,8 @@ impl Version {
         Version {
             ino: st.st_ino,
             size: st.st_size,
-            mtime_ns: ns(st.st_mtime, st.st_mtime_nsec as i64),
-            ctime_ns: ns(st.st_ctime, st.st_ctime_nsec as i64),
+            mtime_ns: ns(st.st_mtime, wide(st.st_mtime_nsec)),
+            ctime_ns: ns(st.st_ctime, wide(st.st_ctime_nsec)),
         }
     }
 

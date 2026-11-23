@@ -111,7 +111,7 @@ impl Views {
         let decision = format!("{}{}", reviewers.join(","), if wait { ",wait" } else { "" });
         let at_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as u64);
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
         let hold = Hold {
             reviewers,
             wait,
