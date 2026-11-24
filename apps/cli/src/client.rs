@@ -61,8 +61,8 @@ fn failure_line(cmd: &str, err: &anyhow::Error) -> String {
 }
 
 /// Print a command's failure to stderr and exit with `code`.
-pub(crate) fn fail(cmd: &str, err: anyhow::Error, code: i32) -> ! {
-    eprintln!("{}", failure_line(cmd, &err));
+pub(crate) fn fail(cmd: &str, err: &anyhow::Error, code: i32) -> ! {
+    eprintln!("{}", failure_line(cmd, err));
     std::process::exit(code)
 }
 

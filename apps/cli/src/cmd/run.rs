@@ -113,7 +113,7 @@ pub(crate) async fn run(
     };
     // wait_for must not mistake a stale socket for this daemon's, nor a live one's.
     escrowd::rpc::clear_stale(&socket)?;
-    args.project = project.clone();
+    args.project.clone_from(&project);
     let daemon = escrowd::daemon::start(args.into_config(socket.clone(), unscoped))?;
     let views = daemon.views.clone();
     let sandbox = daemon.sandbox();
@@ -147,8 +147,7 @@ pub(crate) async fn run(
     };
     match (driven, served) {
         (Ok(code), Ok(())) => Ok(code),
-        (Ok(_), Err(e)) => Err(e),
-        (Err(e), Ok(())) => Err(e),
+        (Ok(_), Err(e)) | (Err(e), Ok(())) => Err(e),
         (Err(e), Err(serve)) => {
             eprintln!("escrow run: {serve:#}");
             Err(e)
@@ -225,7 +224,8 @@ async fn drive(d: Drive) -> anyhow::Result<i32> {
         .env("ESCROW_EXE", &exe_path);
     let mut child = tokio::process::Command::from(app).spawn().context("starting bwrap")?;
     views.log_sandbox(UNSCOPED, &sandbox.write);
-    let pid = child.id().context("the sandboxed command has no pid")? as i32;
+    let pid = i32::try_from(child.id().context("the sandboxed command has no pid")?)
+        .context("the sandboxed pid exceeds i32")?;
     // Ctrl-C reaches the app through the terminal; the launcher outlives it to settle and unmount.
     let mut int = signal(SignalKind::interrupt())?;
     let mut term = signal(SignalKind::terminate())?;

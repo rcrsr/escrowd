@@ -130,7 +130,7 @@ async fn main() {
             cmd,
         } => match cmd::run::run(daemon, socket, unscoped, on_exit, cmd).await {
             Ok(code) => std::process::exit(code),
-            Err(e) => fail("run", e, OWN_FAILURE),
+            Err(e) => fail("run", &e, OWN_FAILURE),
         },
         Command::Exec {
             scope,
@@ -139,7 +139,7 @@ async fn main() {
             cmd,
         } => match cmd::exec::run(scope, socket, token, cmd).await {
             Ok(code) => std::process::exit(code),
-            Err(e) => fail("exec", e, OWN_FAILURE),
+            Err(e) => fail("exec", &e, OWN_FAILURE),
         },
         Command::Daemon {
             daemon,
@@ -148,7 +148,7 @@ async fn main() {
             check,
         } => {
             let done = match socket {
-                Some(socket) if !check => cmd::daemon::run(daemon, socket, unscoped).await,
+                Some(socket) if !check => Box::pin(cmd::daemon::run(daemon, socket, unscoped)).await,
                 _ => cmd::daemon::check(daemon, unscoped),
             };
             exit_with("daemon", done.map(|()| 0));
@@ -170,6 +170,6 @@ async fn main() {
 fn exit_with(cmd: &str, done: anyhow::Result<i32>) -> ! {
     match done {
         Ok(code) => std::process::exit(code),
-        Err(e) => fail(cmd, e, 1),
+        Err(e) => fail(cmd, &e, 1),
     }
 }

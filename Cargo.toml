@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["libs/escrowd", "apps/cli"]
+members = ["libs/escrowd", "libs/proto", "apps/cli"]
 exclude = ["spikes"]
 
 [workspace.package]
@@ -22,6 +22,7 @@ unwrap_used = "deny"
 [workspace.dependencies]
 parking_lot = "0.13.0"
 escrowd = { path = "libs/escrowd" }
+escrowd-proto = { path = "libs/proto" }
 anyhow = "1"
 clap = { version = "4.6", features = ["derive", "env"] }
 prost = "0.14"

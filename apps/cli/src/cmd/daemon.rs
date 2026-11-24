@@ -84,5 +84,6 @@ pub(crate) async fn run(args: DaemonArgs, socket: PathBuf, unscoped: Unscoped) -
             std::process::exit(1);
         });
     };
-    escrowd::daemon::run(args.into_config(socket, unscoped), shutdown).await
+    // Boxed: the daemon's future is ~19 KB (clippy::large_futures).
+    Box::pin(escrowd::daemon::run(args.into_config(socket, unscoped), shutdown)).await
 }

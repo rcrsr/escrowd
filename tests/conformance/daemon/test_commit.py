@@ -10,6 +10,7 @@ daemon crash, leaves the project byte-identical.
 import os
 import shutil
 import subprocess
+import time
 from pathlib import Path
 from typing import cast
 
@@ -293,6 +294,11 @@ def test_a_renamed_file_keeps_its_inode(daemon):
     assert tree(d.project) == want
     assert (d.project / "new" / "a.txt").stat().st_ino == ino
     assert (d.project / "b2.txt").read_text() == "b\nmore\n"
+    # The commit links n.txt out of the scope's upper; the daemon's cleaner thread unlinks the
+    # upper after commit returns, so nlink drops to 1 shortly after, not at once.
+    deadline = time.monotonic() + 5
+    while (d.project / "n.txt").stat().st_nlink != 1 and time.monotonic() < deadline:
+        time.sleep(0.01)
     assert (d.project / "n.txt").stat().st_nlink == 1
     assert leftovers(d.project) == []
 

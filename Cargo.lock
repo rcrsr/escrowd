@@ -369,15 +369,14 @@ name = "escrowd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "escrowd-proto",
  "fuser",
  "globset",
  "libc",
  "memchr",
  "parking_lot 0.13.0",
  "pbjson",
- "pbjson-build",
  "prost",
- "protoc-bin-vendored",
  "rusqlite",
  "rustix",
  "serde",
@@ -387,6 +386,19 @@ dependencies = [
  "similar",
  "tokio",
  "tokio-stream",
+ "tonic",
+ "tonic-prost",
+]
+
+[[package]]
+name = "escrowd-proto"
+version = "0.1.0"
+dependencies = [
+ "pbjson",
+ "pbjson-build",
+ "prost",
+ "protoc-bin-vendored",
+ "serde",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",

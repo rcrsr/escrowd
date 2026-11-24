@@ -36,7 +36,9 @@ impl ExecConn {
     fn start(socket: &Path, req: &SpawnRequest) -> io::Result<Self> {
         let stream = UnixStream::connect(exec_socket(socket))?;
         let body = req.encode_to_vec();
-        let len = (body.len() as u32).to_le_bytes();
+        let len = u32::try_from(body.len())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "exec request too large"))?
+            .to_le_bytes();
         // SAFETY: fds 0, 1 and 2 stay open for the whole call.
         let stdio = unsafe { [0, 1, 2].map(|fd| BorrowedFd::borrow_raw(fd)) };
         let mut space = [MaybeUninit::uninit(); rustix::cmsg_space!(ScmRights(3))];
