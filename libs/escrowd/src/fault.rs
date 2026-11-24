@@ -23,7 +23,7 @@ use std::os::fd::BorrowedFd;
 use std::path::Path;
 
 #[cfg(any(debug_assertions, feature = "fault-injection"))]
-fn spec() -> &'static Option<(String, usize, bool)> {
+fn spec() -> Option<&'static (String, usize, bool)> {
     use std::sync::OnceLock;
     static SPEC: OnceLock<Option<(String, usize, bool)>> = OnceLock::new();
     SPEC.get_or_init(|| {
@@ -33,6 +33,7 @@ fn spec() -> &'static Option<(String, usize, bool)> {
         let n = parts.next().unwrap_or("0").parse().ok()?;
         Some((point, n, parts.next() == Some("abort")))
     })
+    .as_ref()
 }
 
 pub fn hit(point: &str, n: usize) -> io::Result<()> {

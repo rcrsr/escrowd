@@ -86,7 +86,8 @@ impl std::error::Error for RollbackFailed {}
 /// `e`, from `Commits::commit`, is a failure whose rollback failed: unlike any other
 /// error there, the scope cannot simply be decided again.
 pub fn rollback_failed(e: &io::Error) -> bool {
-    e.get_ref().is_some_and(|r| r.is::<RollbackFailed>())
+    e.get_ref()
+        .is_some_and(<dyn std::error::Error + std::marker::Send + std::marker::Sync + 'static>::is::<RollbackFailed>)
 }
 
 pub enum Outcome {

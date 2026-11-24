@@ -2,7 +2,7 @@
 //!
 //! The app's sandbox cannot run bwrap (user namespaces are disabled inside), so
 //! `escrow exec` asks the daemon. It sends its stdin, stdout and stderr over
-//! SCM_RIGHTS with a `SpawnRequest`; the daemon starts the command in bwrap with
+//! `SCM_RIGHTS` with a `SpawnRequest`; the daemon starts the command in bwrap with
 //! the scope's view over the project, in its own process group, and reports
 //! `pid`, then `exit_code`; its other views (`$HOME`, `/tmp`) are mounted over
 //! their roots. `SpawnSignal` frames are delivered to the command's
@@ -41,6 +41,7 @@ const MAX_FRAME: usize = 16 << 20;
 pub const TOKEN_ENV: &str = "ESCROW_SCOPE_TOKEN";
 
 /// The exec socket beside the gRPC socket.
+#[must_use]
 pub fn exec_socket(socket: &Path) -> PathBuf {
     let mut s = socket.as_os_str().to_os_string();
     s.push(".exec");
@@ -48,9 +49,14 @@ pub fn exec_socket(socket: &Path) -> PathBuf {
 }
 
 /// Write one frame: a little-endian u32 length, then the message.
+///
+/// # Errors
+///
+/// Writing to `w` fails, or the encoded message does not fit a `u32` length (`InvalidData`).
 pub fn write_frame(w: &mut impl Write, msg: &impl Message) -> io::Result<()> {
     let body = msg.encode_to_vec();
-    let mut buf = (body.len() as u32).to_le_bytes().to_vec();
+    let len = u32::try_from(body.len()).map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "frame too large"))?;
+    let mut buf = len.to_le_bytes().to_vec();
     buf.extend(body);
     w.write_all(&buf)
 }
@@ -65,6 +71,10 @@ fn read_body<M: Message + Default>(r: &mut impl Read, len: usize) -> io::Result<
 }
 
 /// The next frame, or None at a clean end of stream.
+///
+/// # Errors
+///
+/// Reading fails, the frame exceeds the size limit, or its body does not decode (`InvalidData`).
 pub fn read_frame<M: Message + Default>(r: &mut impl Read) -> io::Result<Option<M>> {
     let mut len = [0u8; 4];
     match r.read_exact(&mut len) {
@@ -86,18 +96,18 @@ fn kill_group(pgid: i32, signal: i32) {
 fn signal_command(pgid: i32, signal: i32) {
     let Ok(dir) = std::fs::read_dir("/proc") else { return };
     for e in dir.flatten() {
-        let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) else {
+        let Some(member) = e.file_name().to_str().and_then(|n| n.parse::<i32>().ok()) else {
             continue;
         };
-        if pid == pgid {
+        if member == pgid {
             continue;
         }
-        if let Some(st) = crate::proc::stat(pid as u32)
+        if let Some(st) = u32::try_from(member).ok().and_then(crate::proc::stat)
             && st.pgrp == pgid
-            && st.ppid as i32 != pgid
+            && i32::try_from(st.ppid) != Ok(pgid)
         {
             // SAFETY: kill(2) has no memory-safety preconditions.
-            unsafe { libc::kill(pid, signal) };
+            unsafe { libc::kill(member, signal) };
         }
     }
 }
@@ -126,6 +136,7 @@ impl Default for Children {
 }
 
 impl Children {
+    #[must_use]
     pub fn new(grace: Duration) -> Self {
         Children {
             inner: Mutex::default(),
@@ -207,11 +218,16 @@ pub struct ExecServer {
 
 impl ExecServer {
     /// Serve one connection: start the child, relay signals, report its exit.
-    pub fn handle(&self, stream: UnixStream) -> io::Result<()> {
-        let (len, fds) = recv_len_with_fds(&stream)?;
-        let mut reader = &stream;
+    ///
+    /// # Errors
+    ///
+    /// The request cannot be read, or an event cannot be written to `stream`; a child that fails to start is
+    /// reported to the client as an error event, not returned.
+    pub fn handle(&self, stream: &UnixStream) -> io::Result<()> {
+        let (len, fds) = recv_len_with_fds(stream)?;
+        let mut reader = stream;
         let req: SpawnRequest = read_body(&mut reader, len)?;
-        let mut out = &stream;
+        let mut out = stream;
         let mut child = match self.start(&req, fds) {
             Ok(c) => c,
             Err(e) => {
@@ -223,7 +239,7 @@ impl ExecServer {
                 );
             }
         };
-        let pgid = child.id() as i32;
+        let pgid = i32::try_from(child.id()).map_err(io::Error::other)?;
         let exited = Arc::new(AtomicBool::new(false));
         let relay = {
             let (stream, exited) = (stream.try_clone()?, exited.clone());
@@ -329,7 +345,10 @@ impl ExecServer {
             .process_group(0);
         let child = cmd.spawn()?;
         self.views.log_sandbox(id, &self.sandbox.write);
-        g.running.entry(id.clone()).or_default().push(child.id() as i32);
+        g.running
+            .entry(id.clone())
+            .or_default()
+            .push(i32::try_from(child.id()).map_err(io::Error::other)?);
         Ok(child)
     }
 }
@@ -373,7 +392,7 @@ mod tests {
 
     #[test]
     fn frame_over_16_mib_is_rejected() {
-        let buf = ((MAX_FRAME + 1) as u32).to_le_bytes();
+        let buf = u32::try_from(MAX_FRAME + 1).unwrap().to_le_bytes();
         let err = read_frame::<SpawnSignal>(&mut buf.as_slice()).unwrap_err();
         assert_eq!(err.kind(), io::ErrorKind::InvalidData);
     }

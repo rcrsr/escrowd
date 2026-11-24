@@ -235,7 +235,7 @@ fn write_version(db: &Connection, rel: &Path, seen: Seen, v: Version) -> io::Res
             sys::path_bytes(rel),
             seen.read,
             seen.changed,
-            v.ino as i64,
+            v.ino.cast_signed(),
             v.size,
             v.mtime_ns,
             v.ctime_ns
@@ -292,7 +292,7 @@ impl ScopeStore {
         let tx = db.transaction().map_err(sql)?;
         tx.execute(
             "INSERT INTO meta VALUES ('name', ?1), ('idx', ?2), ('since', ?3), ('readonly', ?4), ('next_upper_ino', 0), ('state', 'open')",
-            params![name, idx as i64, since as i64, readonly as i64],
+            params![name, idx.cast_signed(), since.cast_signed(), i64::from(readonly)],
         )
         .map_err(sql)?;
         if let Some(t) = token_sha256 {
@@ -331,12 +331,11 @@ impl ScopeStore {
                 .ok_or_else(|| io::Error::other(format!("scope {id}: meta.{k} missing")))
         };
         let int = |v: rusqlite::types::Value| match v {
-            rusqlite::types::Value::Integer(i) => Ok(i as u64),
+            rusqlite::types::Value::Integer(i) => Ok(i.cast_unsigned()),
             _ => Err(io::Error::other("bad meta integer")),
         };
-        let name = match meta("name")? {
-            rusqlite::types::Value::Text(t) => t,
-            _ => return Err(io::Error::other("bad meta name")),
+        let rusqlite::types::Value::Text(name) = meta("name")? else {
+            return Err(io::Error::other("bad meta name"));
         };
         let idx = int(meta("idx")?)?;
         let since = int(meta("since")?)?;
@@ -346,130 +345,22 @@ impl ScopeStore {
             .query_row("SELECT value FROM meta WHERE key = 'token_sha256'", [], |r| r.get(0))
             .optional()
             .map_err(sql)?;
-        let text = |k: &str| -> io::Result<Option<String>> {
-            db.query_row("SELECT value FROM meta WHERE key = ?1", [k], |r| r.get(0))
-                .optional()
-                .map_err(sql)
-        };
-        let session = text("session")?.unwrap_or_default();
-        let hold = match text("hold_reviewers")? {
+        let session = meta_text(&db, "session")?.unwrap_or_default();
+        let hold = match meta_text(&db, "hold_reviewers")? {
             None => None,
-            Some(names) => {
-                let decision =
-                    |d: &str| Decision::parse(d).ok_or_else(|| io::Error::other(format!("bad held verdict {d}")));
-                let mut st = db
-                    .prepare("SELECT reviewer, verdict, override, reasons FROM reviews ORDER BY seq")
-                    .map_err(sql)?;
-                let rows = st
-                    .query_map([], |r| {
-                        Ok((
-                            r.get::<_, String>(0)?,
-                            r.get::<_, String>(1)?,
-                            r.get::<_, i64>(2)?,
-                            r.get::<_, Vec<u8>>(3)?,
-                        ))
-                    })
-                    .map_err(sql)?;
-                let mut reviews = Vec::new();
-                for row in rows {
-                    let (reviewer, v, o, reasons) = row.map_err(sql)?;
-                    reviews.push(TierReview {
-                        reviewer,
-                        verdict: decision(&v)?,
-                        over: o != 0,
-                        reasons: split_nul(&reasons),
-                    });
-                }
-                let run = db
-                    .query_row(
-                        "SELECT reviewer, attempt, state, token_sha256, deadline_ms FROM review_run",
-                        [],
-                        |r| {
-                            Ok(Run {
-                                reviewer: r.get(0)?,
-                                attempt: r.get(1)?,
-                                waiting: r.get::<_, String>(2)? == "waiting",
-                                token_sha256: r.get(3)?,
-                                deadline_ms: r.get::<_, Option<i64>>(4)?.map(|d| d as u64),
-                            })
-                        },
-                    )
-                    .optional()
-                    .map_err(sql)?;
-                Some(Hold {
-                    reviewers: names.split(',').filter(|n| !n.is_empty()).map(str::to_string).collect(),
-                    wait: text("hold_wait")?.is_some_and(|w| w == "1"),
-                    at_ms: text("hold_at")?.and_then(|t| t.parse().ok()).unwrap_or(0),
-                    verdict: decision(&text("hold_verdict")?.unwrap_or_else(|| "commit".into()))?,
-                    reviews,
-                    run,
-                })
-            }
+            Some(names) => Some(load_hold(&db, &names)?),
         };
         let state = match meta("state")? {
             rusqlite::types::Value::Text(t) if t == "closed" => ScopeState::Closed,
             _ => ScopeState::Open,
         };
-        let paths = |table: &str| -> io::Result<HashSet<PathBuf>> {
-            let mut st = db.prepare(&format!("SELECT path FROM {table}")).map_err(sql)?;
-            let rows = st.query_map([], |r| r.get::<_, Vec<u8>>(0)).map_err(sql)?;
-            rows.map(|r| r.map(sys::path_from).map_err(sql)).collect()
-        };
-        let whiteouts = paths("whiteouts")?;
-        let denied = paths("denied")?;
-        let opaque = paths("opaque")?;
-        let pins = {
-            let mut st = db.prepare("SELECT path, ino FROM pins").map_err(sql)?;
-            let rows = st
-                .query_map([], |r| Ok((sys::path_from(r.get(0)?), r.get::<_, i64>(1)? as u64)))
-                .map_err(sql)?;
-            rows.collect::<Result<HashMap<_, _>, _>>().map_err(sql)?
-        };
-        let versions = {
-            let mut st = db.prepare("SELECT path, read, changed FROM versions").map_err(sql)?;
-            let rows = st
-                .query_map([], |r| {
-                    let seen = Seen {
-                        read: r.get(1)?,
-                        changed: r.get(2)?,
-                    };
-                    Ok((sys::path_from(r.get(0)?), seen))
-                })
-                .map_err(sql)?;
-            rows.collect::<Result<HashMap<_, _>, _>>().map_err(sql)?
-        };
-        let mut writers: HashMap<PathBuf, BTreeSet<u64>> = HashMap::new();
-        {
-            let mut st = db.prepare("SELECT path, proc FROM writers").map_err(sql)?;
-            let rows = st
-                .query_map([], |r| Ok((sys::path_from(r.get(0)?), r.get::<_, i64>(1)? as u64)))
-                .map_err(sql)?;
-            for row in rows {
-                let (p, id) = row.map_err(sql)?;
-                writers.entry(p).or_default().insert(id);
-            }
-        }
-        let procs = {
-            let mut st = db
-                .prepare("SELECT id, pid, program, dev, ino, args, parent FROM procs")
-                .map_err(sql)?;
-            let rows = st
-                .query_map([], |r| {
-                    let args: Vec<u8> = r.get(5)?;
-                    let info = Info {
-                        id: r.get::<_, i64>(0)? as u64,
-                        pid: r.get(1)?,
-                        program: sys::path_from(r.get(2)?),
-                        dev: r.get::<_, i64>(3)? as u64,
-                        ino: r.get::<_, i64>(4)? as u64,
-                        args: split_nul(&args),
-                        parent: r.get::<_, i64>(6)? as u64,
-                    };
-                    Ok((info.id, info))
-                })
-                .map_err(sql)?;
-            rows.collect::<Result<HashMap<_, _>, _>>().map_err(sql)?
-        };
+        let whiteouts = load_paths(&db, "whiteouts")?;
+        let denied = load_paths(&db, "denied")?;
+        let opaque = load_paths(&db, "opaque")?;
+        let pins = load_pins(&db)?;
+        let versions = load_versions(&db)?;
+        let writers = load_writers(&db)?;
+        let procs = load_procs(&db)?;
         Ok(ScopeStore {
             id: id.to_string(),
             name,
@@ -620,7 +511,7 @@ impl ScopeStore {
                     params![
                         r.reviewer.as_str(),
                         r.verdict.as_str(),
-                        r.over as i64,
+                        i64::from(r.over),
                         r.reasons.join("\0").into_bytes()
                     ],
                 )
@@ -634,7 +525,7 @@ impl ScopeStore {
                         r.attempt,
                         if r.waiting { "waiting" } else { "running" },
                         r.token_sha256,
-                        r.deadline_ms.map(|d| d as i64)
+                        r.deadline_ms.map(u64::cast_signed)
                     ],
                 )
                 .map_err(sql)?;
@@ -779,7 +670,7 @@ impl ScopeStore {
                 Some(ino) => exec(
                     &tx,
                     "INSERT OR REPLACE INTO pins VALUES (?1, ?2)",
-                    params![sys::path_bytes(p), *ino as i64],
+                    params![sys::path_bytes(p), ino.cast_signed()],
                 ),
                 None => exec(&tx, "DELETE FROM pins WHERE path = ?1", [sys::path_bytes(p)]),
             }?;
@@ -788,7 +679,7 @@ impl ScopeStore {
             exec(
                 &tx,
                 "UPDATE meta SET value = ?1 WHERE key = 'next_upper_ino'",
-                [self.next_upper_ino as i64],
+                [self.next_upper_ino.cast_signed()],
             )?;
         }
         for (p, v) in &self.unwritten_reads {
@@ -808,13 +699,13 @@ impl ScopeStore {
                 &tx,
                 "INSERT OR IGNORE INTO procs VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 params![
-                    p.id as i64,
+                    p.id.cast_signed(),
                     p.pid,
                     sys::path_bytes(&p.program),
-                    p.dev as i64,
-                    p.ino as i64,
+                    p.dev.cast_signed(),
+                    p.ino.cast_signed(),
                     p.args.join("\0").into_bytes(),
-                    p.parent as i64
+                    p.parent.cast_signed()
                 ],
             )?;
         }
@@ -823,7 +714,7 @@ impl ScopeStore {
                 exec(
                     &tx,
                     "INSERT OR IGNORE INTO writers VALUES (?1, ?2)",
-                    params![sys::path_bytes(path), *id as i64],
+                    params![sys::path_bytes(path), id.cast_signed()],
                 )?;
             }
         }
@@ -831,7 +722,11 @@ impl ScopeStore {
             let bytes = sys::path_bytes(path);
             exec(&tx, "DELETE FROM writers WHERE path = ?1", [bytes])?;
             for id in self.writers.get(path).into_iter().flatten() {
-                exec(&tx, "INSERT INTO writers VALUES (?1, ?2)", params![bytes, *id as i64])?;
+                exec(
+                    &tx,
+                    "INSERT INTO writers VALUES (?1, ?2)",
+                    params![bytes, id.cast_signed()],
+                )?;
             }
         }
         tx.commit().map_err(sql)?;
@@ -927,7 +822,7 @@ impl ScopeStore {
             .and_then(|mut st| {
                 st.query_row([sys::path_bytes(rel)], |r| {
                     Ok(Version {
-                        ino: r.get::<_, i64>(0)? as u64,
+                        ino: r.get::<_, i64>(0)?.cast_unsigned(),
                         size: r.get(1)?,
                         mtime_ns: r.get(2)?,
                         ctime_ns: r.get(3)?,
@@ -1035,6 +930,137 @@ impl ScopeStore {
     }
 }
 
+/// The text value of `meta.key`, if the row exists.
+fn meta_text(db: &Connection, key: &str) -> io::Result<Option<String>> {
+    db.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0))
+        .optional()
+        .map_err(sql)
+}
+
+/// The paths in `table`.
+fn load_paths(db: &Connection, table: &str) -> io::Result<HashSet<PathBuf>> {
+    let mut st = db.prepare(&format!("SELECT path FROM {table}")).map_err(sql)?;
+    let rows = st.query_map([], |r| r.get::<_, Vec<u8>>(0)).map_err(sql)?;
+    rows.map(|r| r.map(sys::path_from).map_err(sql)).collect()
+}
+
+/// The held decision whose reviewers are `names`: its reviews so far and its run.
+fn load_hold(db: &Connection, names: &str) -> io::Result<Hold> {
+    let decision = |d: &str| Decision::parse(d).ok_or_else(|| io::Error::other(format!("bad held verdict {d}")));
+    let mut st = db
+        .prepare("SELECT reviewer, verdict, override, reasons FROM reviews ORDER BY seq")
+        .map_err(sql)?;
+    let rows = st
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, Vec<u8>>(3)?,
+            ))
+        })
+        .map_err(sql)?;
+    let mut reviews = Vec::new();
+    for row in rows {
+        let (reviewer, v, o, reasons) = row.map_err(sql)?;
+        reviews.push(TierReview {
+            reviewer,
+            verdict: decision(&v)?,
+            over: o != 0,
+            reasons: split_nul(&reasons),
+        });
+    }
+    let run = db
+        .query_row(
+            "SELECT reviewer, attempt, state, token_sha256, deadline_ms FROM review_run",
+            [],
+            |r| {
+                Ok(Run {
+                    reviewer: r.get(0)?,
+                    attempt: r.get(1)?,
+                    waiting: r.get::<_, String>(2)? == "waiting",
+                    token_sha256: r.get(3)?,
+                    deadline_ms: r.get::<_, Option<i64>>(4)?.map(i64::cast_unsigned),
+                })
+            },
+        )
+        .optional()
+        .map_err(sql)?;
+    Ok(Hold {
+        reviewers: names.split(',').filter(|n| !n.is_empty()).map(str::to_string).collect(),
+        wait: meta_text(db, "hold_wait")?.is_some_and(|w| w == "1"),
+        at_ms: meta_text(db, "hold_at")?.and_then(|t| t.parse().ok()).unwrap_or(0),
+        verdict: decision(&meta_text(db, "hold_verdict")?.unwrap_or_else(|| "commit".into()))?,
+        reviews,
+        run,
+    })
+}
+
+/// The pinned inode of each path.
+fn load_pins(db: &Connection) -> io::Result<HashMap<PathBuf, u64>> {
+    let mut st = db.prepare("SELECT path, ino FROM pins").map_err(sql)?;
+    let rows = st
+        .query_map([], |r| {
+            Ok((sys::path_from(r.get(0)?), r.get::<_, i64>(1)?.cast_unsigned()))
+        })
+        .map_err(sql)?;
+    rows.collect::<Result<HashMap<_, _>, _>>().map_err(sql)
+}
+
+/// The versions each path was read and changed at.
+fn load_versions(db: &Connection) -> io::Result<HashMap<PathBuf, Seen>> {
+    let mut st = db.prepare("SELECT path, read, changed FROM versions").map_err(sql)?;
+    let rows = st
+        .query_map([], |r| {
+            let seen = Seen {
+                read: r.get(1)?,
+                changed: r.get(2)?,
+            };
+            Ok((sys::path_from(r.get(0)?), seen))
+        })
+        .map_err(sql)?;
+    rows.collect::<Result<HashMap<_, _>, _>>().map_err(sql)
+}
+
+/// The processes that wrote each path.
+fn load_writers(db: &Connection) -> io::Result<HashMap<PathBuf, BTreeSet<u64>>> {
+    let mut writers: HashMap<PathBuf, BTreeSet<u64>> = HashMap::new();
+    let mut st = db.prepare("SELECT path, proc FROM writers").map_err(sql)?;
+    let rows = st
+        .query_map([], |r| {
+            Ok((sys::path_from(r.get(0)?), r.get::<_, i64>(1)?.cast_unsigned()))
+        })
+        .map_err(sql)?;
+    for row in rows {
+        let (p, id) = row.map_err(sql)?;
+        writers.entry(p).or_default().insert(id);
+    }
+    Ok(writers)
+}
+
+/// Every process the store records, by id.
+fn load_procs(db: &Connection) -> io::Result<HashMap<u64, Info>> {
+    let mut st = db
+        .prepare("SELECT id, pid, program, dev, ino, args, parent FROM procs")
+        .map_err(sql)?;
+    let rows = st
+        .query_map([], |r| {
+            let args: Vec<u8> = r.get(5)?;
+            let info = Info {
+                id: r.get::<_, i64>(0)?.cast_unsigned(),
+                pid: r.get(1)?,
+                program: sys::path_from(r.get(2)?),
+                dev: r.get::<_, i64>(3)?.cast_unsigned(),
+                ino: r.get::<_, i64>(4)?.cast_unsigned(),
+                args: split_nul(&args),
+                parent: r.get::<_, i64>(6)?.cast_unsigned(),
+            };
+            Ok((info.id, info))
+        })
+        .map_err(sql)?;
+    rows.collect::<Result<HashMap<_, _>, _>>().map_err(sql)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1049,7 +1075,7 @@ mod tests {
         for i in 1..=2048u64 {
             let info = Info {
                 id: i,
-                pid: i as u32,
+                pid: u32::try_from(i).unwrap(),
                 program: PathBuf::from("/bin/true"),
                 dev: 0,
                 ino: 0,
@@ -1071,7 +1097,7 @@ mod tests {
     fn info(id: u64) -> Info {
         Info {
             id,
-            pid: id as u32,
+            pid: u32::try_from(id).unwrap(),
             program: PathBuf::from("/bin/true"),
             dev: 0,
             ino: 0,
@@ -1146,7 +1172,7 @@ mod tests {
 
     fn held(reviewers: &[&str], run: Option<Run>) -> Hold {
         Hold {
-            reviewers: reviewers.iter().map(|r| r.to_string()).collect(),
+            reviewers: reviewers.iter().map(ToString::to_string).collect(),
             wait: true,
             at_ms: 42,
             verdict: Decision::Return,

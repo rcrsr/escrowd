@@ -1,7 +1,9 @@
 //! Held scopes: a closed scope reviewers have, each reviewer's verdict, and the
 //! session's next scope waiting behind a hold with a wait.
 
-use super::*;
+use std::path::{Path, PathBuf};
+
+use super::{Decision, Error, HashMap, Hold, PROJECT, TierReview, Views, error, review, token_sha256};
 use crate::store::Run;
 
 /// A scope as reviewers see it.
@@ -61,11 +63,19 @@ impl Views {
     }
 
     /// The hold of scope `id`, if reviewers have it (`NoScope` if no such scope).
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope.
     pub fn held(&self, id: &str) -> error::Result<Option<Hold>> {
         Ok(self.handles(id)?[0].store_read().hold().cloned())
     }
 
     /// Scope `id`'s name, session, token hash and hold (`NoScope` if no such scope).
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope.
     pub fn identity(&self, id: &str) -> error::Result<Identity> {
         let hs = self.handles(id)?;
         let store = hs[0].store_read();
@@ -80,6 +90,10 @@ impl Views {
     }
 
     /// Every held scope, oldest hold first.
+    ///
+    /// # Errors
+    ///
+    /// An `Io` error from reading the scope stores.
     pub fn held_scopes(&self) -> error::Result<Vec<Identity>> {
         let ids: Vec<String> = {
             let scopes = self.scopes.read();
@@ -104,12 +118,17 @@ impl Views {
 
     /// Hold closed scope `id` for `reviewers` (in review order); `wait`: its session's
     /// next scope does not open until the verdict.
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, `State` if it is not closed or is already held, or an `Io` error
+    /// from writing the hold.
     pub fn hold_scope(&self, id: &str, reviewers: Vec<String>, wait: bool) -> error::Result<Hold> {
         let hs = self.closed_handles(id)?;
         let decision = format!("{}{}", reviewers.join(","), if wait { ",wait" } else { "" });
         let at_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as u64);
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
         let hold = Hold {
             reviewers,
             wait,
@@ -126,6 +145,11 @@ impl Views {
     /// Record a run of command reviewer `reviewer` on held scope `id`, replacing any
     /// recorded run, and write `files` (name, bytes) to the scope's review directory.
     /// A `delegate` run gets a token (32 random bytes, hex); the hold keeps its hash.
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, `State` if it is not held, or an `Io` error from writing the run,
+    /// its files or the hold.
     pub fn start_run(
         &self,
         id: &str,
@@ -138,13 +162,12 @@ impl Views {
         let Some(mut hold) = store.hold().cloned() else {
             return Err(Error::State(format!("scope {id} is not held")));
         };
-        let token = match delegate {
-            true => {
-                let mut bytes = [0u8; 32];
-                crate::sys::random(&mut bytes)?;
-                Some(crate::diff::hex(&bytes))
-            }
-            false => None,
+        let token = if delegate {
+            let mut bytes = [0u8; 32];
+            crate::sys::random(&mut bytes)?;
+            Some(crate::diff::hex(&bytes))
+        } else {
+            None
         };
         let cwd = store.write_review_files(files)?;
         let attempt = hold.next_attempt(reviewer);
@@ -162,6 +185,11 @@ impl Views {
     /// A delegated run of `reviewer` (process `pid`) answered `pending`: its verdict comes
     /// by token until `deadline_ms` (milliseconds since the Unix epoch). False if that run
     /// is no longer the current, running one.
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, `State` if it is not held, or an `Io` error from writing the
+    /// hold.
     pub fn await_delegate(
         &self,
         id: &str,
@@ -206,6 +234,11 @@ impl Views {
     /// A socket giver cannot answer for a command reviewer (`Denied`: its run does).
     /// A run's answer for a run that is no longer the current one is `Stale`, and so
     /// is the expiry of a token that is not (or no longer) waiting.
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, `State` if it is not held or `reviewer` is not pending, `Denied`
+    /// as described above, or an `Io` error from writing the hold.
     pub fn review_scope(
         &self,
         id: &str,
@@ -221,7 +254,7 @@ impl Views {
             return Err(Error::State(format!("scope {id} is not held")));
         };
         let current = hold.run.as_ref().filter(|r| r.reviewer == reviewer);
-        let (pid, cause, from_run) = match &giver {
+        let (pid, cause, from_run) = match giver {
             Giver::Socket => {
                 if matches!(
                     self.review.reviewer(reviewer).map(|r| &r.kind),
@@ -241,18 +274,18 @@ impl Views {
                 (None, None, false)
             }
             Giver::Run { attempt, pid, failure } => {
-                if !current.is_some_and(|r| r.attempt == *attempt && !r.waiting) {
+                if !current.is_some_and(|r| r.attempt == attempt && !r.waiting) {
                     return Ok(Reviewed::Stale);
                 }
-                (*pid, failure.clone(), true)
+                (pid, failure, true)
             }
             Giver::Expired { attempt, cause } => {
-                if !current.is_some_and(|r| r.waiting && r.attempt == *attempt) {
+                if !current.is_some_and(|r| r.waiting && r.attempt == attempt) {
                     return Ok(Reviewed::Stale);
                 }
-                (None, Some(cause.clone()), true)
+                (None, Some(cause), true)
             }
-            Giver::Missing { cause } => (None, Some(cause.clone()), true),
+            Giver::Missing { cause } => (None, Some(cause), true),
         };
         let admitted = self
             .review
@@ -308,13 +341,16 @@ impl Views {
             .map(|h| &h.group)
             .collect();
         ids.sort();
-        ids.first().map(|id| id.to_string())
+        ids.first().map(|id| (*id).clone())
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
+    use crate::diff;
 
     const CAPS: diff::Caps = diff::Caps {
         file_bytes: 1 << 20,
@@ -324,7 +360,7 @@ mod tests {
     const DECLARED: &str = "{sec: {}, boss: {can_override: true}, cmd: {run: [/bin/sh]}}";
 
     fn names(ns: &[&str]) -> Vec<String> {
-        ns.iter().map(|n| n.to_string()).collect()
+        ns.iter().map(ToString::to_string).collect()
     }
 
     /// A closed scope held for the reviewers `ns`.
@@ -430,12 +466,12 @@ mod tests {
             panic!("sec is the last reviewer");
         };
         assert_eq!(hold.verdict, Decision::Return);
-        assert!(hold.reviewers.is_empty());
+        assert_eq!(hold.reviewers, Vec::<String>::new());
         // The stored hold is as hold_scope left it.
         let stored = views.held(&id).unwrap().unwrap();
         assert_eq!(stored.reviewers, ["sec"]);
         assert_eq!(stored.verdict, Decision::Commit);
-        assert!(stored.reviews.is_empty());
+        assert_eq!(stored.reviews, Vec::<TierReview>::new());
         drop(views);
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -453,7 +489,7 @@ mod tests {
         let Reviewed::Final(done) = review(&views, &id, "human", Decision::Return, false).unwrap() else {
             panic!("the human is last");
         };
-        assert!(done.reviewers.is_empty());
+        assert_eq!(done.reviewers, Vec::<String>::new());
         assert_eq!(done.reviews.len(), 2);
         drop(views);
         fs::remove_dir_all(&dir).unwrap();

@@ -129,13 +129,11 @@ fn new_id() -> u64 {
     loop {
         if crate::sys::random(&mut b).is_err() {
             // getrandom(2) does not fail once seeded; time and a counter are unique enough.
-            b = std::time::SystemTime::now()
+            let nanos = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
-                .as_nanos()
-                .to_le_bytes()[..8]
-                .try_into()
-                .unwrap();
+                .as_nanos();
+            b.copy_from_slice(&nanos.to_le_bytes()[..8]);
         }
         let id = u64::from_le_bytes(b) >> 1;
         if id != 0 {
@@ -158,7 +156,7 @@ pub struct Procs {
     /// Thread ID -> its start time and process.
     tasks: Mutex<Cache>,
     /// Process ID -> its start time and process.
-    procs: Mutex<Cache>,
+    by_pid: Mutex<Cache>,
     /// Held while a missed thread is looked up, so two threads of a new process
     /// record it once.
     lookup: Mutex<()>,
@@ -169,7 +167,7 @@ impl Default for Procs {
         Procs {
             daemon: std::process::id(),
             tasks: Mutex::default(),
-            procs: Mutex::default(),
+            by_pid: Mutex::default(),
             lookup: Mutex::default(),
         }
     }
@@ -234,7 +232,7 @@ impl Procs {
             return None;
         }
         let st = stat(pid)?;
-        if let Some(p) = cached(&self.procs, pid, st.start)
+        if let Some(p) = cached(&self.by_pid, pid, st.start)
             && current(pid, &p)?
         {
             return Some(p);
@@ -266,7 +264,7 @@ impl Procs {
             parent,
             unsettled,
         });
-        insert(&self.procs, pid, st.start, &p);
+        insert(&self.by_pid, pid, st.start, &p);
         fresh.push(p.clone());
         Some(p)
     }
@@ -365,7 +363,7 @@ mod tests {
         let st = stat(std::process::id()).unwrap();
         // SAFETY: getppid(2) and getpgrp(2) have no preconditions.
         let (ppid, pgrp) = unsafe { (libc::getppid(), libc::getpgrp()) };
-        assert_eq!((st.ppid as i32, st.pgrp), (ppid, pgrp));
+        assert_eq!((i32::try_from(st.ppid).unwrap(), st.pgrp), (ppid, pgrp));
     }
 
     #[test]

@@ -1,7 +1,11 @@
 //! The scope lifecycle: open, close (the change set and its review), commit,
 //! return and discard, as the decision layer drives them.
 
-use super::*;
+use super::{
+    Arc, AsFd, BTreeMap, ChangeSet, ConflictVerdict, Error, File, Frozen, HashMap, JoinHandle, Kind, OFlags, Opened,
+    Ordering, Outcome, PROJECT, Path, PathBuf, RootView, ScopeHandle, ScopeState, ScopeStore, Sender, UNSCOPED,
+    UNSCOPED_ROOT, Views, changeset, diff, error, fs, history, io, review, roots, sys, token_sha256,
+};
 
 /// How long a close waits for the handles of dead or stopped processes to release.
 const SETTLE_WITHIN: std::time::Duration = std::time::Duration::from_secs(5);
@@ -39,6 +43,11 @@ impl Views {
 
     /// Create a scope with a view per served root; returns its id, its project view in
     /// the mount and its token.
+    ///
+    /// # Errors
+    ///
+    /// `Stopping` at shutdown, `Invalid` for a malformed name or label, or an `Io` error from creating the
+    /// scope directory, store or view.
     pub fn open_scope(&self, name: &str, labels: &HashMap<String, String>, session: &str) -> error::Result<Opened> {
         let since = self.commits.current();
         let mut bytes = [0u8; 32];
@@ -70,6 +79,10 @@ impl Views {
 
     /// `token` is scope `id`'s (`Denied` if not; `NoScope` if no such scope).
     /// The unscoped scope has none and takes any.
+    ///
+    /// # Errors
+    ///
+    /// `Denied` for a wrong token, `NoScope` if there is no such scope.
     pub fn check_token(&self, id: &str, token: &str) -> error::Result<()> {
         let hs = self.handles(id)?;
         if hs[0].store_read().token_matches(&token_sha256(token)) {
@@ -136,6 +149,11 @@ impl Views {
 
     /// A closed scope's frozen change set, review and diff (built at close, or on the
     /// first read after a restart); an open scope is an error (`State`).
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, `State` if it is open, or an `Io` error from computing the change
+    /// set.
     pub fn frozen(&self, id: &str, caps: diff::Caps) -> error::Result<Arc<Frozen>> {
         let hs = self.closed_handles(id)?;
         // The freeze lock comes before any store lock and is not held across a decision step.
@@ -189,7 +207,7 @@ impl Views {
                 });
             } else if let Some((p, rule)) = std::iter::once(&path)
                 .chain(&from)
-                .find_map(|p| Some((p, self.review.only_by(p, writers.clone())?)))
+                .find_map(|p| Some((p, self.review.only_by(p, &writers)?)))
             {
                 hits.push(review::Hit { path: p.clone(), rule });
             } else if c.kind != Kind::Delete
@@ -237,6 +255,10 @@ impl Views {
     /// Freeze the scope and return its frozen change set, after its sandboxes (process
     /// groups `stopped`) were stopped. The caller has fsynced its open files (syncfs is
     /// not a barrier on plain FUSE). Closing a closed scope returns the same record.
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, or an `Io` error from computing or storing the change set.
     pub fn close_scope_after(&self, id: &str, stopped: &[i32], caps: diff::Caps) -> error::Result<Arc<Frozen>> {
         let hs = self.handles(id)?;
         // Held to the end: a second close waits for the first and finds its record.
@@ -265,6 +287,11 @@ impl Views {
 
     /// Return to agent: the decision's reasons go back and the scope accepts IO again.
     /// The only place the frozen change set is cleared.
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, `State` if it is not closed, or an `Io` error from writing the
+    /// store.
     pub fn reopen_scope(&self, id: &str) -> error::Result<()> {
         let hs = self.closed_handles(id)?;
         let mut frozen = hs[0].frozen.lock();
@@ -306,6 +333,11 @@ impl Views {
     /// and drop the scope. On a conflict nothing is written and the policy's
     /// `conflict.verdict` drops the scope (discard) or reopens it (return); on a failure
     /// the commit is rolled back and the scope stays closed (`Aborted`).
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, `State` if it is not closed, `Aborted` if the commit rolled back,
+    /// or an `Io` error.
     pub fn commit_closed(&self, id: &str, cs: &ChangeSet) -> error::Result<Outcome> {
         let hs = self.closed_handles(id)?;
         self.commit_change_set(id, &hs, cs, false)
@@ -314,12 +346,20 @@ impl Views {
     /// `commit_closed` that keeps a committed scope until `finish_commit`: the caller
     /// settles the decision in the history in between, so a scope gone at the next start
     /// was never committed (`history::Fate`).
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Views::commit_closed`].
     pub fn commit_kept(&self, id: &str, cs: &ChangeSet) -> error::Result<Outcome> {
         let hs = self.closed_handles(id)?;
         self.commit_change_set(id, &hs, cs, true)
     }
 
     /// Drop a scope `commit_kept` committed.
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, or an `Io` error from the journal or the removal.
     pub fn finish_commit(&self, id: &str, generation: Option<u64>) -> error::Result<()> {
         self.remove_scope(id)?;
         // One journal write records the scope gone (before a new scope of the same id
@@ -343,7 +383,7 @@ impl Views {
         cs: &ChangeSet,
         keep: bool,
     ) -> error::Result<Outcome> {
-        let hs: Vec<&ScopeHandle> = hs.iter().map(|h| h.as_ref()).collect();
+        let hs: Vec<&ScopeHandle> = hs.iter().map(std::convert::AsRef::as_ref).collect();
         let show = |root: usize, p: &Path| self.shown(root, p);
         // A failed commit rolled back in place: the scope is still closed, and the
         // caller may decide again. A failed rollback is the host's problem.
@@ -380,6 +420,10 @@ impl Views {
     }
 
     /// Drop a scope and its staged changes.
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, or an `Io` error from removing its files.
     pub fn drop_scope(&self, id: &str) -> error::Result<()> {
         self.handles(id)?;
         self.ledger.append(id, "decide", Path::new(""), None, "discard");
@@ -441,6 +485,10 @@ impl Views {
 
     /// At shutdown: write every scope's deferred metadata and finish deleting dropped scopes and stop the
     /// background workers (later removals delete inline, later writeback hints are dropped).
+    ///
+    /// # Errors
+    ///
+    /// A store cannot be written or a dropped scope's directory cannot be removed.
     pub fn flush(&self) -> io::Result<()> {
         let mut first = Ok(());
         for h in self.scopes.read().values() {

@@ -103,7 +103,7 @@ impl History {
             params![scope, session, token_sha256, entry],
         )
         .map_err(sql)?;
-        Ok(db.last_insert_rowid() as u64)
+        Ok(db.last_insert_rowid().cast_unsigned())
     }
 
     /// The pending decision `seq` got `entry`; keeps the newest `KEEP` of its session.
@@ -111,11 +111,13 @@ impl History {
         let mut db = self.db.lock();
         let tx = db.transaction().map_err(sql)?;
         let session: String = tx
-            .query_row("SELECT session FROM decided WHERE seq = ?1", [seq as i64], |r| r.get(0))
+            .query_row("SELECT session FROM decided WHERE seq = ?1", [seq.cast_signed()], |r| {
+                r.get(0)
+            })
             .map_err(sql)?;
         tx.execute(
             "UPDATE decided SET entry = ?2, pending = 0 WHERE seq = ?1",
-            params![seq as i64, entry],
+            params![seq.cast_signed(), entry],
         )
         .map_err(sql)?;
         tx.execute(
@@ -131,7 +133,7 @@ impl History {
     /// The pending decision `seq` was not applied.
     pub fn cancel(&self, seq: u64) -> io::Result<()> {
         let db = self.db.lock();
-        db.execute("DELETE FROM decided WHERE seq = ?1", [seq as i64])
+        db.execute("DELETE FROM decided WHERE seq = ?1", [seq.cast_signed()])
             .map_err(sql)
             .map(drop)
     }
@@ -157,10 +159,12 @@ impl History {
                      ORDER BY seq",
                 )
                 .map_err(sql)?;
-            st.query_map([scope], |r| Ok((r.get::<_, i64>(0)? as u64, r.get(1)?, r.get(2)?)))
-                .map_err(sql)?
-                .collect::<Result<_, _>>()
-                .map_err(sql)?
+            st.query_map([scope], |r| {
+                Ok((r.get::<_, i64>(0)?.cast_unsigned(), r.get(1)?, r.get(2)?))
+            })
+            .map_err(sql)?
+            .collect::<Result<_, _>>()
+            .map_err(sql)?
         };
         let mut settled = 0;
         for (seq, scope, entry) in pending {
@@ -184,7 +188,7 @@ impl History {
             [scope],
             |r| {
                 Ok(Latest {
-                    seq: r.get::<_, i64>(0)? as u64,
+                    seq: r.get::<_, i64>(0)?.cast_unsigned(),
                     token_sha256: r.get(1)?,
                     entry: r.get(2)?,
                 })
@@ -204,7 +208,9 @@ impl History {
             .prepare("SELECT entry FROM decided WHERE session = ?1 AND pending = 0 ORDER BY seq DESC LIMIT ?2")
             .map_err(sql)?;
         let rows = st
-            .query_map(params![session, limit as i64], |r| r.get::<_, Vec<u8>>(0))
+            .query_map(params![session, i64::try_from(limit).unwrap_or(i64::MAX)], |r| {
+                r.get::<_, Vec<u8>>(0)
+            })
             .map_err(sql)?;
         let mut out = rows.collect::<Result<Vec<_>, _>>().map_err(sql)?;
         out.reverse();
@@ -225,18 +231,22 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let h = History::open(&dir, record::settled).unwrap();
         for i in 0..KEEP + 5 {
-            h.record(&format!("s{i}"), "a", Some("t"), &[i as u8]).unwrap();
+            h.record(&format!("s{i}"), "a", Some("t"), &[u8::try_from(i).unwrap()])
+                .unwrap();
         }
         h.record("x", "", None, b"first").unwrap();
         let seq = h.record("x", "", None, b"second").unwrap();
         let all = h.session("a", 1000).unwrap();
-        assert_eq!(all.len(), KEEP as usize);
+        assert_eq!(all.len(), usize::try_from(KEEP).unwrap());
         assert_eq!(all[0], vec![5u8]);
         assert_eq!(
             h.session("a", 2).unwrap(),
-            vec![vec![KEEP as u8 + 3], vec![KEEP as u8 + 4]]
+            vec![
+                vec![u8::try_from(KEEP).unwrap() + 3],
+                vec![u8::try_from(KEEP).unwrap() + 4]
+            ]
         );
-        assert!(h.session("", 10).unwrap().is_empty());
+        assert_eq!(h.session("", 10).unwrap(), Vec::<Vec<u8>>::new());
         let latest = h.latest("x").unwrap().unwrap();
         assert_eq!(
             (latest.seq, latest.entry, latest.token_sha256),
@@ -313,7 +323,7 @@ mod tests {
             h.intend(scope, "s", None, &entry(*status)).unwrap();
             assert!(h.latest(scope).unwrap().is_none(), "a pending decision is not read");
         }
-        assert!(h.session("s", 10).unwrap().is_empty());
+        assert_eq!(h.session("s", 10).unwrap(), Vec::<Vec<u8>>::new());
         let settled = h.resolve(|id| cases.iter().find(|c| c.0 == id).unwrap().2).unwrap();
         assert_eq!(settled, 4);
         for (scope, _, _, want) in cases {

@@ -290,7 +290,7 @@ impl Rules {
     }
 
     /// The `write.only_by` rule `path`, changed by `writers`, breaks, if any.
-    pub fn only_by<'a>(&self, path: &Path, writers: impl IntoIterator<Item = &'a Info> + Clone) -> Option<Broken> {
+    pub fn only_by<'a>(&self, path: &Path, writers: &(impl IntoIterator<Item = &'a Info> + Clone)) -> Option<Broken> {
         for (paths, bins) in &self.only_by {
             if !paths.is_match(path) {
                 continue;
@@ -442,7 +442,7 @@ mod tests {
     }
 
     fn names(ns: &[&str]) -> Vec<String> {
-        ns.iter().map(|n| n.to_string()).collect()
+        ns.iter().map(ToString::to_string).collect()
     }
 
     fn paths(ps: &[&'static str]) -> Vec<&'static Path> {
@@ -517,13 +517,13 @@ mod tests {
         };
         let ok = info("/elsewhere/sh", m.dev(), m.ino());
         let fake = info("/bin/sh", m.dev(), m.ino() + 1);
-        assert_eq!(r.only_by(Path::new(".git/HEAD"), [&ok]), None);
-        assert_eq!(r.only_by(Path::new("README"), [&fake]), None);
+        assert_eq!(r.only_by(Path::new(".git/HEAD"), &[&ok]), None);
+        assert_eq!(r.only_by(Path::new("README"), &[&fake]), None);
         assert_eq!(
-            r.only_by(Path::new(".git/HEAD"), [&ok, &fake]),
+            r.only_by(Path::new(".git/HEAD"), &[&ok, &fake]),
             Some(Broken::OnlyBy(Some("/bin/sh".into())))
         );
-        assert_eq!(r.only_by(Path::new(".git/HEAD"), []), Some(Broken::OnlyBy(None)));
+        assert_eq!(r.only_by(Path::new(".git/HEAD"), &[]), Some(Broken::OnlyBy(None)));
         let p = crate::policy::Policy::parse("version: 1\nwrite: {only_by: [{paths: [a], programs: [/no/such]}]}\n")
             .unwrap();
         assert!(Rules::new(&[], &[], &p.write).is_err());

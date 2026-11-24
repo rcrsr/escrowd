@@ -180,9 +180,9 @@ pub struct Decisions {
     children: Arc<Children>,
     diff: diff::Caps,
     /// Bumped after every decision and review: an open waiting behind a held scope,
-    /// and the clients following one (AwaitDecision), check again.
+    /// and the clients following one (`AwaitDecision`), check again.
     changed: watch::Sender<u64>,
-    /// Set at shutdown: calls that wait (an open behind a held scope, AwaitDecision)
+    /// Set at shutdown: calls that wait (an open behind a held scope, `AwaitDecision`)
     /// end with `Stopping`, or the server would wait on them forever.
     stopping: watch::Sender<bool>,
     /// Each scope's lock, while someone holds or waits for it.
@@ -239,6 +239,11 @@ impl Decisions {
 
     /// Open a scope. In a session, wait while another of its scopes is held with a
     /// wait, until `until` (then `State`) or shutdown.
+    ///
+    /// # Errors
+    ///
+    /// `State` if a held scope of the session still holds the next scope back at `until`, `Stopping` at
+    /// shutdown, or the error of opening the scope.
     pub async fn open(
         &self,
         name: String,
@@ -262,12 +267,12 @@ impl Decisions {
             };
             tokio::select! {
                 _ = changed.changed() => {}
-                _ = &mut expired => {
+                () = &mut expired => {
                     return Err(Error::State(format!(
                         "session {session}: scope {held} is held for review; the next scope opens after its verdict"
                     )));
                 }
-                _ = self.stopped() => return Err(Error::Stopping),
+                () = self.stopped() => return Err(Error::Stopping),
             }
         }
         self.blocking(move |v| {
@@ -279,6 +284,10 @@ impl Decisions {
     }
 
     /// Stop the scope's children (their last writes flush on exit), then freeze it.
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, `Denied` for a wrong token, or the error of freezing it.
     pub async fn close(&self, id: String, token: String) -> error::Result<Arc<Frozen>> {
         let (children, caps) = (self.children.clone(), self.diff);
         self.blocking(move |v| {
@@ -290,6 +299,10 @@ impl Decisions {
     }
 
     /// Close the implicit default scope; it is decided as scope `unscoped`.
+    ///
+    /// # Errors
+    ///
+    /// `State` unless `unscoped` is `implicit`, or the errors of [`Decisions::close`].
     pub async fn settle_unscoped(&self) -> error::Result<Arc<Frozen>> {
         if self.views.unscoped() != Unscoped::Implicit {
             return Err(Error::State("settle_unscoped needs unscoped = implicit".into()));
@@ -298,6 +311,10 @@ impl Decisions {
     }
 
     /// A closed scope's change set and diff (`State` if it is open).
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, or `State` if it is open.
     pub async fn change_set(&self, id: String) -> error::Result<Arc<Frozen>> {
         let caps = self.diff;
         self.blocking(move |v| v.frozen(&id, caps)).await
@@ -323,6 +340,12 @@ impl Decisions {
     /// The opener's decision (`verdict` None: unspecified). A commit runs the review
     /// and may hold the scope; a held scope can only be withdrawn (discarded). The
     /// decision of a scope in a session, or held, is kept.
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, `Denied` for a wrong token or a held scope the opener does not
+    /// discard, `Invalid` if `verdict` is unset, `State` if the scope is not in the state the verdict needs,
+    /// `Aborted` if a commit rolled back, or an `Io` error.
     pub async fn decide(
         self: &Arc<Self>,
         id: String,
@@ -339,13 +362,14 @@ impl Decisions {
                 v.identity(&scope)
             })
             .await?;
-        let keep = match !who.session.is_empty() || who.hold.is_some() {
-            true => Some(Kept {
+        let keep = if !who.session.is_empty() || who.hold.is_some() {
+            Some(Kept {
                 change_set: self.closed_record(&who.id).await?,
-                reviews: who.hold.as_ref().map(|h| h.reviews.clone()).unwrap_or_default(),
+                reviews: who.hold.as_ref().map_or_default(|h| h.reviews.clone()),
                 who,
-            }),
-            false => None,
+            })
+        } else {
+            None
         };
         let out = self.propose(id, verdict, reasons, wait, keep).await?;
         if out.status != Status::Held {
@@ -449,8 +473,8 @@ impl Decisions {
                 eprintln!("escrowd: history: {e}");
             }
             crate::fault::hit("settled", 0)?;
-            if let Some(generation) = finish {
-                v.finish_commit(&id, generation)?;
+            if let Some(kept) = finish {
+                v.finish_commit(&id, kept.generation)?;
             }
             Ok(out)
         })
@@ -461,6 +485,11 @@ impl Decisions {
 
     /// A held scope's updates until its verdict; a decided scope's last outcome.
     /// The stream ends after the verdict, an error, or shutdown.
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is neither a scope nor a decision for `id`, `State` if the scope is not held and
+    /// has no decision, `Denied` for a wrong token, or an `Io` error.
     pub async fn follow(
         self: &Arc<Self>,
         id: String,
@@ -559,8 +588,8 @@ impl Decisions {
             }
             tokio::select! {
                 r = changed.changed() => if r.is_err() { return },
-                _ = tx.closed() => return,
-                _ = self.stopped() => {
+                () = tx.closed() => return,
+                () = self.stopped() => {
                     let _ = tx.send(Err(Error::Stopping)).await;
                     return;
                 }
@@ -571,11 +600,20 @@ impl Decisions {
     // ---- reviewers ----
 
     /// Every held scope, oldest hold first.
+    ///
+    /// # Errors
+    ///
+    /// The error of reading the held scopes.
     pub async fn list_held(&self) -> error::Result<Vec<Identity>> {
-        self.blocking(|v| v.held_scopes()).await
+        self.blocking(super::views::Views::held_scopes).await
     }
 
     /// A held scope with its change set and its session's last decisions.
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, `State` if it is not held, or the error of building its change
+    /// set.
     pub async fn get_held(&self, id: String) -> error::Result<HeldScope> {
         let scope = id.clone();
         let (who, history) = self
@@ -598,6 +636,12 @@ impl Decisions {
     /// `reviewer`'s verdict on held scope `id`: from the review socket, or (`token`) from
     /// a delegate; after the last pending reviewer, the scope is decided with the
     /// verdict of every reviewer and their reasons.
+    ///
+    /// # Errors
+    ///
+    /// `NoScope` if there is no such scope, `State` if it is not held or `reviewer` is not pending, `Denied`
+    /// for a wrong token or a verdict `reviewer` may not give, `Aborted` if the final commit rolled back, or
+    /// an `Io` error.
     pub async fn review(
         self: &Arc<Self>,
         id: String,
@@ -611,9 +655,9 @@ impl Decisions {
         let scope = id.clone();
         let who = self.blocking(move |v| v.identity(&scope)).await?;
         let scope = id.clone();
-        let reviewed = self
+        let filed = self
             .blocking(move |v| {
-                let tokened = token.is_some();
+                let with_token = token.is_some();
                 let giver = match token {
                     Some(t) => Giver::Token(crate::views::token_sha256(&t)),
                     None => Giver::Socket,
@@ -628,7 +672,7 @@ impl Decisions {
                 match v.review_scope(&scope, &reviewer, giver, verdict, reasons, over) {
                     // With a token every refusal reads the same, and is ledgered; so is a
                     // command reviewer named without one.
-                    Err(e) if !e.is_no_scope() && (tokened || (command && matches!(e, Error::Denied(_)))) => {
+                    Err(e) if !e.is_no_scope() && (with_token || (command && matches!(e, Error::Denied(_)))) => {
                         if !matches!(e, Error::Denied(_)) {
                             eprintln!("escrowd: reviewer: {scope}: {reviewer}: {e}");
                         }
@@ -641,11 +685,11 @@ impl Decisions {
                 }
             })
             .await?;
-        if !matches!(reviewed, Reviewed::Stale) {
+        if !matches!(filed, Reviewed::Stale) {
             // The verdict ends or skips the reviewer whose program is running, if any.
             self.runner.cancel(&id);
         }
-        let out = self.conclude(id, who, reviewed).await?;
+        let out = self.conclude(id, who, filed).await?;
         self.notify();
         Ok(out)
     }
@@ -688,6 +732,10 @@ impl Decisions {
     ///   armed again, or fires at once if the deadline passed while the daemon was down.
     ///
     /// A scope that cannot be resumed is reported on stderr and keeps its hold.
+    ///
+    /// # Errors
+    ///
+    /// Reading the held scopes fails; a scope that cannot be resumed is reported on stderr, not returned.
     pub async fn resume(self: &Arc<Self>) -> error::Result<()> {
         for held in self.list_held().await? {
             if let Err(e) = self.resume_scope(&held.id).await {
@@ -711,7 +759,7 @@ impl Decisions {
             let (scope, missing) = (id.to_string(), name.clone());
             let cause = "not in the policy".to_string();
             let reasons = vec![format!("failed: {cause}")];
-            let reviewed = self
+            let filed = self
                 .blocking(move |v| {
                     let giver = Giver::Missing { cause };
                     v.review_scope(
@@ -724,7 +772,7 @@ impl Decisions {
                     )
                 })
                 .await?;
-            self.conclude(id.to_string(), who, reviewed).await?;
+            self.conclude(id.to_string(), who, filed).await?;
             self.notify();
             return Ok(());
         };
@@ -741,14 +789,13 @@ impl Decisions {
         };
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as u64);
-        match deadline_ms.checked_sub(now_ms).filter(|left| *left > 0) {
-            Some(left) => self.arm_expiry(id, &name, attempt, command, std::time::Duration::from_millis(left)),
-            None => {
-                // `expire` takes the scope's lock itself.
-                drop(lock);
-                self.clone().expire(id.to_string(), name, attempt, command).await;
-            }
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
+        if let Some(left) = deadline_ms.checked_sub(now_ms).filter(|left| *left > 0) {
+            self.arm_expiry(id, &name, attempt, command, std::time::Duration::from_millis(left));
+        } else {
+            // `expire` takes the scope's lock itself.
+            drop(lock);
+            self.clone().expire(id.to_string(), name, attempt, command).await;
         }
         Ok(())
     }
@@ -885,16 +932,16 @@ impl Decisions {
             }
         };
         let (scope, name) = (id.to_string(), reviewer.to_string());
-        let reviewed = self
+        let filed = self
             .blocking(move |v| {
                 let giver = Giver::Run { attempt, pid, failure };
                 v.review_scope(&scope, &name, giver, verdict, reasons, false)
             })
             .await?;
-        if matches!(reviewed, Reviewed::Stale) {
+        if matches!(filed, Reviewed::Stale) {
             return Ok(false);
         }
-        self.conclude(id.to_string(), who, reviewed).await?;
+        self.conclude(id.to_string(), who, filed).await?;
         Ok(true)
     }
     /// A delegate's `pending` answer: the run waits for its token until the reviewer's
@@ -911,7 +958,7 @@ impl Decisions {
         let deadline = std::time::SystemTime::now() + command.timeout;
         let deadline_ms = deadline
             .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as u64);
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
         let (scope, name) = (id.to_string(), reviewer.to_string());
         let waiting = self
             .blocking(move |v| v.await_delegate(&scope, &name, attempt, pid, deadline_ms))
@@ -936,8 +983,8 @@ impl Decisions {
         let (id, reviewer) = (id.to_string(), reviewer.to_string());
         tokio::spawn(async move {
             tokio::select! {
-                _ = tokio::time::sleep(delay) => {}
-                _ = me.stopped() => return,
+                () = tokio::time::sleep(delay) => {}
+                () = me.stopped() => return,
             }
             me.expire(id, reviewer, attempt, command).await;
         });
@@ -978,16 +1025,16 @@ impl Decisions {
         };
         let (scope, name) = (id.to_string(), reviewer.to_string());
         let reasons = vec![format!("failed: {cause}")];
-        let reviewed = self
+        let filed = self
             .blocking(move |v| {
                 let giver = Giver::Expired { attempt, cause };
                 v.review_scope(&scope, &name, giver, on_failure.max(so_far), reasons, false)
             })
             .await?;
-        if matches!(reviewed, Reviewed::Stale) {
+        if matches!(filed, Reviewed::Stale) {
             return Ok(false);
         }
-        self.conclude(id.to_string(), who, reviewed).await?;
+        self.conclude(id.to_string(), who, filed).await?;
         Ok(true)
     }
 }
@@ -999,8 +1046,14 @@ enum RunAnswer {
     Failed(String, Decision),
 }
 
+/// A commit `apply_now` left in place for `finish_commit`.
+struct KeptCommit {
+    /// The generation to finish it with.
+    generation: Option<u64>,
+}
+
 /// `Decisions::apply` on the blocking pool. With `keep`, a committed scope stays until
-/// `finish_commit`, and the second value is the generation to finish it with.
+/// `finish_commit`, and the second value says how to finish it.
 fn apply_now(
     v: &Views,
     children: &Children,
@@ -1009,7 +1062,7 @@ fn apply_now(
     reasons: Vec<String>,
     frozen: Option<Arc<Frozen>>,
     keep: bool,
-) -> error::Result<(Outcome, Option<Option<u64>>)> {
+) -> error::Result<(Outcome, Option<KeptCommit>)> {
     let mut out = Outcome {
         reasons,
         ..Outcome::new(id, Status::Discarded)
@@ -1018,15 +1071,16 @@ fn apply_now(
     match verdict {
         Decision::Commit => {
             let frozen = frozen.expect("apply resolves the frozen record for a commit");
-            let committed = match keep {
-                true => v.commit_kept(id, &frozen.change_set),
-                false => v.commit_closed(id, &frozen.change_set),
+            let committed = if keep {
+                v.commit_kept(id, &frozen.change_set)
+            } else {
+                v.commit_closed(id, &frozen.change_set)
             };
             match committed.inspect(|_| children.release(id))? {
                 commit::Outcome::Committed(generation, changed) => {
                     out.status = Status::Committed;
                     out.paths = changed.iter().map(|p| convert::path_str(p)).collect();
-                    finish = keep.then_some(generation);
+                    finish = keep.then_some(KeptCommit { generation });
                 }
                 commit::Outcome::Conflict(conflicts) => {
                     out.status = Status::Conflict;

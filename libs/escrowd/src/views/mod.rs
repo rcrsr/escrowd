@@ -93,6 +93,7 @@ pub struct Opened {
 }
 
 /// The hex SHA-256 the store keeps of a token.
+#[must_use]
 pub fn token_sha256(token: &str) -> String {
     use sha2::{Digest, Sha256};
     diff::hex(&Sha256::digest(token.as_bytes()))
@@ -103,7 +104,9 @@ fn lowers_of(roots: &[RootSpec]) -> Lowers<'_> {
     std::array::from_fn(|r| roots.get(r).and_then(|s| s.lower.as_ref()).map(|l| l.as_fd()))
 }
 
-pub fn errno(e: io::Error) -> Errno {
+#[must_use]
+pub fn errno(e: impl Into<io::Error>) -> Errno {
+    let e = e.into();
     Errno::from_i32(e.raw_os_error().unwrap_or(libc::EIO))
 }
 
@@ -175,6 +178,11 @@ pub struct Views {
 }
 impl Views {
     /// `roots` (indexed by root) must be opened before the view is mounted anywhere over them.
+    ///
+    /// # Errors
+    ///
+    /// The scope directories, journal or history cannot be opened, or a previous run's scopes cannot be
+    /// loaded.
     pub fn new(
         roots: Vec<RootSpec>,
         state_dir: &Path,
@@ -474,7 +482,7 @@ impl Views {
             Gate::new(&[]).unwrap(),
             Unscoped::Passthrough,
             ConflictRules::default(),
-            review::Rules::new(&[], &policy.reviewers, &Default::default()).unwrap(),
+            review::Rules::new(&[], &policy.reviewers, &crate::policy::WriteRules::default()).unwrap(),
         )
         .unwrap();
         (views, dir)

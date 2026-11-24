@@ -8,15 +8,15 @@ use std::io;
 
 #[derive(Debug)]
 pub enum Error {
-    /// No scope with that id (NOT_FOUND).
+    /// No scope with that id (`NOT_FOUND`).
     NoScope(String),
     /// The scope is not in the state the call needs: open, closed, held, or the tier
-    /// is not pending (FAILED_PRECONDITION).
+    /// is not pending (`FAILED_PRECONDITION`).
     State(String),
     /// A missing or wrong token, or a verdict the caller may not give
-    /// (PERMISSION_DENIED).
+    /// (`PERMISSION_DENIED`).
     Denied(String),
-    /// A malformed request (INVALID_ARGUMENT).
+    /// A malformed request (`INVALID_ARGUMENT`).
     Invalid(String),
     /// A commit rolled back: nothing was applied and the scope is still closed;
     /// decide again (ABORTED).
@@ -30,10 +30,12 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 impl Error {
+    #[must_use]
     pub fn no_scope(id: &str) -> Self {
         Error::NoScope(format!("no scope {id}"))
     }
 
+    #[must_use]
     pub fn is_no_scope(&self) -> bool {
         matches!(self, Error::NoScope(_))
     }

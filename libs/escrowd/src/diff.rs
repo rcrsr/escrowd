@@ -98,7 +98,7 @@ impl Side<'_> {
                     Side::Base(b) => b.open(rel, OFlags::RDONLY)?,
                     Side::Upper(fd) => sys::open(*fd, rel, OFlags::RDONLY, 0)?,
                 };
-                if st.st_size as u64 > cap {
+                if sys::unsigned(st.st_size) > cap {
                     let (size, sha256) = hash(&mut f)?;
                     return Ok(Entry::Summary {
                         mode,
@@ -107,7 +107,7 @@ impl Side<'_> {
                         binary: false,
                     });
                 }
-                let mut bytes = Vec::with_capacity(st.st_size as usize);
+                let mut bytes = Vec::with_capacity(usize::try_from(st.st_size).unwrap_or_default());
                 f.read_to_end(&mut bytes)?;
                 Ok(text_or_summary(mode, bytes, cap))
             }

@@ -38,15 +38,13 @@ pub struct Config {
 }
 
 /// `<project basename>-<FNV-1a 64 of the canonical path>`: stable and readable.
+#[must_use]
 pub fn project_id(project: &Path) -> String {
-    let mut h: u64 = 0xcbf29ce484222325;
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in project.as_os_str().as_bytes() {
-        h = (h ^ u64::from(*b)).wrapping_mul(0x100000001b3);
+        h = (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
     }
-    let base = project
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let base = project.file_name().map_or_default(|n| n.to_string_lossy().into_owned());
     format!("{base}-{h:016x}")
 }
 
@@ -63,6 +61,10 @@ fn inside(a: &Path, b: &Path) -> bool {
 }
 
 /// `$XDG_STATE_HOME/escrowd/<project-id>` (or `~/.local/state/…`) for a canonical project path.
+///
+/// # Errors
+///
+/// `XDG_STATE_HOME` is unset (or empty) and the home directory is unknown.
 pub fn default_state_dir(project: &Path) -> anyhow::Result<PathBuf> {
     Ok(env_dir("XDG_STATE_HOME", || {
         std::env::home_dir().map(|h| h.join(".local/state"))
@@ -72,6 +74,10 @@ pub fn default_state_dir(project: &Path) -> anyhow::Result<PathBuf> {
 }
 
 /// `$XDG_RUNTIME_DIR/escrowd/<project-id>`: the views (`view/`) and sockets of `escrow run`.
+///
+/// # Errors
+///
+/// `XDG_RUNTIME_DIR` is unset or empty.
 pub fn default_runtime_dir(project: &Path) -> anyhow::Result<PathBuf> {
     Ok(env_dir("XDG_RUNTIME_DIR", || None)?
         .join("escrowd")
@@ -147,23 +153,19 @@ fn resolve_lexical(path: &Path) -> anyhow::Result<PathBuf> {
     let mut tail = Vec::new();
     let mut head = abs.as_path();
     loop {
-        match head.canonicalize() {
-            Ok(mut base) => {
-                base.extend(tail.iter().rev());
-                return Ok(base);
-            }
-            Err(_) => {
-                let (Some(parent), Some(name)) = (head.parent(), head.file_name()) else {
-                    if head.parent().is_some() {
-                        // A `..` after a missing directory cannot be resolved without creating it.
-                        bail!("{} has `..` after a directory that does not exist", path.display());
-                    }
-                    return Ok(abs);
-                };
-                tail.push(name);
-                head = parent;
-            }
+        if let Ok(mut base) = head.canonicalize() {
+            base.extend(tail.iter().rev());
+            return Ok(base);
         }
+        let (Some(parent), Some(name)) = (head.parent(), head.file_name()) else {
+            if head.parent().is_some() {
+                // A `..` after a missing directory cannot be resolved without creating it.
+                bail!("{} has `..` after a directory that does not exist", path.display());
+            }
+            return Ok(abs);
+        };
+        tail.push(name);
+        head = parent;
     }
 }
 
@@ -210,9 +212,9 @@ fn protected_in(host: &Path, protected: &[PathBuf]) -> Option<Arc<Protected>> {
     (!rel.is_empty()).then(|| Arc::new(Protected::new(rel)))
 }
 
-/// Load and compile the policy and check the paths against one another. Creates no
-/// directory, takes no lock, opens no store and mounts nothing.
-fn validate(config: &Config) -> anyhow::Result<Validated> {
+/// The canonical project, the resolved state directory and the resolved mount point,
+/// checked not to contain one another.
+fn resolve_dirs(config: &Config) -> anyhow::Result<(PathBuf, PathBuf, PathBuf)> {
     let project = config
         .project
         .canonicalize()
@@ -235,6 +237,53 @@ fn validate(config: &Config) -> anyhow::Result<Validated> {
             mount.display()
         );
     }
+    Ok((project, state, mount))
+}
+
+/// Each passthrough path resolved and checked never to reach the project or escrowd's own
+/// state and views.
+fn resolve_writes(
+    passthrough: Vec<PathBuf>,
+    project: &Path,
+    state: &Path,
+    mount: &Path,
+) -> anyhow::Result<Vec<PathBuf>> {
+    let mut write = Vec::new();
+    for w in passthrough {
+        let w = resolve_lexical(&w)?;
+        // A writable bind must never reach the project or escrowd's own state and views.
+        for (name, p) in [("project", project), ("state", state), ("mount", mount)] {
+            if inside(&w, p) || inside(p, &w) {
+                bail!("passthrough {} overlaps the {name} {}", w.display(), p.display());
+            }
+        }
+        write.push(w);
+    }
+    Ok(write)
+}
+
+/// The protected paths that the unscoped mode and the writable binds must not expose.
+fn check_protected(protected: &[PathBuf], config: &Config, project: &Path, write: &[PathBuf]) -> anyhow::Result<()> {
+    if config.unscoped == Unscoped::Passthrough
+        && let Some(p) = protected.iter().find(|p| inside(p, project))
+    {
+        bail!(
+            "unscoped passthrough: {} is protected and lies in the project",
+            p.display()
+        );
+    }
+    for w in write {
+        if let Some(p) = protected.iter().find(|p| inside(p, w)) {
+            bail!("passthrough {} contains protected {}", w.display(), p.display());
+        }
+    }
+    Ok(())
+}
+
+/// Load and compile the policy and check the paths against one another. Creates no
+/// directory, takes no lock, opens no store and mounts nothing.
+fn validate(config: &Config) -> anyhow::Result<Validated> {
+    let (project, state, mount) = resolve_dirs(config)?;
     let policy = match &config.policy {
         Some(p) => Policy::load(p)?,
         None => Policy {
@@ -264,17 +313,7 @@ fn validate(config: &Config) -> anyhow::Result<Validated> {
         Some("/tmp".into()),
         &mut passthrough,
     )?;
-    let mut write = Vec::new();
-    for w in passthrough {
-        let w = resolve_lexical(&w)?;
-        // A writable bind must never reach the project or escrowd's own state and views.
-        for (name, p) in [("project", &project), ("state", &state), ("mount", &mount)] {
-            if inside(&w, p) || inside(p, &w) {
-                bail!("passthrough {} overlaps the {name} {}", w.display(), p.display());
-            }
-        }
-        write.push(w);
-    }
+    let write = resolve_writes(passthrough, &project, &state, &mount)?;
     for resolved in [&home, &tmp].into_iter().flatten() {
         let host = &resolved.host;
         if inside(host, &project) || inside(host, &state) || inside(host, &mount) {
@@ -296,19 +335,7 @@ fn validate(config: &Config) -> anyhow::Result<Validated> {
         }
     }
     let protected = protected_forms(config.policy.iter().cloned().chain(programs))?;
-    if config.unscoped == Unscoped::Passthrough
-        && let Some(p) = protected.iter().find(|p| inside(p, &project))
-    {
-        bail!(
-            "unscoped passthrough: {} is protected and lies in the project",
-            p.display()
-        );
-    }
-    for w in &write {
-        if let Some(p) = protected.iter().find(|p| inside(p, w)) {
-            bail!("passthrough {} contains protected {}", w.display(), p.display());
-        }
-    }
+    check_protected(&protected, config, &project, &write)?;
     let review =
         review::Rules::new(&policy.review, &policy.reviewers, &policy.write).context("policy review: or write:")?;
     Ok(Validated {
@@ -336,11 +363,20 @@ pub struct Checked {
 
 /// Check that `config` would start: the policy loads and compiles and the paths do not
 /// overlap. Creates no directory, takes no lock, opens no store and mounts nothing.
+///
+/// # Errors
+///
+/// The policy does not load or compile, a path is invalid, or the project, state and mount overlap.
 pub fn check(config: &Config) -> anyhow::Result<Checked> {
     validate(config).map(|v| Checked { protected: v.protected })
 }
 
 /// Mount the views and load the scopes (rolling back an interrupted commit).
+///
+/// # Errors
+///
+/// `config` fails the same checks as [`check`], or a directory, lock, store, mount or journal recovery step
+/// fails.
 pub fn start(config: Config) -> anyhow::Result<Daemon> {
     let Validated {
         project,
@@ -363,9 +399,9 @@ pub fn start(config: Config) -> anyhow::Result<Daemon> {
     for w in &write {
         std::fs::create_dir_all(w).with_context(|| format!("passthrough {}", w.display()))?;
     }
-    let socket_dir = config.socket.parent().map(Path::to_path_buf).unwrap_or_default();
+    let socket_dir = config.socket.parent().map_or_default(Path::to_path_buf);
     let socket_dir = socket_dir.canonicalize().unwrap_or(socket_dir);
-    let socket_name = config.socket.file_name().map(PathBuf::from).unwrap_or_default();
+    let socket_name = config.socket.file_name().map_or_default(PathBuf::from);
     let sockets = [
         socket_dir.join(&socket_name),
         exec::exec_socket(&socket_dir.join(&socket_name)),
@@ -532,6 +568,7 @@ fn lock_state(state: &Path) -> anyhow::Result<std::fs::File> {
 
 impl Daemon {
     /// A sandbox that hides escrowd's state, views and sockets.
+    #[must_use]
     pub fn sandbox(&self) -> Sandbox {
         Sandbox {
             bwrap: self.bwrap.clone(),
@@ -548,6 +585,7 @@ impl Daemon {
     }
 
     /// Scope `id`'s views of the roots other than the project, as sandbox mounts.
+    #[must_use]
     pub fn root_mounts(&self, id: &str) -> Vec<Mount> {
         self.views
             .root_views(id)
@@ -558,6 +596,11 @@ impl Daemon {
 
     /// Serve the gRPC and exec sockets until `shutdown` resolves, then stop every
     /// child and unmount.
+    ///
+    /// # Errors
+    ///
+    /// A socket cannot be bound or served, the scope stores cannot be flushed, or the views cannot be
+    /// unmounted.
     pub async fn serve(self, shutdown: impl Future<Output = ()>) -> anyhow::Result<()> {
         let exec_path = exec::exec_socket(&self.socket);
         let exec_listener = rpc::bind(&exec_path)?;
@@ -575,7 +618,7 @@ impl Daemon {
                     continue;
                 };
                 std::thread::spawn(move || {
-                    if let Err(e) = server.handle(stream) {
+                    if let Err(e) = server.handle(&stream) {
                         eprintln!("escrowd: exec: {e}");
                     }
                 });
@@ -583,7 +626,7 @@ impl Daemon {
         });
         let runner = Runner::new(self.reviewers_parallel, rpc::review_socket(&self.socket));
         let service = rpc::Service::new(self.views.clone(), self.children.clone(), self.diff, runner);
-        let served = rpc::serve(&self.socket, service, shutdown).await;
+        let outcome = rpc::serve(&self.socket, service, shutdown).await;
         accept.abort();
         let _ = std::fs::remove_file(&exec_path);
         let children = self.children.clone();
@@ -593,10 +636,15 @@ impl Daemon {
             .await?
             .context("unmounting views")?;
         self.views.flush().context("writing scope stores")?;
-        served
+        outcome
     }
 }
 
+/// Start the daemon from `config` and serve until `shutdown` resolves.
+///
+/// # Errors
+///
+/// [`start`] or [`Daemon::serve`] fails.
 pub async fn run(config: Config, shutdown: impl Future<Output = ()>) -> anyhow::Result<()> {
     start(config)?.serve(shutdown).await
 }

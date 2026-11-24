@@ -1,7 +1,10 @@
 //! The inode table: path to inode and back per scope, pinned and upper-only
 //! numbers, and what the kernel may keep of each inode's cached pages.
 
-use super::*;
+use super::{
+    Arc, Errno, HashMap, Loc, OsStr, OsString, Path, PathBuf, R, ROOT, SCOPE_SHIFT, ScopeHandle, Stat, UNSCOPED,
+    UNSCOPED_ROOT, UPPER_BIT, Version, Views, errno, moved, roots,
+};
 
 /// One view's inode table: path to inode and back, the kernel's lookup count of
 /// each inode, and what the kernel may keep of each inode's cached pages. Each view
@@ -118,7 +121,7 @@ impl Inodes {
                     _ if !fresh => Pages::Drop,
                     Some(before) if before == v => Pages::Keep,
                     Some(_) => Pages::Drop,
-                    None => Pages::Empty(st.st_size as u64),
+                    None => Pages::Empty(crate::sys::unsigned(st.st_size)),
                 }
             }
         }
@@ -154,16 +157,29 @@ pub enum Node {
 impl Views {
     // ---- lookups ----
 
+    /// The open scope view named `id`.
+    ///
+    /// # Errors
+    ///
+    /// `ENOENT` if there is no such scope.
     pub fn scope(&self, id: &str) -> R<Arc<ScopeHandle>> {
         self.scopes.read().get(id).cloned().ok_or(Errno::ENOENT)
     }
 
+    /// What inode `ino` stands for: the root, a scope's view, or an entry inside one.
+    ///
+    /// # Errors
+    ///
+    /// `ENOENT` if the inode is unknown or its scope is gone.
     pub fn node(&self, ino: u64) -> R<Node> {
         if ino == ROOT {
             return Ok(Node::Root);
         }
         if (UNSCOPED_ROOT..UNSCOPED_ROOT + roots::COUNT as u64).contains(&ino) {
-            let view = roots::view_name(UNSCOPED, (ino - UNSCOPED_ROOT) as usize);
+            let view = roots::view_name(
+                UNSCOPED,
+                usize::try_from(ino - UNSCOPED_ROOT).map_err(|_| Errno::ENOENT)?,
+            );
             return Ok(Node::In(self.scope(&view)?, PathBuf::new()));
         }
         let h = self.view_of(ino).ok_or(Errno::ENOENT)?;
@@ -193,6 +209,10 @@ impl Views {
     }
 
     /// The scope and path of an entry inside a scope; the mount root itself holds no files.
+    ///
+    /// # Errors
+    ///
+    /// `ENOENT` for the mount root or an unknown inode.
     pub fn key(&self, ino: u64) -> R<(Arc<ScopeHandle>, PathBuf)> {
         match self.node(ino)? {
             Node::Root => Err(Errno::EPERM),
@@ -200,12 +220,21 @@ impl Views {
         }
     }
 
+    /// The scope and path of `name` in directory inode `parent`.
+    ///
+    /// # Errors
+    ///
+    /// `ENOENT` if `parent` is unknown or the mount root holds no such view.
     pub fn child(&self, parent: u64, name: &OsStr) -> R<(Arc<ScopeHandle>, PathBuf)> {
         let (h, p) = self.key(parent)?;
         Ok((h, p.join(name)))
     }
-    /// The scope's inode for `rel`: a pinned number, else the base st_ino, else a new
+    /// The scope's inode for `rel`: a pinned number, else the base `st_ino`, else a new
     /// upper number (pinned). The table learns it when the kernel looks it up.
+    ///
+    /// # Errors
+    ///
+    /// The `Errno` of reading the base or the pin table.
     pub fn ino_for(&self, h: &ScopeHandle, rel: &Path) -> R<u64> {
         if h.group == UNSCOPED && rel.as_os_str().is_empty() {
             return Ok(UNSCOPED_ROOT + h.root as u64);
@@ -222,13 +251,12 @@ impl Views {
                 _ => {
                     // Under the store's lock: two lookups of a new path pin one number.
                     let mut store = h.store();
-                    match store.pin(rel) {
-                        Some(ino) => ino,
-                        None => {
-                            let ino = prefix | UPPER_BIT | store.alloc_upper_ino();
-                            store.set_pin(rel, ino).map_err(errno)?;
-                            ino
-                        }
+                    if let Some(ino) = store.pin(rel) {
+                        ino
+                    } else {
+                        let ino = prefix | UPPER_BIT | store.alloc_upper_ino();
+                        store.set_pin(rel, ino).map_err(errno)?;
+                        ino
                     }
                 }
             },

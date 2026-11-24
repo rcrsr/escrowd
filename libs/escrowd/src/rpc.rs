@@ -21,7 +21,12 @@ use crate::error::Error;
 use crate::exec::Children;
 use crate::proto::escrow_service_server::{EscrowService, EscrowServiceServer};
 use crate::proto::reviewer_service_server::{ReviewerService, ReviewerServiceServer};
-use crate::proto::*;
+use crate::proto::{
+    AwaitDecisionRequest, AwaitDecisionResponse, ChangeSet, CloseScopeRequest, CloseScopeResponse, DecideRequest,
+    DecideResponse, Decided, GetChangeSetRequest, GetChangeSetResponse, GetHeldRequest, GetHeldResponse,
+    ListHeldRequest, ListHeldResponse, OpenScopeRequest, OpenScopeResponse, PingRequest, PingResponse, ReviewRequest,
+    ReviewResponse, ScopeRoot, SettleUnscopedRequest, SettleUnscopedResponse,
+};
 use crate::reviewer::Runner;
 use crate::views::{Frozen, UNSCOPED, Views};
 
@@ -38,6 +43,10 @@ impl Service {
     }
 
     /// Pick up the reviews of the scopes held at start (`Decisions::resume`).
+    ///
+    /// # Errors
+    ///
+    /// The error of [`Decisions::resume`].
     pub async fn resume_reviews(&self) -> crate::error::Result<()> {
         self.0.resume().await
     }
@@ -54,6 +63,7 @@ pub const REVIEW_TOKEN_ENV: &str = "ESCROW_REVIEW_TOKEN";
 pub const REVIEW_SOCKET_ENV: &str = "ESCROW_REVIEW_SOCKET";
 
 /// The review socket beside the protocol socket.
+#[must_use]
 pub fn review_socket(socket: &Path) -> PathBuf {
     let mut s = socket.as_os_str().to_owned();
     s.push(".review");
@@ -229,6 +239,10 @@ impl ReviewerService for Service {
 
 /// Remove a stale socket file left by a dead daemon; fail if a live one still accepts
 /// connections on it.
+///
+/// # Errors
+///
+/// The socket file cannot be inspected or removed, or a live daemon still accepts connections on it.
 pub fn clear_stale(socket: &Path) -> anyhow::Result<()> {
     if std::fs::symlink_metadata(socket).is_err() {
         return Ok(());
@@ -240,6 +254,10 @@ pub fn clear_stale(socket: &Path) -> anyhow::Result<()> {
 }
 
 /// Bind a Unix socket, replacing a stale socket file left by a previous daemon.
+///
+/// # Errors
+///
+/// A stale socket cannot be cleared, or the socket cannot be bound or given its mode.
 pub fn bind(socket: &Path) -> anyhow::Result<UnixListener> {
     clear_stale(socket)?;
     UnixListener::bind(socket).with_context(|| format!("binding {}", socket.display()))
@@ -261,6 +279,10 @@ fn bind_private(socket: &Path) -> anyhow::Result<UnixListener> {
 /// Serve clients on `socket` and reviewers on its review socket until `shutdown`
 /// resolves; the sockets are removed on exit. Waiting calls end at once; calls still
 /// running after `GRACE` are abandoned, so the caller can unmount and flush.
+///
+/// # Errors
+///
+/// A socket cannot be bound, or serving fails.
 pub async fn serve(socket: &Path, service: Service, shutdown: impl Future<Output = ()>) -> anyhow::Result<()> {
     let review_path = review_socket(socket);
     let review_listener = bind_private(&review_path)?;
@@ -271,7 +293,7 @@ pub async fn serve(socket: &Path, service: Service, shutdown: impl Future<Output
     let reviewers = tonic::transport::Server::builder()
         .add_service(ReviewerServiceServer::new(service.clone()))
         .serve_with_incoming_shutdown(UnixListenerStream::new(review_listener), async move {
-            started.stopped().await
+            started.stopped().await;
         });
     let stopper = service.0.clone();
     let clients = tonic::transport::Server::builder()
@@ -289,7 +311,7 @@ pub async fn serve(socket: &Path, service: Service, shutdown: impl Future<Output
     let both = async { tokio::join!(clients, reviewers) };
     let (result, reviewed) = tokio::select! {
         r = both => r,
-        _ = async {
+        () = async {
             service.0.stopped().await;
             tokio::time::sleep(GRACE).await;
         } => {

@@ -1,7 +1,11 @@
 //! The copy-on-write overlay of one view: where a path lives (upper or base),
 //! copy-up, listings, and the filesystem operations FUSE forwards, in FUSE order.
 
-use super::*;
+use super::{
+    Access, Arc, AsFd, AtomicBool, AtomicU64, BTreeMap, Base, By, Errno, File, FileType, Frozen, Inodes, Mutex, OFlags,
+    Ordering, OsString, OwnedFd, PROJECT, Pages, Path, PathBuf, Proc, Protected, R, Rules, RwLock, RwLockReadGuard,
+    RwLockWriteGuard, ScopeStore, Stat, UNSCOPED, Version, VersionKind, Views, errno, io, parent, sys,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Loc {
@@ -86,6 +90,11 @@ impl Views {
         self.base(h).lstat(rel).ok()
     }
 
+    /// Where `rel` lives in the scope (the upper or the base) and its `stat`.
+    ///
+    /// # Errors
+    ///
+    /// `ENOENT` if the rules hide `rel` or neither the upper nor the base has it.
     pub fn locate(&self, h: &ScopeHandle, rel: &Path) -> R<(Loc, Stat)> {
         if h.hidden(rel) {
             return Err(Errno::ENOENT);
@@ -96,6 +105,11 @@ impl Views {
         self.lower_stat(h, rel).map(|st| (Loc::Lower, st)).ok_or(Errno::ENOENT)
     }
 
+    /// The `stat` of the project root.
+    ///
+    /// # Errors
+    ///
+    /// `EIO` if the project has no base directory, otherwise the `Errno` of `lstat`.
     pub fn root_stat(&self) -> R<Stat> {
         sys::lstat(
             self.roots[PROJECT].lower.as_ref().ok_or(Errno::EIO)?.as_fd(),
@@ -110,7 +124,7 @@ impl Views {
             return Ok(());
         }
         self.ensure_upper_dir(h, parent(rel))?;
-        let mode = self.lower_stat(h, rel).map(|st| st.st_mode & 0o7777).unwrap_or(0o755);
+        let mode = self.lower_stat(h, rel).map_or(0o755, |st| st.st_mode & 0o7777);
         match sys::mkdir(h.upper.as_fd(), rel, mode) {
             Err(e) if e.kind() != io::ErrorKind::AlreadyExists => Err(errno(e)),
             Err(_) => Ok(()),
@@ -119,19 +133,25 @@ impl Views {
         }
     }
 
-    pub(super) fn record(&self, h: &ScopeHandle, rel: &Path, kind: VersionKind, st: &Stat) -> R<()> {
+    pub(super) fn record(h: &ScopeHandle, rel: &Path, kind: VersionKind, st: &Stat) -> R<()> {
         if h.store_read().has_version(rel, kind) {
             return Ok(());
         }
         h.store().record_version(rel, kind, Version::of(st)).map_err(errno)
     }
 
+    /// Copy `rel` from the base into the upper if it is not there yet.
+    ///
+    /// # Errors
+    ///
+    /// `ENOENT` if the rules hide `rel` or it does not exist, otherwise the `Errno` of the copy or of
+    /// recording its version.
     pub fn copy_up(&self, h: &ScopeHandle, rel: &Path) -> R<()> {
         let (loc, st) = self.locate(h, rel)?;
         if loc == Loc::Upper {
             return Ok(());
         }
-        self.record(h, rel, VersionKind::Changed, &st)?;
+        Self::record(h, rel, VersionKind::Changed, &st)?;
         self.ensure_upper_dir(h, parent(rel))?;
         if sys::is_dir(&st) {
             return self.ensure_upper_dir(h, rel);
@@ -150,6 +170,11 @@ impl Views {
 
     /// A listing the rules allow (a stub lists as empty, a denied directory gets
     /// EACCES), logged when `log` (a listing from its start).
+    ///
+    /// # Errors
+    ///
+    /// `ENOENT` if `rel` is hidden or does not exist, `EACCES` if the rules deny the directory, `ENOTDIR` if
+    /// it is not one.
     pub fn list_checked(&self, h: &ScopeHandle, rel: &Path, log: bool) -> R<BTreeMap<OsString, FileType>> {
         match h.access(rel) {
             Access::Deny => {
@@ -167,6 +192,12 @@ impl Views {
         }
     }
 
+    /// The entries of directory `rel` as the scope sees them, without logging.
+    ///
+    /// # Errors
+    ///
+    /// `ENOENT` if `rel` is hidden or does not exist, `ENOTDIR` if it is not a directory, otherwise the
+    /// `Errno` of reading it.
     pub fn list(&self, h: &ScopeHandle, rel: &Path) -> R<BTreeMap<OsString, FileType>> {
         let mut out = BTreeMap::new();
         let mut found = false;
@@ -192,7 +223,7 @@ impl Views {
 
     /// A new entry exists at `rel` in the upper: it no longer hides a base entry.
     /// A directory created where the base had one hides the base directory's contents.
-    pub(super) fn unwhiteout(&self, h: &ScopeHandle, rel: &Path, is_dir: bool) -> R<()> {
+    pub(super) fn unwhiteout(h: &ScopeHandle, rel: &Path, is_dir: bool) -> R<()> {
         let mut store = h.store();
         if store.remove_whiteout(rel).map_err(errno)? && is_dir {
             store.add_opaque(rel).map_err(errno)?;
@@ -203,7 +234,7 @@ impl Views {
     // ---- operations, in FUSE order ----
 
     pub fn log(&self, h: &ScopeHandle, op: &str, rel: &Path, decision: &str) {
-        self.log_by(h, op, rel, None, decision)
+        self.log_by(h, op, rel, None, decision);
     }
 
     /// A ledger line naming the process `by` that asked for it.
@@ -224,7 +255,7 @@ impl Views {
     }
 
     /// `by` changed `rel`: it goes into the change set's writers.
-    pub(super) fn wrote(&self, h: &ScopeHandle, rel: &Path, by: By) -> R<()> {
+    pub(super) fn wrote(h: &ScopeHandle, rel: &Path, by: By) -> R<()> {
         let Some(p) = by else { return Ok(()) };
         if h.store_read().has_writer(rel, p.info.id) {
             return Ok(());
@@ -274,6 +305,13 @@ impl Views {
         }
     }
 
+    /// Change the mode, owner, size or times of `rel` for the process of thread `tid`; returns the new
+    /// `stat`.
+    ///
+    /// # Errors
+    ///
+    /// `EROFS` if the scope is closed or read-only, `EACCES` if the rules or protection refuse the path,
+    /// `ENOENT` if the rules hide it, otherwise the `Errno` of the upper or base operation that failed.
     #[allow(clippy::too_many_arguments)]
     pub fn setattr(
         &self,
@@ -305,10 +343,16 @@ impl Views {
         if let Some((atime, mtime)) = times {
             sys::set_times(up, rel, atime, mtime).map_err(errno)?;
         }
-        self.wrote(h, rel, by)?;
+        Self::wrote(h, rel, by)?;
         sys::lstat(up, rel).map_err(errno)
     }
 
+    /// The target of the symlink `rel`.
+    ///
+    /// # Errors
+    ///
+    /// `ENOENT` if the rules hide `rel` or neither the upper nor the base has it. `EINVAL` if it is not a
+    /// symlink.
     pub fn readlink(&self, h: &ScopeHandle, rel: &Path) -> R<PathBuf> {
         if h.access(rel) == Access::Deny {
             self.log(h, "readlink", rel, "deny");
@@ -322,6 +366,13 @@ impl Views {
         .map_err(errno)
     }
 
+    /// Create directory `rel` with `mode` for the process of thread `tid`.
+    ///
+    /// # Errors
+    ///
+    /// `EROFS` if the scope is closed or read-only, `EACCES` if the rules or protection refuse the path,
+    /// `ENOENT` if the rules hide it, otherwise the `Errno` of the upper or base operation that failed.
+    /// `EEXIST` if `rel` exists.
     pub fn mkdir(&self, h: &ScopeHandle, tid: u32, rel: &Path, mode: u32) -> R<()> {
         let by = self.caller(tid);
         let by = by.as_ref();
@@ -331,12 +382,19 @@ impl Views {
         }
         self.ensure_upper_dir(h, parent(rel))?;
         sys::mkdir(h.upper.as_fd(), rel, mode).map_err(errno)?;
-        self.unwhiteout(h, rel, true)?;
-        self.wrote(h, rel, by)?;
+        Self::unwhiteout(h, rel, true)?;
+        Self::wrote(h, rel, by)?;
         self.log_by(h, "mkdir", rel, by, "allow");
         Ok(())
     }
 
+    /// Remove `rel` (a directory when `dir`) for the process of thread `tid`.
+    ///
+    /// # Errors
+    ///
+    /// `EROFS` if the scope is closed or read-only, `EACCES` if the rules or protection refuse the path,
+    /// `ENOENT` if the rules hide it, otherwise the `Errno` of the upper or base operation that failed.
+    /// `ENOTEMPTY` for a directory that holds entries.
     pub fn unlink(&self, h: &ScopeHandle, tid: u32, rel: &Path, dir: bool) -> R<()> {
         let by = self.caller(tid);
         let by = by.as_ref();
@@ -379,6 +437,13 @@ impl Views {
         Ok(())
     }
 
+    /// Create the symlink `rel` pointing at `target` for the process of thread `tid`.
+    ///
+    /// # Errors
+    ///
+    /// `EROFS` if the scope is closed or read-only, `EACCES` if the rules or protection refuse the path,
+    /// `ENOENT` if the rules hide it, otherwise the `Errno` of the upper or base operation that failed.
+    /// `EEXIST` if `rel` exists.
     pub fn symlink(&self, h: &ScopeHandle, tid: u32, rel: &Path, target: &Path) -> R<()> {
         let by = self.caller(tid);
         let by = by.as_ref();
@@ -388,12 +453,19 @@ impl Views {
         }
         self.ensure_upper_dir(h, parent(rel))?;
         sys::symlink(target, h.upper.as_fd(), rel).map_err(errno)?;
-        self.unwhiteout(h, rel, false)?;
-        self.wrote(h, rel, by)?;
+        Self::unwhiteout(h, rel, false)?;
+        Self::wrote(h, rel, by)?;
         self.log_by(h, "symlink", rel, by, "allow");
         Ok(())
     }
 
+    /// Rename `from` to `to` (with the `renameat2` `flags`) for the process of thread `tid`.
+    ///
+    /// # Errors
+    ///
+    /// `EROFS` if the scope is closed or read-only, `EACCES` if the rules or protection refuse the path,
+    /// `ENOENT` if the rules hide it, otherwise the `Errno` of the upper or base operation that failed.
+    /// `EXDEV` across roots.
     pub fn rename(&self, h: &ScopeHandle, tid: u32, from: &Path, to: &Path, flags: u32) -> R<()> {
         let by = self.caller(tid);
         let by = by.as_ref();
@@ -463,6 +535,12 @@ impl Views {
         Ok(())
     }
 
+    /// Hard-link inode `ino` at `src` as `dst` for the process of thread `tid`.
+    ///
+    /// # Errors
+    ///
+    /// `EROFS` if the scope is closed or read-only, `EACCES` if the rules or protection refuse the path,
+    /// `ENOENT` if the rules hide it, otherwise the `Errno` of the upper or base operation that failed.
     pub fn link(&self, h: &ScopeHandle, tid: u32, ino: u64, src: &Path, dst: &Path) -> R<()> {
         let by = self.caller(tid);
         let by = by.as_ref();
@@ -474,14 +552,14 @@ impl Views {
         self.copy_up(h, src)?;
         self.ensure_upper_dir(h, parent(dst))?;
         sys::link(h.upper.as_fd(), src, dst).map_err(errno)?;
-        self.unwhiteout(h, dst, false)?;
+        Self::unwhiteout(h, dst, false)?;
         {
             let mut store = h.store();
             store.set_pin(src, ino).map_err(errno)?;
             store.set_pin(dst, ino).map_err(errno)?;
         }
         h.inodes.lock().inos.insert(dst.to_path_buf(), ino);
-        self.wrote(h, dst, by)?;
+        Self::wrote(h, dst, by)?;
         self.log_by(h, "link", dst, by, "allow");
         Ok(())
     }
@@ -495,11 +573,16 @@ impl Views {
         } else {
             OFlags::RDWR
         };
-        base | OFlags::from_bits_retain(keep as u32)
+        base | OFlags::from_bits_retain(keep.cast_unsigned())
     }
 
     /// Open `rel` (inode `ino`); also returns what the kernel may do with its cached pages.
     /// Reads name no process: only opens for writing resolve the caller (thread `tid`).
+    ///
+    /// # Errors
+    ///
+    /// `EROFS` if the scope is closed or an open for writing is refused (see [`Views::create`]), `EACCES` if
+    /// the rules deny the path, `ENOENT` if it is hidden or missing, otherwise the `Errno` of the open.
     pub fn open(&self, h: &ScopeHandle, tid: u32, ino: u64, rel: &Path, flags: i32) -> R<(File, Pages)> {
         let acc = flags & libc::O_ACCMODE;
         let writes = acc != libc::O_RDONLY || flags & libc::O_TRUNC != 0;
@@ -526,13 +609,13 @@ impl Views {
         let (loc, st) = self.locate(h, rel)?;
         let f = if writes {
             self.copy_up(h, rel)?;
-            self.wrote(h, rel, by)?;
+            Self::wrote(h, rel, by)?;
             sys::open(h.upper.as_fd(), rel, oflags, 0)
         } else {
             match loc {
                 Loc::Upper => sys::open(h.upper.as_fd(), rel, oflags, 0),
                 Loc::Lower => {
-                    self.record(h, rel, VersionKind::Read, &st)?;
+                    Self::record(h, rel, VersionKind::Read, &st)?;
                     self.base(h).open(rel, oflags)
                 }
             }
@@ -552,6 +635,13 @@ impl Views {
             .is_some_and(|n| n.store(fuser::INodeNo(ino), 0, data).is_ok())
     }
 
+    /// Create and open the file `rel` with `mode` and `flags` for the process of thread `tid`.
+    ///
+    /// # Errors
+    ///
+    /// `EROFS` if the scope is closed or read-only, `EACCES` if the rules or protection refuse the path,
+    /// `ENOENT` if the rules hide it, otherwise the `Errno` of the upper or base operation that failed.
+    /// `EEXIST` if `rel` exists and `flags` ask for exclusivity.
     pub fn create(&self, h: &ScopeHandle, tid: u32, rel: &Path, mode: u32, flags: i32) -> R<File> {
         let by = self.caller(tid);
         let by = by.as_ref();
@@ -568,8 +658,8 @@ impl Views {
         self.log_by(h, "create", rel, by, "allow");
         let oflags = Self::open_flags(flags) | OFlags::CREATE;
         let f = sys::open(h.upper.as_fd(), rel, oflags, mode).map_err(errno)?;
-        self.unwhiteout(h, rel, false)?;
-        self.wrote(h, rel, by)?;
+        Self::unwhiteout(h, rel, false)?;
+        Self::wrote(h, rel, by)?;
         Ok(f)
     }
 }

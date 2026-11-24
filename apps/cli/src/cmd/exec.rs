@@ -84,7 +84,7 @@ pub(crate) async fn run(scope: String, socket: PathBuf, token: String, cmd: Vec<
     let req = SpawnRequest {
         scope_id: scope,
         argv: cmd.iter().map(lossy).collect(),
-        cwd: std::env::current_dir().map(lossy).unwrap_or_default(),
+        cwd: std::env::current_dir().map_or_default(lossy),
         env: std::env::vars_os()
             .filter(|(k, _)| k != TOKEN_ENV)
             .map(|(k, v)| (lossy(k), lossy(v)))

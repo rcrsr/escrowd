@@ -111,8 +111,7 @@ impl Rules {
             .paths
             .iter()
             .find(|(p, _)| rel.starts_with(p))
-            .map(|(_, r)| *r)
-            .unwrap_or(self.default);
+            .map_or(self.default, |(_, r)| *r);
         match rule {
             Rule::Capture => Access::Capture,
             Rule::Ephemeral => Access::Ephemeral,

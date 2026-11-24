@@ -188,7 +188,7 @@ impl Runner {
         let fail = |pid, f| RunReport { pid, result: Err(f) };
         let permit = tokio::select! {
             p = self.permits.clone().acquire_owned() => p,
-            _ = wait_cancelled(cancelled) => return fail(None, Failure::Cancelled),
+            () = wait_cancelled(cancelled) => return fail(None, Failure::Cancelled),
         };
         // The semaphore is never closed.
         let Ok(_permit) = permit else {
@@ -201,7 +201,7 @@ impl Runner {
         };
         let pid = child.id();
         // The program has no group before spawn returns; its pid is its group.
-        let group = pid.and_then(|p| Pid::from_raw(p as i32));
+        let group = pid.and_then(|p| i32::try_from(p).ok().and_then(Pid::from_raw));
         let (Some(mut stdin), Some(mut stdout), Some(stderr)) =
             (child.stdin.take(), child.stdout.take(), child.stderr.take())
         else {
@@ -231,8 +231,8 @@ impl Runner {
                     Ok(n) => if !take(&mut out, &buf[..n]) { break Stop::TooLarge },
                 },
                 st = child.wait() => break Stop::Exited(st),
-                _ = &mut timeout => break Stop::Timeout,
-                _ = wait_cancelled(cancelled) => break Stop::Cancelled,
+                () = &mut timeout => break Stop::Timeout,
+                () = wait_cancelled(cancelled) => break Stop::Cancelled,
             }
         };
 
@@ -410,7 +410,7 @@ mod tests {
             argv: vec!["sh".into(), "-c".into(), script.into()],
             timeout,
             on_failure: Decision::Discard,
-            env: env.iter().map(|s| s.to_string()).collect(),
+            env: env.iter().map(ToString::to_string).collect(),
             delegate,
         }
     }
@@ -495,7 +495,7 @@ mod tests {
         );
         // SIGKILL went to the whole group; its last member (the shell's `sleep`, now
         // an orphan) is gone once init reaps it, which a busy host may take a moment for.
-        let pgid = Pid::from_raw(report.pid.unwrap() as i32).unwrap();
+        let pgid = Pid::from_raw(i32::try_from(report.pid.unwrap()).unwrap()).unwrap();
         let reaped_by = Instant::now() + Duration::from_secs(5);
         while rustix::process::test_kill_process_group(pgid).is_ok() && Instant::now() < reaped_by {
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -656,16 +656,16 @@ mod tests {
     async fn one_permit_serializes_two_runs() {
         let cmd = quick(r#"sleep 0.4; echo '{"verdict":"commit"}'"#);
         let serial = runner(1);
-        let t = Instant::now();
-        let (a, b) = tokio::join!(serial.run(&cmd, request("a")), serial.run(&cmd, request("b")));
-        let serial_took = t.elapsed();
+        let start = Instant::now();
+        let (serial_a, serial_b) = tokio::join!(serial.run(&cmd, request("a")), serial.run(&cmd, request("b")));
+        let serial_took = start.elapsed();
 
         let both = runner(2);
-        let t = Instant::now();
-        let (c, d) = tokio::join!(both.run(&cmd, request("a")), both.run(&cmd, request("b")));
-        let parallel_took = t.elapsed();
+        let start = Instant::now();
+        let (both_a, both_b) = tokio::join!(both.run(&cmd, request("a")), both.run(&cmd, request("b")));
+        let parallel_took = start.elapsed();
 
-        for r in [a, b, c, d] {
+        for r in [serial_a, serial_b, both_a, both_b] {
             assert_eq!(r.result, Ok(Answer::Verdict(Decision::Commit, vec![])));
         }
         assert!(serial_took >= Duration::from_millis(800), "{serial_took:?}");

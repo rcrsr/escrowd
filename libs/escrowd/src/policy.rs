@@ -135,6 +135,7 @@ pub enum Tier {
 }
 
 impl Tier {
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Tier::Software => "software",
@@ -143,6 +144,7 @@ impl Tier {
         }
     }
 
+    #[must_use]
     pub fn parse(s: &str) -> Option<Tier> {
         [Tier::Software, Tier::Llm, Tier::Human]
             .into_iter()
@@ -211,6 +213,7 @@ impl ReviewerDef {
     pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
     /// The run's timeout; `Policy::parse` has checked the text.
+    #[must_use]
     pub fn timeout(&self) -> Duration {
         self.timeout
             .as_deref()
@@ -218,12 +221,18 @@ impl ReviewerDef {
             .unwrap_or(Self::DEFAULT_TIMEOUT)
     }
 
+    #[must_use]
     pub fn on_failure(&self) -> OnFailure {
         self.on_failure.unwrap_or_default()
     }
 
     /// The program of `run`: an absolute path, `~/…`, or a bare name found on `PATH` now.
     /// It must be an executable file.
+    ///
+    /// # Errors
+    ///
+    /// `run` is unset, the program is not found on `PATH`, cannot be expanded to an absolute path, or is not
+    /// an executable file.
     pub fn program_path(&self, name: &str) -> anyhow::Result<PathBuf> {
         let key = format!("reviewers.{name}");
         let Some(first) = self.run.as_ref().and_then(|r| r.first()) else {
@@ -288,6 +297,7 @@ fn is_executable(p: &Path) -> bool {
 }
 
 /// A reviewer name: a lowercase letter, then lowercase letters, digits and `-`.
+#[must_use]
 pub fn valid_reviewer_name(name: &str) -> bool {
     let mut chars = name.chars();
     chars.next().is_some_and(|c| c.is_ascii_lowercase())
@@ -295,6 +305,10 @@ pub fn valid_reviewer_name(name: &str) -> bool {
 }
 
 /// `<int>(ms|s|m|h)`, above zero; a bare number is refused (`key` names it in errors).
+///
+/// # Errors
+///
+/// `text` is not `<int>(ms|s|m|h)`, or is zero.
 pub fn parse_duration(key: &str, text: &str) -> anyhow::Result<Duration> {
     let split = text.find(|c: char| !c.is_ascii_digit()).unwrap_or(text.len());
     let (digits, unit) = text.split_at(split);
@@ -338,6 +352,11 @@ pub struct OnlyBy {
 }
 
 impl OnlyBy {
+    /// The program path of every command reviewer.
+    ///
+    /// # Errors
+    ///
+    /// A reviewer's program cannot be resolved (see [`ReviewerDef::program_path`]).
     pub fn program_paths(&self) -> anyhow::Result<Vec<PathBuf>> {
         expand("write.only_by.programs", &self.programs)
     }
@@ -387,6 +406,7 @@ impl DiffRules {
         1024 * 1024
     }
 
+    #[must_use]
     pub fn caps(&self) -> crate::diff::Caps {
         crate::diff::Caps {
             file_bytes: self.file_bytes,
@@ -463,6 +483,10 @@ impl RootRules {
 
     /// Every listed path with its rule, `~` expanded; each must lie inside `root`
     /// (`key` names the root in errors).
+    ///
+    /// # Errors
+    ///
+    /// A path cannot be expanded to an absolute path, or lies outside `root`.
     pub fn paths(&self, key: &str, root: &Path) -> anyhow::Result<Vec<(PathBuf, Rule)>> {
         let mut out = Vec::new();
         for (list, rule) in [
@@ -497,11 +521,19 @@ pub struct OtherRules {
 
 impl OtherRules {
     /// The read paths with `~` expanded; relative paths are an error.
+    ///
+    /// # Errors
+    ///
+    /// A path is relative or cannot be expanded.
     pub fn read_paths(&self) -> anyhow::Result<Vec<PathBuf>> {
         expand("roots.other.read", &self.read)
     }
 
     /// The passthrough paths with `~` expanded; relative paths are an error.
+    ///
+    /// # Errors
+    ///
+    /// A path is relative or cannot be expanded.
     pub fn passthrough_paths(&self) -> anyhow::Result<Vec<PathBuf>> {
         expand("roots.other.passthrough", &self.passthrough)
     }
@@ -538,11 +570,22 @@ impl Policy {
         4
     }
 
+    /// Read and parse the policy file at `path`.
+    ///
+    /// # Errors
+    ///
+    /// The file cannot be read, or its content fails [`Policy::parse`].
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let text = std::fs::read_to_string(path).with_context(|| format!("reading policy {}", path.display()))?;
         Self::parse(&text).with_context(|| format!("policy {}", path.display()))
     }
 
+    /// Parse and validate a policy document.
+    ///
+    /// # Errors
+    ///
+    /// `text` is not a valid policy document, its version is not 1, `reviewers_parallel` is 0, or a reviewer
+    /// definition is invalid.
     pub fn parse(text: &str) -> anyhow::Result<Self> {
         let policy: Policy = serde_saphyr::from_str(text)?;
         if policy.version != 1 {
@@ -593,7 +636,7 @@ mod tests {
 
     #[test]
     fn read_section_is_optional() {
-        assert!(Policy::parse("version: 1\n").unwrap().read.deny.is_empty());
+        assert_eq!(Policy::parse("version: 1\n").unwrap().read.deny, Vec::<String>::new());
     }
 
     #[test]

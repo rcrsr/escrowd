@@ -27,6 +27,7 @@ pub enum Mount {
 }
 
 impl Mount {
+    #[must_use]
     pub fn dst(&self) -> &Path {
         match self {
             Mount::Bind(_, d) | Mount::RoBind(_, d) => d,
@@ -48,7 +49,8 @@ pub struct Sandbox {
     pub home: Option<PathBuf>,
 }
 
-/// `explicit`, else `$ESCROW_BWRAP`, else escrowd's own bwrap (Ubuntu, AppArmor profile), else `bwrap`.
+/// `explicit`, else `$ESCROW_BWRAP`, else escrowd's own bwrap (Ubuntu, `AppArmor` profile), else `bwrap`.
+#[must_use]
 pub fn find_bwrap(explicit: Option<&Path>) -> PathBuf {
     if let Some(p) = explicit {
         return p.to_path_buf();
@@ -69,6 +71,7 @@ impl Sandbox {
     }
 
     /// `bwrap … -- argv` with `mounts` applied last and the working directory `chdir`.
+    #[must_use]
     pub fn command(&self, mounts: &[Mount], chdir: &Path, argv: &[OsString]) -> Command {
         let mut a: Vec<OsString> = Vec::new();
         let mut push = |args: &[&dyn AsRef<std::ffi::OsStr>]| a.extend(args.iter().map(|s| s.as_ref().to_os_string()));

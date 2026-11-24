@@ -100,7 +100,7 @@ mod tests {
 
     fn v(n: i64) -> Version {
         Version {
-            ino: n as u64,
+            ino: n.cast_unsigned(),
             size: n,
             mtime_ns: n,
             ctime_ns: n,
