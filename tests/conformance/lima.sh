@@ -18,5 +18,5 @@ py=$(realpath "$("$uv" python find --project "$root")")
 limactl start "$vm" >/dev/null 2>&1 || true
 # Lima home mounts serve stale files after host edits.
 limactl shell "$vm" sudo sysctl -q vm.drop_caches=3
-limactl shell "$vm" env UV="$uv" UV_PYTHON="$py" ROOT="$root" sh "$root/tests/conformance/lima-guest.sh" 2>&1 |
-  tee "$root/tests/conformance/results/$host.log"
+limactl shell "$vm" env UV="$uv" UV_PYTHON="$py" ROOT="$root" sh "$root/tests/conformance/lima-guest.sh" 2>&1 \
+  | tee "$root/tests/conformance/results/$host.log"

@@ -15,6 +15,10 @@ cargo build --locked -p escrow-cli
 cargo nextest run --locked --workspace --no-tests=pass
 ESCROW_BIN="$PWD/${CARGO_TARGET_DIR:-target}/debug/escrow" uv run --no-sync pytest -n 0 --rootdir tests/conformance tests/conformance \
   --cov=libs/python-sdk/src --cov=libs/testkit --cov-report="lcov:$out/python.lcov" --cov-fail-under=0
+# Children whose environment the suite clears write default_*.profraw into the cwd; fold them in.
+shopt -s nullglob
+stray=(default_*.profraw)
+if ((${#stray[@]})); then mv "${stray[@]}" "$(dirname "$LLVM_PROFILE_FILE")/"; fi
 cargo llvm-cov report --lcov --output-path "$out/rust.lcov"
 # One merged LCOV report: diff-cover drops files when given several reports (11.0).
 {

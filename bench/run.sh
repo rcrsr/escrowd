@@ -85,9 +85,9 @@ mono() { perl -MTime::HiRes=clock_gettime,CLOCK_MONOTONIC -e "printf qq{%.6f\n},
 steps() { # steps <repo> <A|B>
   local repo=$1 wl=$2 tag install test
   case $repo in
-  express) tag=$EXPRESS_TAG install=$express_install test=$express_test ;;
-  attrs) tag=$ATTRS_TAG install=$attrs_install test=$attrs_test ;;
-  cpython) tag=$CPYTHON_TAG install=true test=true ;;
+    express) tag=$EXPRESS_TAG install=$express_install test=$express_test ;;
+    attrs) tag=$ATTRS_TAG install=$attrs_install test=$attrs_test ;;
+    cpython) tag=$CPYTHON_TAG install=true test=true ;;
   esac
   echo "$COMMON"
   if [ "$wl" = clone ]; then # the base tree for workload C
@@ -132,8 +132,8 @@ run() { # run <mode> <repo> <A|B>
   mkdir -p "$proj"
   script=$(steps "$repo" "$wl")
   case $wl in # the tree is in the base before the timed steps: installed for B, cloned for C
-  B) (cd "$proj" && bash -c "$(steps "$repo" A)" >/dev/null 2>&1) ;;
-  C) (cd "$proj" && bash -c "$(steps "$repo" clone)" >/dev/null 2>&1) ;;
+    B) (cd "$proj" && bash -c "$(steps "$repo" A)" >/dev/null 2>&1) ;;
+    C) (cd "$proj" && bash -c "$(steps "$repo" clone)" >/dev/null 2>&1) ;;
   esac
   cat >"$D/policy.yaml" <<EOF2
 version: 1
@@ -145,14 +145,14 @@ EOF2
   rt=$(mktemp -d "$RT/escrow-bench.XXXXXX")
   t0=$(mono)
   case $mode in
-  native) out=$(cd "$proj" && bash -c "$script" 2>&1) ;;
-  sandbox | escrow)
-    local unscoped=passthrough
-    [ "$mode" = escrow ] && unscoped=implicit
-    out=$(cd "$proj" && "$ESCROW" run --project "$proj" --unscoped "$unscoped" --on-exit commit \
-      --policy "$D/policy.yaml" --state "$D/state" --mount "$rt/view" --socket "$rt/s.sock" \
-      -- bash -c "$script" 2>&1)
-    ;;
+    native) out=$(cd "$proj" && bash -c "$script" 2>&1) ;;
+    sandbox | escrow)
+      local unscoped=passthrough
+      [ "$mode" = escrow ] && unscoped=implicit
+      out=$(cd "$proj" && "$ESCROW" run --project "$proj" --unscoped "$unscoped" --on-exit commit \
+        --policy "$D/policy.yaml" --state "$D/state" --mount "$rt/view" --socket "$rt/s.sock" \
+        -- bash -c "$script" 2>&1)
+      ;;
   esac
   t1=$(mono)
   echo "run=$i mode=$mode repo=$repo workload=$wl $(echo "$out" | grep -E '^(clone|status|rg_cold)=' | tail -1) wall=$(awk "BEGIN{print $t1-$t0}")"
