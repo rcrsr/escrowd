@@ -268,7 +268,17 @@ impl Views {
         }
         views.ensure_unscoped()?;
         views.gc(None)?;
-        views.history.resolve(|id| views.fate(id, &finished))?;
+        for id in views.history.resolve(|id| views.fate(id, &finished))? {
+            // A kill after a return reopened the scope, before its ledger line, leaves the
+            // decision kept but not logged: log the return once.
+            let returned = views
+                .history
+                .latest(&id)?
+                .is_some_and(|l| crate::record::is_return(&l.entry));
+            if returned && views.ledger.last_decision(&id)?.as_deref() != Some("return") {
+                views.ledger.append(&id, "decide", Path::new(""), None, "return");
+            }
+        }
         // Discard only after resolve: it must see the project view first, or a kept
         // decision would settle as a conflict.
         for group in &stale {

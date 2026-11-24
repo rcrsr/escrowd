@@ -330,6 +330,8 @@ def test_escrow_review_lists_shows_and_decides(start_daemon, escrow_bin):
         # The discard is in the ledger, the scope not gone yet: the next start drops it.
         ("discarded", DISCARD, pb.OUTCOME_STATUS_DISCARDED),
         ("applied", RETURN, pb.OUTCOME_STATUS_RETURNED),
+        # The scope is reopened, its ledger line not written: the next start logs it once.
+        ("reopened", RETURN, pb.OUTCOME_STATUS_RETURNED),
     ],
 )
 def test_a_kill_during_the_final_review_keeps_its_decision(start_daemon, fault, verdict, want):

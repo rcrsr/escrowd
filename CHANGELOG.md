@@ -20,4 +20,5 @@ into the manifests. escrowd has no releases yet, so every change sits under Unre
 
 ### Fixed
 
+- **Return after a kill:** a daemon killed after a return reopened its scope, before the return's ledger line, now logs the missing `op=decide` line at the next start. ([#44](https://github.com/rcrsr/escrowd/pull/44))
 - **Test temp files:** Rust tests and the conformance suite no longer leak temporary directories. ([#43](https://github.com/rcrsr/escrowd/pull/43))

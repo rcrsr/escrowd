@@ -306,6 +306,7 @@ impl Views {
             h.closed.store(false, Ordering::Release);
         }
         *frozen = None;
+        crate::fault::hit("reopened", 0)?;
         self.ledger.append(id, "decide", Path::new(""), None, "return");
         Ok(())
     }

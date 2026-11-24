@@ -9,6 +9,8 @@
 //! it is settled) and `settled` (before a committed scope is dropped); with `abort`,
 //! the next start settles or cancels it. `discarded` fires after a discard's ledger
 //! line, before its scope is dropped (with `abort`, the next start drops it).
+//! `reopened` fires after a return reopened its scope, before the return's ledger line
+//! (with `abort`, the next start logs the line).
 //! `recovered` fires at start, after recovery dropped the scopes of finished commits.
 //! `restore` fires while a rollback puts originals back (with `abort`: a crash
 //! during recovery). `race:<n>` plays an editor: just before apply step `n`

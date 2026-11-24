@@ -42,6 +42,14 @@ pub fn outcome(entry: &[u8]) -> Option<Outcome> {
     Decided::decode(entry).ok()?.outcome.and_then(convert::outcome_from)
 }
 
+/// Whether a record holds a return: its scope was reopened.
+pub fn is_return(entry: &[u8]) -> bool {
+    Decided::decode(entry)
+        .ok()
+        .and_then(|d| d.outcome)
+        .is_some_and(|o| o.status() == OutcomeStatus::Returned)
+}
+
 /// A pending record as its scope's fate at start shows it applied, re-encoded; None:
 /// it was not applied (or is unreadable), so the history cancels it.
 pub fn settled(entry: &[u8], fate: Fate) -> Option<Vec<u8>> {
