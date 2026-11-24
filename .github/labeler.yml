@@ -2,18 +2,18 @@
 # Every label whose glob matches a changed path is applied; a PR spanning areas
 # carries several. PR titles keep conventional-commit format (`feat(daemon): …`).
 #
-#   area:daemon   libs/escrowd and proto/: capture, scopes, journal, gate, ledger, protocol
+#   area:daemon   libs/escrowd, libs/proto and proto/: capture, scopes, journal, gate, ledger, protocol
 #   area:cli      apps/cli: the `escrow` command
-#   area:sdk      sdk/: language SDKs
+#   area:sdk      libs/*-sdk: language SDKs
 #   area:sandbox  packaging/: escrowd's bwrap and AppArmor profile
-#   area:tests    tests/ and examples/: the conformance suite and test app
+#   area:tests    tests/, libs/testkit and examples/: the conformance suite, its harness and test app
 #   area:docs     docs/: design and phase plans
 #   area:spikes   spikes/: phase 0 throwaway spikes and results
 #   area:dx       CI, toolchain, root config and the .claude workspace
 
 area:daemon:
   - changed-files:
-      - any-glob-to-any-file: ["libs/escrowd/**", "proto/**"]
+      - any-glob-to-any-file: ["libs/escrowd/**", "libs/proto/**", "proto/**"]
 
 area:cli:
   - changed-files:
@@ -21,7 +21,7 @@ area:cli:
 
 area:sdk:
   - changed-files:
-      - any-glob-to-any-file: ["sdk/**"]
+      - any-glob-to-any-file: ["libs/*-sdk/**"]
 
 area:sandbox:
   - changed-files:
@@ -29,7 +29,7 @@ area:sandbox:
 
 area:tests:
   - changed-files:
-      - any-glob-to-any-file: ["tests/**", "examples/**"]
+      - any-glob-to-any-file: ["tests/**", "libs/testkit/**", "examples/**"]
 
 area:docs:
   - changed-files:
@@ -47,7 +47,19 @@ area:dx:
           - "mise.toml"
           - "rust-toolchain.toml"
           - "rustfmt.toml"
-          - ".python-version"
+          - "mise.lock"
+          - "pyproject.toml"
+          - "uv.lock"
+          - "clippy.toml"
+          - "deny.toml"
+          - "tach.toml"
+          - "_typos.toml"
+          - ".editorconfig"
+          - ".config/**"
+          - "Makefile"
+          - "VERSION"
+          - "lefthook.yml"
+          - "scripts/**"
           - "Cargo.toml"
           - "CLAUDE.md"
           - ".gitignore"

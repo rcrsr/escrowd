@@ -1,0 +1,9 @@
+# Alerts only; no bot PRs (APP-SUP-4). Security-update PRs are off in the repository settings
+# (APP-SUP-9). No PRs means Action SHAs never refresh on their own: bump them by hand monthly,
+# naming the month in the commit (APP-SUP-10).
+version: 2
+updates:
+  - { package-ecosystem: npm, directory: /, schedule: { interval: weekly }, open-pull-requests-limit: 0 }
+  - { package-ecosystem: uv, directory: /, schedule: { interval: weekly }, open-pull-requests-limit: 0 }
+  - { package-ecosystem: cargo, directory: /, schedule: { interval: weekly }, open-pull-requests-limit: 0 }
+  - { package-ecosystem: github-actions, directory: /, schedule: { interval: weekly }, open-pull-requests-limit: 0 }

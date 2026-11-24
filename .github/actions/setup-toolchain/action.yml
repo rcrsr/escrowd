@@ -1,0 +1,29 @@
+name: Set up toolchain
+description: >-
+  Every tool from mise.lock (APP-CI-3), the Rust cache, a frozen pnpm install and a locked uv sync.
+  Set ESCROWD_PYTHON in the job's env to pick another Python (mise.toml derives UV_PYTHON from it).
+
+inputs:
+  rust-cache-key:
+    description: Extra key for the Rust cache
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: jdx/mise-action@924e7c586e33d7d4bae9c14e26c5d22e2beb6e78 # v5.3.0
+      with:
+        install: true
+        install_args: --locked
+        cache: true
+
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      with:
+        key: ${{ inputs.rust-cache-key }}
+
+    - name: Install workspace dependencies
+      shell: bash
+      run: |
+        pnpm install --frozen-lockfile
+        uv sync --locked

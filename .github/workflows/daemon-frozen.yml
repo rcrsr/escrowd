@@ -1,9 +1,10 @@
 name: Daemon frozen
 
 # Phase 5 builds on the daemon and protocol as phase 4 leaves them: a PR labeled `phase-5` must not
-# change libs/escrowd/ or proto/. Its own workflow because it runs on label
-# changes too, which must not re-run or cancel CI. No concurrency group: a push and
-# a label change arrive together, and a cancelled run reads as a failed check.
+# change libs/escrowd/, libs/proto/ or proto/. Its own workflow because it runs on label
+# changes too, which must not re-run or cancel CI. A push and a label change arrive
+# together, and a cancelled run reads as a failed check, so the concurrency group is per
+# event and head commit and never cancels (APP-CI-2).
 
 on:
   pull_request:
@@ -13,10 +14,14 @@ permissions:
   contents: read
   pull-requests: read
 
+concurrency:
+  group: daemon-frozen-${{ github.event.pull_request.number }}-${{ github.event.action }}-${{ github.event.pull_request.head.sha }}
+  cancel-in-progress: false
+
 jobs:
   daemon-frozen:
     name: Daemon frozen
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: No daemon or protocol change under phase-5
         if: contains(github.event.pull_request.labels.*.name, 'phase-5')
@@ -25,7 +30,7 @@ jobs:
           PR: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
-          changed=$(gh pr diff "$PR" --repo "$REPO" --name-only | grep -E '^(libs/escrowd/|proto/)' || true)
+          changed=$(gh pr diff "$PR" --repo "$REPO" --name-only | grep -E '^(libs/escrowd/|libs/proto/|proto/)' || true)
           if [[ -n "$changed" ]]; then
             echo "::error::a phase-5 PR changes the frozen daemon or protocol; split it out:"
             echo "$changed"

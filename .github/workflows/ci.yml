@@ -1,273 +1,150 @@
 name: CI
 
-# Pull requests only. `changes` gates each job on the paths it covers (every
-# job runs when this file changes); `CI Gate` is the one check to require. The
-# suite runs once here; `ci-repeat.yml` repeats it 10 times on demand (`ci:repeat`).
-# Tool commands live in the nx targets (project.json files); jobs call `nx run-many`.
-# Toolchain and workspace files (package.json, lockfile, nx.json, mise.toml, the
-# setup-nx action) are in the filter of each job that reads them.
+# Pull requests only; no path filters (APP-CI-5): Nx's affected graph decides what runs.
+# `CI Gate` is the one required check. The suite runs once here (conformance.yml);
+# `ci-repeat.yml` repeats it 10 times on demand (`ci:repeat`). Commands live in the
+# package.json scripts and Nx targets; NX_BASE selects the affected base (D8).
 
 on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  NX_BASE: origin/main
+
 jobs:
-  changes:
-    name: Detect changes
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: read
+  check:
+    name: Check
+    runs-on: ubuntu-24.04
     outputs:
-      rust: ${{ steps.filter.outputs.rust }}
-      python: ${{ steps.filter.outputs.python }}
-      conformance: ${{ steps.filter.outputs.conformance }}
-      soak: ${{ steps.filter.outputs.soak }}
-      protocol: ${{ steps.filter.outputs.protocol }}
+      soak: ${{ steps.soak.outputs.soak }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - uses: dorny/paths-filter@v4
-        id: filter
-        with:
-          filters: |
-            rust:
-              - 'crates/**'
-              - 'proto/**'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'rust-toolchain.toml'
-              - 'rustfmt.toml'
-              - 'package.json'
-              - 'pnpm-lock.yaml'
-              - 'pnpm-workspace.yaml'
-              - 'nx.json'
-              - 'mise.toml'
-              - '.github/actions/**'
-              - '.github/workflows/ci.yml'
-            python:
-              - 'libs/python-sdk/**'
-              - 'tests/**'
-              - 'examples/**'
-              - 'bench/**'
-              - 'proto/**'
-              - '.python-version'
-              - 'ruff.toml'
-              - 'package.json'
-              - 'pnpm-lock.yaml'
-              - 'pnpm-workspace.yaml'
-              - 'nx.json'
-              - 'mise.toml'
-              - '.github/actions/**'
-              - '.github/workflows/ci.yml'
-            protocol:
-              - 'proto/**'
-              - 'buf.yaml'
-              - 'project.json'
-              - 'package.json'
-              - 'pnpm-lock.yaml'
-              - 'pnpm-workspace.yaml'
-              - 'nx.json'
-              - 'mise.toml'
-              - '.github/actions/**'
-              - '.github/workflows/ci.yml'
-            # The commit path and held decisions: run the crash and held soaks (50 random
-            # kills each) after the suite.
-            soak:
-              - 'libs/escrowd/src/commit/**'
-              - 'libs/escrowd/src/history.rs'
-              - 'libs/escrowd/src/journal.rs'
-              - 'libs/escrowd/src/snapshot.rs'
-              - 'libs/escrowd/src/fault.rs'
-              - 'tests/soak/**'
-              - 'libs/testkit/**'
-              - 'tests/fixtures/**'
-            conformance:
-              - 'crates/**'
-              - 'proto/**'
-              - 'libs/python-sdk/**'
-              - 'tests/**'
-              - 'examples/**'
-              - 'packaging/**'
-              - 'docs/protocol.md'
-              - 'Cargo.toml'
-              - 'Cargo.lock'
-              - 'rust-toolchain.toml'
-              - '.python-version'
-              - 'package.json'
-              - 'pnpm-lock.yaml'
-              - 'pnpm-workspace.yaml'
-              - 'nx.json'
-              - 'mise.toml'
-              - '.github/actions/**'
-              - '.github/workflows/ci.yml'
-              - '.github/workflows/conformance.yml'
+          fetch-tags: true # protocol:test runs buf breaking against the protocol-v1 tag
+          persist-credentials: false
 
-  check-rust:
-    name: Rust
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
+      - uses: ./.github/actions/setup-toolchain
 
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
+      - name: Static checks (affected)
+        run: pnpm run check:affected
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Unit tests (affected)
+        run: pnpm run test:affected
 
-      - uses: ./.github/actions/setup-nx
+      - name: Build (affected)
+        run: pnpm run build:affected
 
-      - name: Check Rust crates
-        run: pnpm exec nx run-many -t lint test -p rust
+      - name: Secrets and known vulnerabilities
+        run: pnpm run check:security
 
-  # The frozen protocol (docs/protocol.md): linted, formatted, and no breaking change
-  # against the protocol-v1 tag (buf's FILE rules: generated code keeps compiling).
-  check-protocol:
-    name: Protocol
-    needs: changes
-    if: needs.changes.outputs.protocol == 'true'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          fetch-depth: 0
-          fetch-tags: true
+      - name: Spelling
+        run: pnpm run check:spelling
 
-      - name: Read the buf pin
-        id: pin
-        run: echo "buf=$(sed -n 's/^buf = "\(.*\)"$/\1/p' mise.toml)" >> "$GITHUB_OUTPUT"
+      - name: Repo standards
+        run: pnpm run check:standards
 
-      - uses: bufbuild/buf-action@v1
-        with:
-          version: ${{ steps.pin.outputs.buf }}
-          setup_only: true
+      - name: Versions
+        run: pnpm run check:versions
 
-      - uses: ./.github/actions/setup-nx
+      - name: Workflow security
+        run: zizmor --min-severity high .github/
 
-      - name: Lint, format and breaking-change check
-        run: pnpm exec nx run-many -t lint test -p protocol
+      # The commit path and held decisions: the crash and held soaks follow the suite.
+      - name: Soak needed
+        id: soak
+        run: |
+          if git diff --name-only "$NX_BASE"...HEAD \
+            | grep -qE '^(libs/escrowd/src/(commit/|history\.rs|journal\.rs|snapshot\.rs|fault\.rs)|tests/soak/|libs/testkit/|tests/fixtures/)'; then
+            echo "soak=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "soak=false" >> "$GITHUB_OUTPUT"
+          fi
 
-  # Early warning, not required by the CI Gate: the workspace on current stable Rust
-  # instead of the rust-toolchain.toml pin (RUSTUP_TOOLCHAIN overrides the file).
+  # Early warning, not required by the CI Gate: the affected Rust projects on current stable
+  # instead of the rust-toolchain.toml pin.
   check-rust-stable:
     name: Rust (stable, advisory)
-    needs: changes
-    if: needs.changes.outputs.rust == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     continue-on-error: true
-    env:
-      RUSTUP_TOOLCHAIN: stable
     steps:
-      - uses: actions/checkout@v7
-
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          components: clippy, rustfmt
+          fetch-depth: 0
+          persist-credentials: false
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-toolchain
         with:
-          key: stable
-
-      - uses: ./.github/actions/setup-nx
+          rust-cache-key: stable
 
       - name: Check Rust crates on stable
         run: |
+          rustup toolchain install stable --profile minimal --component clippy,rustfmt
+          export RUSTUP_TOOLCHAIN=stable
           rustc --version
-          pnpm exec nx run-many -t lint test -p rust
+          pnpm exec nx affected -t lint test --projects 'tag:lang:rust'
 
-  check-python:
-    name: Python
-    needs: changes
-    if: needs.changes.outputs.python == 'true'
-    runs-on: ubuntu-latest
+  # Changed-line coverage at 80% (APP-TS-5): the suite against an instrumented daemon.
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          enable-cache: true
+          fetch-depth: 0
+          persist-credentials: false
 
-      - name: Cache .venv
-        uses: actions/cache@v6
+      - name: System packages
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap fuse3
+
+      - uses: ./.github/actions/setup-toolchain
         with:
-          path: |
-            libs/python-sdk/.venv
-            ${{ env.UV_PYTHON_INSTALL_DIR }}
-          key: venv-${{ runner.os }}-py${{ hashFiles('.python-version') }}-${{ hashFiles('libs/python-sdk/uv.lock') }}
+          rust-cache-key: coverage
 
-      - name: Install dependencies
-        run: uv sync --frozen
+      - name: escrowd bwrap and AppArmor profile
+        run: packaging/ubuntu/install.sh
 
-      - uses: ./.github/actions/setup-nx
+      - name: Changed-line coverage
+        run: pnpm run test:coverage
 
-      - name: Check Python
-        run: pnpm exec nx run-many -t lint test build -p python-sdk
+      - name: Upload the coverage report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coverage
+          path: target/coverage/
+          if-no-files-found: ignore
+          retention-days: 7
 
-  # One suite run on each Ubuntu LTS runner (see conformance.yml), then the crash
-  # soak when the commit path changed.
   conformance:
     name: Conformance
-    needs: changes
-    if: needs.changes.outputs.conformance == 'true'
+    needs: check
     uses: ./.github/workflows/conformance.yml
     with:
-      soak: ${{ needs.changes.outputs.soak == 'true' }}
-
-  lockfiles:
-    name: Lockfiles
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          sparse-checkout: |
-            crates
-            sdk
-            libs/testkit
-            .github
-            package.json
-            pnpm-lock.yaml
-            pnpm-workspace.yaml
-            mise.toml
-            Cargo.toml
-            Cargo.lock
-            rust-toolchain.toml
-            .python-version
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v10.4.0
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - name: Frozen pnpm install matches pnpm-lock.yaml
-        uses: ./.github/actions/setup-nx
-
-      - name: uv.lock in sync with pyproject.toml
-        run: uv lock --check
-
-      - name: Cargo.lock in sync with manifests
-        run: cargo metadata --locked --format-version=1 > /dev/null
+      soak: ${{ needs.check.outputs.soak == 'true' }}
 
   ci-gate:
     name: CI Gate
     if: always()
-    needs: [check-rust, check-protocol, check-python, conformance, lockfiles]
-    runs-on: ubuntu-latest
+    needs: [check, coverage, conformance]
+    runs-on: ubuntu-24.04
     steps:
       - name: Check results
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
         run: |
-          results="${{ join(needs.*.result, ' ') }}"
-          for r in $results; do
-            if [[ "$r" == "failure" || "$r" == "cancelled" ]]; then
-              echo "Job failed or was cancelled: $r"
+          for r in $RESULTS; do
+            if [[ "$r" != "success" ]]; then
+              echo "A required job ended with: $r"
               exit 1
             fi
           done
-          echo "All jobs passed or were skipped"
+          echo "All required jobs passed"

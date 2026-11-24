@@ -16,6 +16,9 @@ on:
         type: number
         default: 10
 
+permissions:
+  contents: read
+
 # One group per label, so adding another label never cancels a running repeat.
 concurrency:
   group: ci-repeat-${{ github.ref }}-${{ github.event.label.name || 'dispatch' }}
@@ -28,4 +31,5 @@ jobs:
     uses: ./.github/workflows/conformance.yml
     with:
       runs: ${{ inputs.runs || 10 }}
+      affected: false
       soak: true
