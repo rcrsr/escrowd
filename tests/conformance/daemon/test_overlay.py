@@ -191,7 +191,9 @@ def test_recreated_dir_hides_lower_contents(cow):
 
 
 def test_mv_of_lower_directory_falls_back_on_exdev(cow):
-    r = cow.run("mv dir dir-moved && test -f dir-moved/b2.txt && test ! -e dir")
+    # The view is shared by the whole module, so move the directory back: other checks compare
+    # the tree with the native copy and must not depend on test order.
+    r = cow.run("mv dir dir-moved && test -f dir-moved/b2.txt && test ! -e dir && mv dir-moved dir")
     assert r.returncode == 0, r.stderr
 
 

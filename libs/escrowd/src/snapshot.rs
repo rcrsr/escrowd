@@ -296,7 +296,7 @@ mod tests {
         }
     }
 
-    fn generations(name: &str) -> (Generations, PathBuf) {
+    fn generations(name: &str) -> (Generations, crate::db::TempDir) {
         let dir = crate::db::temp_dir(name);
         (Generations::open(&dir.join("generations")).unwrap(), dir)
     }

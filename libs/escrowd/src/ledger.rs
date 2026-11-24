@@ -185,6 +185,33 @@ fn scope_mark(line: &[u8], key: &str) -> Option<Mark> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    fn unescape(s: &str) -> Vec<u8> {
+        let b = s.as_bytes();
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'%' {
+                out.push(u8::from_str_radix(&s[i + 1..i + 3], 16).unwrap());
+                i += 3;
+            } else {
+                out.push(b[i]);
+                i += 1;
+            }
+        }
+        out
+    }
+
+    proptest! {
+        // APP-TS-4: the ledger's path field is one space-free token that decodes back exactly.
+        #[test]
+        fn escape_is_one_printable_token_that_round_trips(bytes in proptest::collection::vec(any::<u8>(), 0..64)) {
+            let e = escape_bytes(&bytes, b"=%");
+            prop_assert!(e.bytes().all(|c| c.is_ascii_graphic() && c != b'='));
+            prop_assert_eq!(unescape(&e), bytes);
+        }
+    }
 
     #[test]
     fn escapes_separators_and_non_ascii() {

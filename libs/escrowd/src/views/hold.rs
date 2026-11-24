@@ -364,7 +364,7 @@ mod tests {
     }
 
     /// A closed scope held for the reviewers `ns`.
-    fn held(name: &str, ns: &[&str]) -> (Views, PathBuf, String) {
+    fn held(name: &str, ns: &[&str]) -> (Views, crate::db::TempDir, String) {
         let (views, dir) = Views::fixture_with(name, DECLARED);
         let id = views.open_scope("t", &HashMap::new(), "").unwrap().id;
         views.close_scope_after(&id, &[], CAPS).unwrap();

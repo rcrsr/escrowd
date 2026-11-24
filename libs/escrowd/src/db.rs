@@ -105,12 +105,34 @@ pub fn has_column(db: &Connection, table: &str, column: &str) -> rusqlite::Resul
         .exists([table, column])
 }
 
+/// A test's scratch directory, deleted when the guard drops (APP-TMP-1, APP-TMP-5). The
+/// `escrowd-<name>-` prefix names the test that leaked one (APP-TMP-3). Derefs to its path.
 #[cfg(test)]
-pub(crate) fn temp_dir(name: &str) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("escrowd-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).unwrap();
-    dir
+pub(crate) struct TempDir(tempfile::TempDir);
+
+#[cfg(test)]
+impl std::ops::Deref for TempDir {
+    type Target = std::path::Path;
+    fn deref(&self) -> &std::path::Path {
+        self.0.path()
+    }
+}
+
+#[cfg(test)]
+impl AsRef<std::path::Path> for TempDir {
+    fn as_ref(&self) -> &std::path::Path {
+        self.0.path()
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn temp_dir(name: &str) -> TempDir {
+    TempDir(
+        tempfile::Builder::new()
+            .prefix(&format!("escrowd-{name}-"))
+            .tempdir()
+            .unwrap(),
+    )
 }
 
 #[cfg(test)]

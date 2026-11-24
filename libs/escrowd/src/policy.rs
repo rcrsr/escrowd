@@ -627,6 +627,27 @@ impl std::str::FromStr for Unscoped {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        // APP-TS-4: every `<int><unit>` above zero parses to that many units; anything else is
+        // an error, never a panic.
+        #[test]
+        fn durations_parse_exactly(n in 1u64..1_000_000, unit in prop::sample::select(vec!["ms", "s", "m", "h"])) {
+            let want = match unit {
+                "ms" => Duration::from_millis(n),
+                "s" => Duration::from_secs(n),
+                "m" => Duration::from_secs(n * 60),
+                _ => Duration::from_secs(n * 3600),
+            };
+            prop_assert_eq!(parse_duration("k", &format!("{n}{unit}")).unwrap(), want);
+        }
+
+        #[test]
+        fn arbitrary_text_never_panics(text in ".{0,24}") {
+            let _ = parse_duration("k", &text);
+        }
+    }
 
     #[test]
     fn parses_read_rules() {

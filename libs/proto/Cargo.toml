@@ -26,3 +26,7 @@ tonic-prost.workspace = true
 pbjson-build.workspace = true
 protoc-bin-vendored.workspace = true
 tonic-prost-build.workspace = true
+
+# Used only by the include!d generator output, which cargo-machete cannot see.
+[package.metadata.cargo-machete]
+ignored = ["pbjson", "prost", "serde", "tonic-prost"]

@@ -675,8 +675,8 @@ mod tests {
 
     /// A config over a fresh project, state and mount outside it, with `policy` written
     /// to `<dir>/policy.yaml` when given.
-    fn config(name: &str, policy: Option<&str>, unscoped: Unscoped) -> (Config, PathBuf) {
-        let dir = crate::db::temp_dir(name).canonicalize().unwrap();
+    fn config(name: &str, policy: Option<&str>, unscoped: Unscoped) -> (Config, crate::db::TempDir) {
+        let dir = crate::db::temp_dir(name);
         let project = dir.join("project");
         std::fs::create_dir(&project).unwrap();
         let policy = policy.map(|text| {

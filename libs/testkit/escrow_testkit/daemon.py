@@ -2,6 +2,7 @@
 and the scope tokens those clients share."""
 
 import os
+import shutil
 import signal
 import socket
 import subprocess
@@ -41,11 +42,34 @@ def isolate_git_env() -> None:
     }
 
 
+# APP-TMP-3: one source prefix, so a leaked directory names the code that made it.
+RUNTIME_PREFIX = "escrowd-conformance-"
+STALE_AFTER_S = 24 * 60 * 60
+_swept = False
+
+
+def sweep_stale_runtime_dirs(base: Path) -> None:
+    """APP-TMP-4: remove this prefix's directories older than a day, left by runs killed
+    outright (SIGKILL skips every finalizer). A failed run's directory is kept for a day."""
+    for d in base.glob(f"{RUNTIME_PREFIX}*"):
+        try:
+            if time.time() - d.stat().st_mtime > STALE_AFTER_S:
+                subprocess.run(["fusermount3", "-uz", str(d / "mnt")], capture_output=True, check=False)
+                shutil.rmtree(d, ignore_errors=True)
+        except OSError:
+            continue  # another run owns it or it is gone
+
+
 def make_runtime_dir() -> Path:
-    # Unix socket paths are capped at 108 bytes, so stay out of pytest's long tmp paths;
-    # Ubuntu 26.04 confines fusermount3 to /run/user/<uid>, /tmp and a few other roots.
-    base = os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir()
-    return Path(tempfile.mkdtemp(prefix="escrow-test.", dir=base))
+    # Unix socket paths are capped at 108 bytes, so stay out of pytest's long tmp paths (the
+    # APP-TMP-5 exception); Ubuntu 26.04 confines fusermount3 to /run/user/<uid>, /tmp and a
+    # few other roots. Callers delete the directory (the runtime_dir fixture's finalizer).
+    global _swept
+    base = Path(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir())
+    if not _swept:
+        sweep_stale_runtime_dirs(base)
+        _swept = True
+    return Path(tempfile.mkdtemp(prefix=RUNTIME_PREFIX, dir=base))
 
 
 def write_policy(

@@ -443,12 +443,12 @@ impl Views {
 impl Views {
     /// A `Views` over an empty project in a fresh temp dir, serving only the project
     /// root with the unscoped scope in passthrough; the state dir is returned too.
-    pub(crate) fn fixture(name: &str) -> (Views, PathBuf) {
+    pub(crate) fn fixture(name: &str) -> (Views, crate::db::TempDir) {
         Views::fixture_with(name, "{}")
     }
 
     /// `fixture` with the policy's `reviewers:` (a YAML map) declared.
-    pub(crate) fn fixture_with(name: &str, reviewers: &str) -> (Views, PathBuf) {
+    pub(crate) fn fixture_with(name: &str, reviewers: &str) -> (Views, crate::db::TempDir) {
         let policy = crate::policy::Policy::parse(&format!("version: 1\nreviewers: {reviewers}\n")).unwrap();
         let dir = crate::db::temp_dir(name);
         let state = dir.join("state");

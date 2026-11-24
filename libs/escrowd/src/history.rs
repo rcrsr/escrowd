@@ -227,8 +227,7 @@ mod tests {
 
     #[test]
     fn keeps_the_newest_per_session_and_each_scopes_latest() {
-        let dir = std::env::temp_dir().join(format!("escrowd-history-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::db::temp_dir("history");
         let h = History::open(&dir, record::settled).unwrap();
         for i in 0..KEEP + 5 {
             h.record(&format!("s{i}"), "a", Some("t"), &[u8::try_from(i).unwrap()])
@@ -277,8 +276,7 @@ mod tests {
     #[test]
     fn a_start_settles_or_cancels_each_pending_decision() {
         use crate::proto::Outcome;
-        let dir = std::env::temp_dir().join(format!("escrowd-pending-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::db::temp_dir("pending");
         let h = History::open(&dir, record::settled).unwrap();
         let entry = |status: OutcomeStatus| {
             Decided {

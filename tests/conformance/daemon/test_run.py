@@ -123,7 +123,7 @@ def test_commit_at_exit_obeys_write_deny(app):
     assert not (a.project / "g.txt").exists()
 
 
-def test_a_childs_nonzero_code_is_never_masked_by_a_discarded_commit(app):
+def test_a_child_nonzero_code_is_never_masked_by_a_discarded_commit(app):
     policy = "write:\n  deny: ['*.pem']\n"
     a, code, _, err = run(app, "implicit", "echo k > key.pem; exit 7", on_exit="commit", policy=policy)
     assert code == 7, err
