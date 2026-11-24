@@ -353,6 +353,8 @@ def run_with_fault(escrow_bin, spec: str, home: bool = False) -> bool:
         shutil.rmtree(work, ignore_errors=True)
 
 
+# Each mode starts a daemon per fault point (about 40 starts); ubuntu-26.04 runners need more than the 60 s default.
+@pytest.mark.timeout(300)
 @pytest.mark.parametrize("mode", ["error", "crash", "error+home", "crash+home"])
 def test_fault_at_every_commit_step_leaves_the_base_byte_identical(escrow_bin, mode):
     suffix = ":abort" if mode.startswith("crash") else ""

@@ -139,18 +139,18 @@ impl History {
     }
 
     /// At start: settle each pending decision from what its scope shows (`fate`), or
-    /// cancel it. Returns how many were settled.
-    pub fn resolve(&self, fate: impl Fn(&str) -> Fate) -> io::Result<usize> {
+    /// cancel it. Returns the scope of each one settled.
+    pub fn resolve(&self, fate: impl Fn(&str) -> Fate) -> io::Result<Vec<String>> {
         self.resolve_where(None, fate)
     }
 
     /// `resolve` for scope `id` alone. Recovery settles a finished commit's decision
     /// before it drops the scope: a start killed in between must not see it gone.
-    pub fn resolve_scope(&self, id: &str, fate: Fate) -> io::Result<usize> {
+    pub fn resolve_scope(&self, id: &str, fate: Fate) -> io::Result<Vec<String>> {
         self.resolve_where(Some(id), |_| fate)
     }
 
-    fn resolve_where(&self, scope: Option<&str>, fate: impl Fn(&str) -> Fate) -> io::Result<usize> {
+    fn resolve_where(&self, scope: Option<&str>, fate: impl Fn(&str) -> Fate) -> io::Result<Vec<String>> {
         let pending: Vec<(u64, String, Vec<u8>)> = {
             let db = self.db.lock();
             let mut st = db
@@ -166,12 +166,12 @@ impl History {
             .collect::<Result<_, _>>()
             .map_err(sql)?
         };
-        let mut settled = 0;
+        let mut settled = Vec::new();
         for (seq, scope, entry) in pending {
             match (self.settled_as)(&entry, fate(&scope)) {
                 Some(entry) => {
                     self.settle(seq, &entry)?;
-                    settled += 1;
+                    settled.push(scope);
                 }
                 None => self.cancel(seq)?,
             }
@@ -323,7 +323,7 @@ mod tests {
         }
         assert_eq!(h.session("s", 10).unwrap(), Vec::<Vec<u8>>::new());
         let settled = h.resolve(|id| cases.iter().find(|c| c.0 == id).unwrap().2).unwrap();
-        assert_eq!(settled, 4);
+        assert_eq!(settled.len(), 4);
         for (scope, _, _, want) in cases {
             let got = h.latest(scope).unwrap().map(|l| {
                 let out = Decided::decode(&l.entry[..]).unwrap().outcome.unwrap();
@@ -331,7 +331,7 @@ mod tests {
             });
             assert_eq!(got, want, "{scope}");
         }
-        assert_eq!(h.resolve(|_| Fate::Gone).unwrap(), 0);
+        assert_eq!(h.resolve(|_| Fate::Gone).unwrap(), Vec::<String>::new());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
