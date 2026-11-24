@@ -119,6 +119,7 @@ Exceptions (decided 2026-11-23):
 - APP-TMP-5: the testkit's runtime dirs use `mkdtemp` under `$XDG_RUNTIME_DIR`, since pytest's `tmp_path` exceeds the 108-byte socket path limit. They carry the `escrowd-conformance-` prefix and are swept after a day.
 - APP-CI-5: the required check is `CI Gate` (branch protection), which needs `check`, `coverage` and `conformance`.
 - APP-OP-1: no Sentry. escrowd is a local daemon that handles private file paths; it reports nothing off the host.
+- APP-OP-2: the Conduct domains stay `ECRD` and `DX`. §7.3's slots (`backend`, `infra`, `lib`) fit no escrowd domain, and renaming regenerates 8 agents.
 - `<shared-pkg>` does not exist yet: `scripts/check.py` stands in for `check-standards` and `check-secret-files` (rule SEC001), `scripts/versions.py` for `sync-version`, `scripts/coverage.sh` for `diff-coverage`.
 
 ## Lima VMs

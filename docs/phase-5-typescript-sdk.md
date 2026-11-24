@@ -12,7 +12,7 @@ The suite is one pytest suite in two parts, decided Oct 19, 2026 (reversing the 
 
 ## Exit criteria
 
-1. **No daemon changes.** From the end of phase 4 (tag `protocol-8`) to the end of phase 5, `libs/escrowd/` and `proto/` are unchanged: a CI check fails any phase 5 PR that touches them. A daemon bug found by the TypeScript work is fixed in its own PR, which moves the tag and restarts this count.
+1. **No daemon changes.** From the PR #43 merge (tag `phase-5-daemon-base`) to the end of phase 5, `libs/escrowd/`, `libs/proto/` and `proto/` are unchanged: a CI check fails any phase 5 PR that touches them. A daemon bug found by the TypeScript work is fixed in its own PR, which moves the tag and restarts this count.
 2. **The suite, per SDK.** The pytest suite passes: `daemon/` once against the daemon, `sdk/` against the Python SDK and the TypeScript SDK (the test app parametrized over `app.py` and `app.ts`), held-decision checks included. `nx run-many -t conformance` runs it, 10 consecutive times on each CI runner (`ci:repeat`) and once on each Lima host.
 3. **pi's IO is covered.** Each call pi's built-in bash, read, write and edit tools make (an inventory taken in 5.2) is either captured in the scope or listed in `LIMITATIONS.md` with what it falls to.
 4. **No regression.** The daemon-level checks and the Python SDK pass as at the end of phase 4.
@@ -62,7 +62,7 @@ With three languages (Rust, Python, TypeScript), each with its own build, lint a
 - D-DX-5: conformance depends on `escrow-cli:build:debug`.
 - D-DX-6, D-DX-8: CI and pre-push use `nx affected` with `NX_BASE=origin/main`; no `paths-filter`.
 - D-DX-7: CI setup is `.github/actions/setup-toolchain` (mise from `mise.lock`, frozen pnpm install, locked uv sync).
-- D-DX-11: phase 5 changes the daemon after all. Dependency bumps (fuser 0.19), clippy pedantic fixes and the `escrowd-proto` split touch `libs/escrowd/`; behaviour is unchanged (conformance passes). Exit check 5.5's "daemon diff since `protocol-8` empty" is open below.
+- D-DX-11: phase 5 changes the daemon after all. Dependency bumps (fuser 0.19), clippy pedantic fixes and the `escrowd-proto` split touch `libs/escrowd/`; behaviour is unchanged (conformance passes). Exit check 5.5 now measures from tag `phase-5-daemon-base` (decided below).
 
 Not verified in this change (ENV): the CI Gate and the `ci:repeat` runs run on PR #42. Open gap: `tests/conformance/lima-guest.sh` still runs pytest directly through `uv` (the Lima guest is not yet routed through nx).
 
@@ -94,7 +94,7 @@ The SDK's own unit tests (path rewrite tables, error mapping) run in Vitest in a
 
 ### 5.5 Exit runs
 
-Checks 1–4 on the final commit: the suite 10 consecutive times on each CI runner with both SDKs under `sdk/` (`ci:repeat`), once on each Lima host (the Lima guest gets the host's Node through the read-only home mount, as it gets uv and Python), and the daemon diff since the `protocol-8` tag empty. Logs go to `tests/conformance/results/`, and the status line gets the PR link.
+Checks 1–4 on the final commit: the suite 10 consecutive times on each CI runner with both SDKs under `sdk/` (`ci:repeat`), once on each Lima host (the Lima guest gets the host's Node through the read-only home mount, as it gets uv and Python), the daemon diff (`libs/escrowd/`, `libs/proto/`, `proto/`) since tag `phase-5-daemon-base` empty, and `buf breaking` against `protocol-v1` passing. Logs go to `tests/conformance/results/`, and the status line gets the PR link.
 
 ## Carried limits
 
@@ -107,7 +107,7 @@ All known limits are in [LIMITATIONS.md](../LIMITATIONS.md). Out of phase 5, by 
 
 ## Open questions
 
-- [ ] Exit check 5.5 requires the daemon diff since `protocol-8` to be empty, but PR #43 (dependency sweep and standards) changes `libs/escrowd/` without changing behaviour. Restate the check as "no protocol change and no behaviour change since `protocol-8`", or rebase the baseline to the PR #43 merge? Raised Nov 23, 2026.
+- [x] Exit check 5.5 baseline: PR #43 (dependency sweep and standards) changes `libs/escrowd/` without changing behaviour, so the baseline moves to its merge commit, tagged `phase-5-daemon-base`. The check stays mechanical: an empty daemon diff since that tag, plus `buf breaking` against `protocol-v1`. **To do on merge:** `git tag phase-5-daemon-base <merge-sha> && git push origin phase-5-daemon-base`. Decided Nov 23, 2026.
 - [x] Repository standards: adopt `APP-MONOREPO-STANDARDS.md` (Tier 1, Tier 2, Rust module), including the `apps/`/`libs/` layout, clippy pedantic and the `make`/pnpm/Nx command layers. The TypeScript SDK lands as `libs/typescript-sdk` and follows the TypeScript elements (oxlint, oxfmt, `tsconfig.base.json`, Vitest projects). Decided Nov 23, 2026.
 
 - [x] Node versions: 22 and 24 (both LTS; 22 leaves maintenance in Apr 2027), one extra conformance job on `ubuntu-24.04`, as Python covers 3.11 and 3.14. Decided Oct 5, 2026.
