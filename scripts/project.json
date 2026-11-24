@@ -1,0 +1,22 @@
+{
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "name": "tools",
+  "tags": [
+    "type:tool",
+    "lang:python"
+  ],
+  "targets": {
+    "test": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/**/*",
+        "{workspaceRoot}/pyproject.toml"
+      ],
+      "outputs": [],
+      "options": {
+        "command": "uv run --no-sync pytest -n 0 scripts/checks"
+      }
+    }
+  }
+}

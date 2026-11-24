@@ -1,50 +1,47 @@
-# Lefthook git hook manager: auto-fix staged files before commit, check before push.
-# Install: mise install && pnpm install && lefthook install (once per clone).
-# Skip:    LEFTHOOK=0 git commit ...   or   git commit --no-verify
+# Git hooks (APP-LG-1 to 3). `pnpm install` wires them (its prepare script runs lefthook install).
+# Skip once: LEFTHOOK=0 git commit ...   or   git commit --no-verify
 #
-# pre-commit jobs fix only staged files and re-stage the result (stage_fixed).
-# They run sequentially because ruff check --fix and ruff format touch the same files.
-# pre-push mirrors the fast CI checks; the conformance suite stays in CI.
+# pre-commit fixes staged files and re-stages them (stage_fixed), and blocks secrets.
+# pre-push runs the affected static checks and unit tests; the conformance suite stays in CI.
+min_version: 2.2.0
 
 pre-commit:
-  parallel: false
+  parallel: true
   jobs:
+    - name: repo-checks # SEC001 blocks secret-bearing files (APP-LG-2), CI001 pins actions
+      run: uv run --script scripts/check.py --staged {staged_files}
+    - name: gitleaks
+      run: mise x -- gitleaks git --pre-commit --staged --redact
+    - name: typos
+      run: mise x -- typos --force-exclude {staged_files}
+    - name: ruff
+      glob: "*.py"
+      exclude: ["spikes/**"]
+      run: uv run --no-sync ruff check --fix --force-exclude {staged_files} && uv run --no-sync ruff format --force-exclude {staged_files}
+      stage_fixed: true
     - name: rustfmt
       glob: "*.rs"
       exclude: ["spikes/**"]
       run: rustfmt --edition 2024 {staged_files}
       stage_fixed: true
-
-    - name: ruff
-      glob: "*.py"
-      run: |
-        uv run --frozen ruff check --fix --force-exclude {staged_files} && \
-        uv run --frozen ruff format --force-exclude {staged_files}
+    - name: shell
+      glob: "*.sh"
+      exclude: ["spikes/**"]
+      run: mise x -- shfmt -w {staged_files} && mise x -- shellcheck {staged_files}
       stage_fixed: true
-
+    - name: actionlint
+      glob: ".github/**/*.{yml,yaml}"
+      run: mise x -- actionlint
+    - name: zizmor
+      glob: ".github/**/*.{yml,yaml}"
+      run: mise x -- zizmor --offline --min-severity high .github/
     - name: proto-stubs
       glob: "proto/**/*.proto"
-      run: libs/python-sdk/gen.sh && git add libs/python-sdk/src/escrow/v1
+      run: pnpm exec nx run python-sdk:stubs:fix && git add libs/python-sdk/src/escrow/v1
 
 pre-push:
-  parallel: true
   jobs:
-    - name: rust-lint
-      glob: "{*.rs,crates/**,proto/**,Cargo.toml,Cargo.lock,rust-toolchain.toml,rustfmt.toml}"
-      run: pnpm exec nx run rust:lint
-
-    - name: python-lint
-      glob: "*.py"
-      run: pnpm exec nx run python-sdk:lint
-
-    - name: protocol-lint
-      glob: "{proto/**,buf.yaml}"
-      run: pnpm exec nx run protocol:lint
-
-    - name: lockfiles
-      glob: "{Cargo.toml,Cargo.lock,crates/*/Cargo.toml,libs/python-sdk/pyproject.toml,libs/python-sdk/uv.lock,package.json,pnpm-lock.yaml,pnpm-workspace.yaml}"
-      run: cargo metadata --locked --format-version=1 > /dev/null && uv lock --check && pnpm install --frozen-lockfile --lockfile-only
-
-    - name: actionlint
-      glob: "{.github/workflows/*.yml,.github/actions/**}"
-      run: actionlint
+    - name: affected
+      env:
+        NX_BASE: origin/main
+      run: pnpm run check:affected && pnpm run test:affected

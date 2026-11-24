@@ -59,6 +59,7 @@ known-first-party = ["escrow", "escrow_testkit"]
 
 [tool.ty.environment]
 python-version = "3.11"
+extra-paths = ["scripts"] # scripts/check.py imports scripts/checks
 
 [tool.ty.src]
 exclude = ["libs/python-sdk/src/escrow/v1", "spikes"]
@@ -79,6 +80,7 @@ invalid-explicit-return = "ignore"
 [tool.pytest.ini_options]
 addopts = "-q --strict-markers -n auto" # pytest-randomly shuffles order by default
 timeout = 60
+pythonpath = ["scripts"] # the tools project tests import scripts/checks
 markers = ["slow: deselect with -m 'not slow'", "integration: needs local services"]
 
 [tool.coverage.run]

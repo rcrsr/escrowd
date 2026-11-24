@@ -1,0 +1,55 @@
+{
+  "$schema": "../node_modules/nx/schemas/project-schema.json",
+  "name": "protocol",
+  "tags": [
+    "type:lib",
+    "lang:protobuf"
+  ],
+  "targets": {
+    "lint": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/**",
+        "{workspaceRoot}/buf.yaml",
+        "sharedGlobals"
+      ],
+      "outputs": [],
+      "options": {
+        "command": "buf lint"
+      }
+    },
+    "format": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/**",
+        "{workspaceRoot}/buf.yaml",
+        "sharedGlobals"
+      ],
+      "outputs": [],
+      "options": {
+        "command": "buf format --diff --exit-code"
+      }
+    },
+    "format:fix": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "buf format -w"
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "inputs": [
+        "{projectRoot}/**",
+        "{workspaceRoot}/buf.yaml",
+        "sharedGlobals"
+      ],
+      "outputs": [],
+      "options": {
+        "command": "buf breaking --against '.git#tag=protocol-v1'"
+      }
+    }
+  }
+}

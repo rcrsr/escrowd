@@ -3,11 +3,23 @@ name = "escrow-testkit"
 version = "0.1.0"
 description = "Test helpers for the escrowd conformance suite and soaks: the daemon harness and project trees"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    "escrowd",
+    "grpcio>=1.85.3,<2",
+]
 
 [build-system]
-requires = ["uv_build>=0.13.9,<0.14"]
+requires = ["uv_build>=0.13,<0.14"]
 build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-root = ""
+
+[tool.uv.sources]
+escrowd = { workspace = true }
+
+[tool.deptry]
+known_first_party = ["escrow_testkit"]
+
+[tool.deptry.package_module_name_map]
+escrowd = "escrow" # the distribution escrowd ships the package escrow

@@ -1,9 +1,44 @@
 {
-  "name": "escrowd-workspace",
+  "name": "@escrowd/root",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@12.23.0",
+  "engines": {
+    "node": ">=24.22",
+    "pnpm": ">=12.15"
+  },
+  "scripts": {
+    "prepare": "lefthook install",
+    "bootstrap": "bash scripts/bootstrap.sh",
+    "dev": "nx run escrow-cli:dev",
+    "build": "nx run-many -t build",
+    "build:affected": "nx affected -t build",
+    "test": "nx run-many -t test",
+    "test:affected": "nx affected -t test",
+    "test:coverage": "bash scripts/coverage.sh",
+    "test:conformance": "nx run-many -t conformance",
+    "test:conformance:affected": "nx affected -t conformance",
+    "check": "pnpm run check:versions && pnpm run check:standards && pnpm run check:security && pnpm run check:spelling && nx run-many -t lint format typecheck test deps boundaries stubs",
+    "check:affected": "nx affected -t lint format typecheck deps boundaries stubs",
+    "check:types": "nx run-many -t typecheck",
+    "check:lint": "nx run-many -t lint",
+    "check:format": "nx run-many -t format",
+    "check:deps": "nx run-many -t deps",
+    "check:boundaries": "nx run-many -t boundaries",
+    "check:security": "gitleaks git --redact && osv-scanner scan source -r --x-exclude spikes .",
+    "check:spelling": "typos",
+    "check:standards": "uv run --script scripts/check.py --tracked",
+    "check:versions": "uv run --script scripts/versions.py --check",
+    "fix:lint": "nx run-many -t lint:fix",
+    "fix:format": "nx run-many -t format:fix",
+    "fix:versions": "uv run --script scripts/versions.py",
+    "generate": "nx run python-sdk:stubs:fix"
+  },
   "devDependencies": {
-    "nx": "24.0.6"
+    "nx": "24.0.6",
+    "sherif": "1.13.0"
+  },
+  "nx": {
+    "includedScripts": []
   }
 }

@@ -1,38 +1,15 @@
 {
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
   "name": "python-sdk",
-  "projectType": "library",
+  "tags": [
+    "type:lib",
+    "lang:python"
+  ],
+  "implicitDependencies": [
+    "protocol"
+  ],
   "targets": {
-    "lint": {
-      "executor": "nx:run-commands",
-      "cache": true,
-      "inputs": [
-        "{workspaceRoot}/**/*.py",
-        "{workspaceRoot}/ruff.toml",
-        "{workspaceRoot}/libs/python-sdk/pyproject.toml",
-        "{workspaceRoot}/libs/python-sdk/uv.lock",
-        "{workspaceRoot}/libs/testkit/pyproject.toml",
-        "{workspaceRoot}/.python-version",
-        "{workspaceRoot}/mise.toml"
-      ],
-      "outputs": [],
-      "options": {
-        "parallel": false,
-        "commands": [
-          "uv run --frozen ruff check",
-          "uv run --frozen ruff format --check",
-          "uv run --frozen ty check --project libs/python-sdk"
-        ]
-      }
-    },
-    "test": {
-      "executor": "nx:run-commands",
-      "cache": false,
-      "parallelism": false,
-      "options": {
-        "commands": ["libs/python-sdk/gen.sh && git diff --exit-code libs/python-sdk/src"]
-      }
-    },
+    "boundaries": {},
     "build": {
       "executor": "nx:run-commands",
       "cache": false,
@@ -43,6 +20,33 @@
           "python -m zipfile -l dist/*.whl | grep -q escrow/py.typed"
         ]
       }
-    }
+    },
+    "deps": {},
+    "format": {},
+    "format:fix": {},
+    "lint": {},
+    "lint:fix": {},
+    "stubs": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "inputs": [
+        "{workspaceRoot}/proto/**",
+        "{projectRoot}/src/escrow/v1/**",
+        "pythonToolchainConfig"
+      ],
+      "outputs": [],
+      "options": {
+        "command": "libs/python-sdk/gen.sh && git diff --exit-code libs/python-sdk/src"
+      }
+    },
+    "stubs:fix": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "libs/python-sdk/gen.sh"
+      }
+    },
+    "test": {},
+    "test:coverage": {},
+    "typecheck": {}
   }
 }

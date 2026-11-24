@@ -1,0 +1,8 @@
+[files]
+extend-exclude = ["*.lock", "pnpm-lock.yaml", "**/generated/**", "conduct/", "spikes/", "libs/python-sdk/src/escrow/v1/", "**/results/**"]
+
+[default.extend-words]
+# Domain terms typos flags. One line each: <word> = "<word>"
+WRONLY = "WRONLY" # O_WRONLY
+sherif = "sherif" # the monorepo dependency linter
+caf = "caf" # caf\xe9, a latin-1 test string

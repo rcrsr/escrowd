@@ -263,6 +263,16 @@ wheels = [
 name = "escrow-testkit"
 version = "0.1.0"
 source = { editable = "libs/testkit" }
+dependencies = [
+    { name = "escrowd" },
+    { name = "grpcio" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "escrowd", editable = "libs/python-sdk" },
+    { name = "grpcio", specifier = ">=1.85.3,<2" },
+]
 
 [[package]]
 name = "escrowd"

@@ -28,10 +28,13 @@ Repository = "https://github.com/rcrsr/escrowd"
 Issues = "https://github.com/rcrsr/escrowd/issues"
 
 [build-system]
-requires = ["uv_build>=0.13.9,<0.14"]
+requires = ["uv_build>=0.13,<0.14"]
 build-backend = "uv_build"
 
 # The distribution is `escrowd` (the name `escrow` is taken on PyPI); the package stays `escrow`.
 [tool.uv.build-backend]
 module-name = "escrow"
 
+[tool.deptry]
+known_first_party = ["escrow"]
+extend_exclude = [".*/tests/"] # test tools come from the root dev group
