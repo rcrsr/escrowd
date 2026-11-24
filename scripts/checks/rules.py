@@ -53,6 +53,8 @@ def check_rust_pin(repo: Repo) -> Iterable[tuple[str, int, str]]:
         yield "rust-toolchain.toml", 1, f"rust-toolchain.toml and mise.toml must parse ({STD} APP-TC-5)"
         return
     pin = mise.get("tools", {}).get("rust")
+    if isinstance(pin, dict):  # rust = { version = "...", components = "..." }
+        pin = pin.get("version")
     if pin != chan:
         yield "rust-toolchain.toml", 1, f"channel {chan!r} differs from mise.toml rust {pin!r} ({STD} APP-TC-5)"
 

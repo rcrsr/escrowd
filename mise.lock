@@ -315,6 +315,10 @@ version = "1.100.0"
 backend = "core:rust"
 specifiers = ["1.100.0"]
 
+[tools.rust.options]
+components = "clippy,llvm-tools-preview,rustfmt"
+profile = "minimal"
+
 [[tools.shellcheck]]
 version = "0.11.0"
 backend = "aqua:koalaman/shellcheck"

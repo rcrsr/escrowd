@@ -90,7 +90,7 @@ jobs:
           rustup toolchain install stable --profile minimal --component clippy,rustfmt
           export RUSTUP_TOOLCHAIN=stable
           rustc --version
-          pnpm exec nx affected -t lint test --projects 'tag:lang:rust'
+          pnpm exec nx run-many -t lint test -p 'tag:lang:rust'
 
   # Changed-line coverage at 80% (APP-TS-5): the suite against an instrumented daemon.
   coverage:

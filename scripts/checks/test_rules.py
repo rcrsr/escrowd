@@ -55,6 +55,7 @@ def test_file_rules(tmp_path, files, code, fires):
     ("extra", "code", "fires"),
     [
         ({}, "TC001", False),
+        ({"mise.toml": '[tools]\nrust = { version = "1.100.0", components = "rustfmt" }\n'}, "TC001", False),
         ({"rust-toolchain.toml": '[toolchain]\nchannel = "1.99.0"\n'}, "TC001", True),
         ({}, "TC002", False),
         ({".python-version": "3.15\n"}, "TC002", True),
