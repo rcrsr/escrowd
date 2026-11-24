@@ -8,7 +8,7 @@ can compare the two.
 import json
 from pathlib import Path
 
-SCENARIOS = Path(__file__).resolve().parents[2] / "fixtures" / "scenarios"
+SCENARIOS = Path(__file__).resolve().parents[3] / "tests" / "fixtures" / "scenarios"
 
 
 def load(name: str) -> dict:

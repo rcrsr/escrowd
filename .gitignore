@@ -11,3 +11,6 @@ conduct
 node_modules/
 /.nx/
 /dist/
+
+# Agent worktrees
+.claude/worktrees/
