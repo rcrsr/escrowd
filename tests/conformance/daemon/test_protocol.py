@@ -64,7 +64,7 @@ def test_a_stream_raises_typed_errors_too(daemon):
 def test_the_spec_names_every_call_and_the_frozen_version():
     proto = (ROOT / "proto/escrow/v1/escrow.proto").read_text()
     spec = (ROOT / "docs/protocol.md").read_text()
-    calls = re.findall(r"^\s*rpc (\w+)\(", proto, re.M)
+    calls = re.findall(r"^\s*rpc (\w+)\(", proto, re.MULTILINE)
     assert len(calls) == 10
     assert [c for c in calls if f"`{c}`" not in spec] == []
     typed = [lowlevel.EscrowRpcError, *lowlevel.EscrowRpcError.__subclasses__()]

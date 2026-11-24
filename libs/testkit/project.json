@@ -1,0 +1,20 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "testkit",
+  "tags": [
+    "type:lib",
+    "lang:python"
+  ],
+  "implicitDependencies": [
+    "python-sdk"
+  ],
+  "targets": {
+    "lint": {},
+    "lint:fix": {},
+    "format": {},
+    "format:fix": {},
+    "typecheck": {},
+    "deps": {},
+    "boundaries": {}
+  }
+}

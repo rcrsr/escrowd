@@ -7,6 +7,7 @@ and inode numbers persist in each scope's SQLite store and survive a daemon rest
 import os
 import sqlite3
 import subprocess
+from typing import cast
 
 import grpc
 import pytest
@@ -31,13 +32,13 @@ def test_open_scope_creates_a_root_in_the_mount(daemon):
     with daemon.client() as c:
         a, b = c.open_scope("first"), c.open_scope("second")
     assert a.scope_id != b.scope_id
-    assert sorted(os.listdir(daemon.mount)) == sorted([a.scope_id, b.scope_id])
+    assert sorted(e.name for e in daemon.mount.iterdir()) == sorted([a.scope_id, b.scope_id])
     assert a.root == str(daemon.mount / a.scope_id)
 
 
 def test_scopes_are_not_created_by_mkdir(daemon):
     with pytest.raises(PermissionError):
-        os.mkdir(daemon.mount / "sneaky")
+        (daemon.mount / "sneaky").mkdir()
 
 
 def test_discard_drops_the_scope_and_its_store(daemon):
@@ -48,14 +49,14 @@ def test_discard_drops_the_scope_and_its_store(daemon):
         out = c.discard(s.scope_id)
     assert out.status == escrow_pb2.OUTCOME_STATUS_DISCARDED
     assert not (daemon.state / "scopes" / s.scope_id).exists()
-    assert s.scope_id not in os.listdir(daemon.mount)
+    assert s.scope_id not in [e.name for e in daemon.mount.iterdir()]
     assert (daemon.project / "f.txt").read_text() == "base\n"
 
 
 def test_discard_of_unknown_scope_is_not_found(daemon):
     with daemon.client() as c, pytest.raises(grpc.RpcError) as err:
         c.discard("s999")
-    assert err.value.code() == grpc.StatusCode.NOT_FOUND
+    assert cast(grpc.Call, err.value).code() == grpc.StatusCode.NOT_FOUND
 
 
 def test_store_records_whiteouts_opaque_dirs_and_versions(daemon):
@@ -106,21 +107,21 @@ def test_scope_state_survives_a_daemon_restart(start_daemon):
     root = d.mount / s.scope_id
     (root / "gone.txt").unlink()
     (root / "new.txt").write_text("new\n")
-    os.rename(root / "old.txt", root / "moved.txt")
+    (root / "old.txt").rename(root / "moved.txt")
     subprocess.run(["rm", "-r", root / "tree"], check=True)
     (root / "tree").mkdir()
-    inos = {n: os.stat(root / n).st_ino for n in ("new.txt", "moved.txt", "keep.txt")}
+    inos = {n: (root / n).stat().st_ino for n in ("new.txt", "moved.txt", "keep.txt")}
     assert d.stop() == 0
 
     d.restart()
     root = d.mount / s.scope_id
-    assert sorted(os.listdir(d.mount)) == [s.scope_id]
+    assert sorted(e.name for e in d.mount.iterdir()) == [s.scope_id]
     assert not (root / "gone.txt").exists()
     assert not (root / "old.txt").exists()
     assert (root / "moved.txt").read_text() == "old\n"
     assert (root / "new.txt").read_text() == "new\n"
-    assert os.listdir(root / "tree") == []
-    assert {n: os.stat(root / n).st_ino for n in inos} == inos
+    assert [e.name for e in (root / "tree").iterdir()] == []
+    assert {n: (root / n).stat().st_ino for n in inos} == inos
     with d.client() as c:
         later = c.open_scope()
     assert int(later.scope_id[1:]) > int(s.scope_id[1:])
@@ -132,10 +133,10 @@ def test_hard_link_keeps_inode_after_original_unlinked(daemon):
         s = c.open_scope()
     root = daemon.mount / s.scope_id
     (root / "tmp").write_text("temp object\n")
-    ino = os.stat(root / "tmp").st_ino
+    ino = (root / "tmp").stat().st_ino
     os.link(root / "tmp", root / "final")
-    os.unlink(root / "tmp")  # git links, then unlinks its temp objects
-    assert os.stat(root / "final").st_ino == ino
+    (root / "tmp").unlink()  # git links, then unlinks its temp objects
+    assert (root / "final").stat().st_ino == ino
     assert (root / "final").read_text() == "temp object\n"
 
 
@@ -148,8 +149,8 @@ def test_directory_renamed_onto_deleted_base_dir_hides_its_contents(daemon):
     subprocess.run(["rm", "-r", root / "dir"], check=True)
     (root / "fresh").mkdir()
     (root / "fresh" / "new.txt").write_text("new\n")
-    os.rename(root / "fresh", root / "dir")
-    assert sorted(os.listdir(root / "dir")) == ["new.txt"]
+    (root / "fresh").rename(root / "dir")
+    assert sorted(e.name for e in (root / "dir").iterdir()) == ["new.txt"]
 
 
 def test_daemon_refuses_a_mount_inside_the_project(escrow_bin, runtime_dir):

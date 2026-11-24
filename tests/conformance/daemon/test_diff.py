@@ -7,10 +7,10 @@ the staged tree, which is what `diff -ru` between the two would show.
 """
 
 import hashlib
-import os
 import shutil
 import stat
 import subprocess
+from typing import cast
 
 import grpc
 import pytest
@@ -46,10 +46,10 @@ def edit(root):
     newline, a rename with an edit, a rename over an existing file, a space in a name."""
     (root / "multi.txt").write_text("".join(f"line {i}\n" for i in range(20)).replace("10", "X"))
     (root / "nonl.txt").write_text("a\nc")
-    os.rename(root / "mv.txt", root / "moved.txt")
-    with open(root / "moved.txt", "a") as f:
+    (root / "mv.txt").rename(root / "moved.txt")
+    with (root / "moved.txt").open("a") as f:
         f.write("appended\n")
-    os.rename(root / "over-src.txt", root / "over-dst.txt")
+    (root / "over-src.txt").rename(root / "over-dst.txt")
     (root / "space name.txt").write_text("two\n")
 
 
@@ -146,9 +146,7 @@ def test_diff_stops_at_max_bytes(start_daemon):
     shown = len(headers(cs.diff))
     assert 0 < shown < 10
     left = 10 - shown
-    assert (
-        last == f"# escrow: {left} more changed file(s) left out of the diff (diff.max_bytes 400)"
-    )
+    assert last == f"# escrow: {left} more changed file(s) left out of the diff (diff.max_bytes 400)"
 
 
 def test_read_denied_content_is_withheld(daemon):
@@ -159,9 +157,7 @@ def test_read_denied_content_is_withheld(daemon):
         (d.mount / sid / ".env").write_text("SECRET=2\n")
         cs = c.close_scope(sid)
         c.discard(sid)
-    assert "diff --git a/.env b/.env\nFiles a/.env and b/.env: content withheld (read.deny)\n" in (
-        cs.diff
-    )
+    assert "diff --git a/.env b/.env\nFiles a/.env and b/.env: content withheld (read.deny)\n" in (cs.diff)
     assert "SECRET" not in cs.diff
 
 
@@ -175,9 +171,7 @@ def test_home_paths_show_as_the_change_set_shows_them(start_daemon, runtime_dir)
         (d.mount / f"{sid}.home" / ".gitconfig").write_text("[user]\n\tname = Scope\n")
         cs = c.close_scope(sid)
         c.discard(sid)
-    assert "diff --git a/~/.gitconfig b/~/.gitconfig\n--- a/~/.gitconfig\n+++ b/~/.gitconfig\n" in (
-        cs.diff
-    )
+    assert "diff --git a/~/.gitconfig b/~/.gitconfig\n--- a/~/.gitconfig\n+++ b/~/.gitconfig\n" in (cs.diff)
     assert "-\tname = Base\n+\tname = Scope\n" in cs.diff
 
 
@@ -201,7 +195,7 @@ def test_escrow_diff_prints_a_closed_scope(daemon):
         c.discard(sid)
         with pytest.raises(grpc.RpcError) as e:
             c.get_change_set(sid)
-        assert e.value.code() == grpc.StatusCode.NOT_FOUND
+        assert cast(grpc.Call, e.value).code() == grpc.StatusCode.NOT_FOUND
 
 
 FROZEN_RULES = """\

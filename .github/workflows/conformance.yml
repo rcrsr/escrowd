@@ -13,10 +13,20 @@ on:
         description: Consecutive suite runs per runner; the job fails on the first failed run.
         type: number
         default: 1
+      affected:
+        description: Run only the conformance projects Nx finds affected since NX_BASE.
+        type: boolean
+        default: true
       soak:
         description: Run the crash soak (50 random kills mid-commit) and the held soak (50 kills mid-review) after the suite, then the suite and both soaks (20 kills each) on a release build with the fault-injection feature.
         type: boolean
         default: false
+
+permissions:
+  contents: read
+
+env:
+  NX_BASE: origin/main
 
 jobs:
   suite:
@@ -25,37 +35,25 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, ubuntu-26.04]
-        python: ["3.14"]
+        python: ["3.15"]
         include:
           - os: ubuntu-24.04
             python: "3.11"
+          - os: ubuntu-24.04
+            python: "3.14"
     runs-on: ${{ matrix.os }}
     env:
-      UV_PYTHON: ${{ matrix.python }}
+      ESCROWD_PYTHON: ${{ matrix.python }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - name: System packages
         run: sudo apt-get update && sudo apt-get install -y bubblewrap fuse3
 
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-        with:
-          enable-cache: true
-
-      - name: Cache .venv
-        uses: actions/cache@v6
-        with:
-          path: |
-            sdk/python/.venv
-            ${{ env.UV_PYTHON_INSTALL_DIR }}
-          key: venv-${{ matrix.os }}-py${{ matrix.python }}-${{ hashFiles('.python-version') }}-${{ hashFiles('sdk/python/uv.lock') }}
-
-      - uses: ./.github/actions/setup-nx
+      - uses: ./.github/actions/setup-toolchain
 
       - name: escrowd bwrap and AppArmor profile
         run: packaging/ubuntu/install.sh
@@ -63,20 +61,21 @@ jobs:
       - name: Conformance suite, ${{ inputs.runs }} consecutive run(s)
         env:
           RUNS: ${{ inputs.runs }}
+          SCRIPT: ${{ inputs.affected && 'test:conformance:affected' || 'test:conformance' }}
         run: |
           for i in $(seq 1 "$RUNS"); do
             echo "::group::run $i of $RUNS"
-            pnpm exec nx run-many -t conformance --outputStyle=stream
+            pnpm run "$SCRIPT" --outputStyle=stream
             echo "::endgroup::"
           done
 
       - name: Crash soak, 50 random kills mid-commit
         if: inputs.soak
-        run: uv run --project sdk/python --frozen python tests/soak/crash.py 50
+        run: uv run --frozen python tests/soak/crash.py 50
 
       - name: Held soak, 50 random kills mid-review
         if: inputs.soak
-        run: uv run --project sdk/python --frozen python tests/soak/held.py 50
+        run: uv run --frozen python tests/soak/held.py 50
 
       # Release builds compile fault injection out unless the `fault-injection` feature
       # is on; this checks the optimized commit and recovery paths under the same faults.
@@ -88,19 +87,19 @@ jobs:
         if: inputs.soak
         env:
           ESCROW_BIN: ${{ github.workspace }}/target/release/escrow
-        run: pnpm exec nx run-many -t conformance --outputStyle=stream --excludeTaskDependencies
+        run: pnpm run test:conformance --outputStyle=stream --excludeTaskDependencies
 
       - name: Crash soak, release build, 20 random kills mid-commit
         if: inputs.soak
         env:
           ESCROW_BIN: ${{ github.workspace }}/target/release/escrow
-        run: uv run --project sdk/python --frozen python tests/soak/crash.py 20
+        run: uv run --frozen python tests/soak/crash.py 20
 
       - name: Held soak, release build, 20 random kills mid-review
         if: inputs.soak
         env:
           ESCROW_BIN: ${{ github.workspace }}/target/release/escrow
-        run: uv run --project sdk/python --frozen python tests/soak/held.py 20
+        run: uv run --frozen python tests/soak/held.py 20
 
       # A failed run keeps its directory (state, ledger, history, daemon.log) under
       # XDG_RUNTIME_DIR; keep them past the runner for a week. Sockets and the
@@ -109,13 +108,13 @@ jobs:
         if: failure()
         run: |
           shopt -s nullglob
-          kept=("${XDG_RUNTIME_DIR:-/tmp}"/escrow-test.*)
+          kept=("${XDG_RUNTIME_DIR:-/tmp}"/escrowd-conformance-*)
           if [ ${#kept[@]} -eq 0 ]; then exit 0; fi
           tar --ignore-failed-read --exclude='*/mount' -czf "$RUNNER_TEMP/kept-runs.tgz" "${kept[@]}" || true
 
       - name: Upload the kept run directories
         if: failure()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kept-runs-${{ matrix.os }}-py${{ matrix.python }}
           path: ${{ runner.temp }}/kept-runs.tgz

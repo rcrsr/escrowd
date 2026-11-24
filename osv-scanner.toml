@@ -1,0 +1,7 @@
+# Known vulnerabilities accepted for a limited time (APP-SUP-5). Each entry names why it cannot
+# reach escrowd and expires; remove it once the fix lands upstream.
+
+[[IgnoredVulns]]
+id = "GHSA-g3hv-75wg-m249"
+ignoreUntil = 2026-12-23T00:00:00Z
+reason = "minimatch 10.2.5 via nx 24.0.6 (dev only): nx matches only this repo's own workspace globs. Fixed in minimatch 11; drop when nx moves to it."

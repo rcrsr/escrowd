@@ -48,9 +48,7 @@ def lines(d, scope, op):
     return [x for x in d.ledger if f" scope={scope} " in x and f" op={op} " in x]
 
 
-def test_a_run_cut_off_by_a_kill_runs_again_as_attempt_two_and_decides_once(
-    start_daemon, runtime_dir
-):
+def test_a_run_cut_off_by_a_kill_runs_again_as_attempt_two_and_decides_once(start_daemon, runtime_dir):
     lint = stand_in(runtime_dir, "lint", sleep=1.5)
     d = start_daemon(policy=policy(lint))
     with d.client() as c:
@@ -69,9 +67,7 @@ def test_a_run_cut_off_by_a_kill_runs_again_as_attempt_two_and_decides_once(
     assert len(lines(d, s, "decide")) == 1
 
 
-def test_a_delegates_token_still_commits_after_a_kill_without_another_run(
-    start_daemon, runtime_dir
-):
+def test_a_delegates_token_still_commits_after_a_kill_without_another_run(start_daemon, runtime_dir):
     oncall = stand_in(runtime_dir, "oncall", stdout=PENDING)
     d = start_daemon(policy=policy(oncall, "oncall", "delegate: true, on_failure: return"))
     with d.client() as c:
@@ -90,9 +86,7 @@ def test_a_delegates_token_still_commits_after_a_kill_without_another_run(
     assert len(lines(d, s, "decide")) == 1
 
 
-def test_a_delegates_deadline_that_passed_while_the_daemon_was_down_fails_at_start(
-    start_daemon, runtime_dir
-):
+def test_a_delegates_deadline_that_passed_while_the_daemon_was_down_fails_at_start(start_daemon, runtime_dir):
     oncall = stand_in(runtime_dir, "oncall", stdout=PENDING)
     options = "delegate: true, timeout: 1s, on_failure: return"
     d = start_daemon(policy=policy(oncall, "oncall", options))

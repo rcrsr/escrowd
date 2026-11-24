@@ -1,0 +1,20 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "escrowd-proto",
+  "tags": [
+    "type:lib",
+    "lang:rust"
+  ],
+  "implicitDependencies": [
+    "protocol"
+  ],
+  "targets": {
+    "lint": {},
+    "lint:fix": {},
+    "format": {},
+    "format:fix": {},
+    "typecheck": {},
+    "deps": {},
+    "build": {}
+  }
+}

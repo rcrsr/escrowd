@@ -57,14 +57,10 @@ class _FakeDaemon(escrow_pb2_grpc.EscrowServiceServicer):
         self.protocol_version = protocol_version
 
     def Ping(self, request, context):
-        return escrow_pb2.PingResponse(
-            daemon_version="fake", protocol_version=self.protocol_version
-        )
+        return escrow_pb2.PingResponse(daemon_version="fake", protocol_version=self.protocol_version)
 
 
-def test_init_refuses_a_daemon_older_than_protocol_7_and_installs_no_wrappers(
-    runtime_dir, tmp_path, monkeypatch
-):
+def test_init_refuses_a_daemon_older_than_protocol_7_and_installs_no_wrappers(runtime_dir, tmp_path, monkeypatch):
     sock = runtime_dir / "fake.sock"
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=2))
     escrow_pb2_grpc.add_EscrowServiceServicer_to_server(_FakeDaemon(6), server)

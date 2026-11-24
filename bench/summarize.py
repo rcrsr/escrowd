@@ -8,6 +8,9 @@ count differs from native's is flagged. A run that reports an error, or a negati
 (the wall clock stepped: WSL syncs its clock), is listed and left out.
 """
 
+# A CLI whose stdout is its output (a Markdown table): print is the point.
+# ruff: noqa: T201
+
 import re
 import statistics
 import sys
@@ -40,7 +43,7 @@ med = statistics.median
 
 
 def cells(values, base):
-    return f"{med(values):.3f} | {med(values) / base:.2f}×" if values else "– | –"
+    return f"{med(values):.3f} | {med(values) / base:.2f}×" if values else "– | –"  # noqa: RUF001  the times sign and en dash are the table's output
 
 
 heads = " | ".join(f"{m} (s) | {m} / native" for m in modes)
@@ -59,7 +62,7 @@ for repo, wl in groups:
         return sum(med(data[(repo, wl, s, m)]) for s in steps if data.get((repo, wl, s, m)))
 
     tn = total("native")
-    row = " | ".join(f"{total(m):.3f} | {total(m) / tn:.2f}×" for m in modes)
+    row = " | ".join(f"{total(m):.3f} | {total(m) / tn:.2f}×" for m in modes)  # noqa: RUF001  the times sign and en dash are the table's output
     print(f"| {repo} | {wl} | **total** | {tn:.3f} | {row} |")
     wn = med(data[(repo, wl, "wall", "native")])
     row = " | ".join(cells(data.get((repo, wl, "wall", m)), wn) for m in modes)

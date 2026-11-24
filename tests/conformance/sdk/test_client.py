@@ -27,7 +27,7 @@ def test_public_connect_without_socket_raises_escrow_error(monkeypatch):
 def test_settle_unscoped_before_init_asks_for_init(monkeypatch):
     monkeypatch.setattr(_config._cfg, "socket", "")
     monkeypatch.setattr(_config._cfg, "client", None)
-    with pytest.raises(escrow.EscrowError, match="escrow.init"):
+    with pytest.raises(escrow.EscrowError, match=r"escrow\.init"):
         escrow.settle_unscoped()
     assert _config._cfg.client is None
 
@@ -70,11 +70,11 @@ def test_internal_calls_share_one_channel_across_tasks(initialized, monkeypatch)
 
 def test_fork_child_drops_the_shared_client_without_a_call(initialized):
     escrow.settle_unscoped()  # creates the shared client
-    assert escrow._config._cfg.client is not None
+    assert _config._cfg.client is not None
 
     pid = os.fork()
     if pid == 0:
-        os._exit(0 if escrow._config._cfg.client is None else 1)
+        os._exit(0 if _config._cfg.client is None else 1)
     _, status = os.waitpid(pid, 0)
 
     assert os.waitstatus_to_exitcode(status) == 0

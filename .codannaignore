@@ -73,4 +73,4 @@ __pycache__/
 
 # escrowd: Phase 0 throwaway code (separate Cargo workspace) and committed generated stubs
 spikes/
-sdk/python/src/escrow/v1/
+libs/python-sdk/src/escrow/v1/

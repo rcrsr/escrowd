@@ -2,7 +2,7 @@
 
 Oct 6, 2026 · Frozen at protocol 8, tag `protocol-v1`
 
-This spec is for the authors of escrowd SDKs and reviewers. The schema is [`proto/escrow/v1/escrow.proto`](../proto/escrow/v1/escrow.proto), and its comments give each field's meaning. This page gives what the schema cannot: the sockets, the scope lifecycle, which call needs which credential, the status codes, the rules for compatibility, the exec socket's frames and the `escrow exec` command. The Python SDK (`sdk/python/`) implements all of it, and the conformance suite (`tests/conformance/`) checks it.
+This spec is for the authors of escrowd SDKs and reviewers. The schema is [`proto/escrow/v1/escrow.proto`](../proto/escrow/v1/escrow.proto), and its comments give each field's meaning. This page gives what the schema cannot: the sockets, the scope lifecycle, which call needs which credential, the status codes, the rules for compatibility, the exec socket's frames and the `escrow exec` command. The Python SDK (`libs/python-sdk/`) implements all of it, and the conformance suite (`tests/conformance/`) checks it.
 
 ## Sockets
 

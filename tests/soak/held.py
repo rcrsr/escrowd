@@ -1,6 +1,6 @@
 """Held soak (phase 3, check 4): SIGKILL the daemon while reviewers decide held scopes.
 
-    uv run --project sdk/python --frozen python tests/soak/held.py [RUNS]
+    uv run --frozen python tests/soak/held.py [RUNS]
 
 Each run holds 8 scopes for review (`src/auth/` needs llm and human, `src/` llm, `docs/`
 llm with an optional wait; sessions a and b and none), each staging 150 new files. A
@@ -34,6 +34,9 @@ id. After the restart the reviews are drained, and then:
 - the attempts of each (scope, reviewer) in `runs.log` are consecutive. A kill between the
   daemon recording a run and the program starting leaves one number missing per kill.
 """
+
+# A CLI whose stdout is its report: print is the point.
+# ruff: noqa: T201
 
 import argparse
 import hashlib
@@ -146,9 +149,7 @@ STATUS = {
 }
 CMD_FILES = 40
 # Command-reviewed scopes: (kind, directory); `tools` has check, `ops` check then oncall.
-CMD_SCOPES = [("tools", f"tools/c{i}") for i in range(4)] + [
-    ("ops", f"ops/c{i}") for i in range(4, 8)
-]
+CMD_SCOPES = [("tools", f"tools/c{i}") for i in range(4)] + [("ops", f"ops/c{i}") for i in range(4, 8)]
 # gRPC codes a killed daemon gives; any other code of a token answer is a failure.
 KILLED = {"UNAVAILABLE", "CANCELLED", "DEADLINE_EXCEEDED", "UNKNOWN"}
 
@@ -169,7 +170,7 @@ class CmdScope:
         h = int(hashlib.sha256(self.id.encode()).hexdigest()[:8], 16)
         verdict = ["commit", "commit", "return", "discard"][h % 4]
         if self.kind == "ops" and verdict != "discard":
-            verdict = max(verdict, ["commit", "return", "discard"][(h >> 8) % 3], key=ORDER.get)
+            verdict = max(verdict, ["commit", "return", "discard"][(h >> 8) % 3], key=lambda v: ORDER[v])
         return verdict
 
 
@@ -193,7 +194,7 @@ def command_reviewers(work: Path) -> str:
 
 
 def after_review(s: State, tier: int, verdict: int, over: bool) -> State:
-    v = verdict if over else max(s.verdict, verdict, key=RANK.__getitem__)
+    v = verdict if over else max(s.verdict, verdict, key=lambda v: RANK[v])
     # A human's verdict also stands for the llm tier still pending.
     left = () if tier == HUMAN else tuple(t for t in s.tiers if t != tier)
     if left:
@@ -248,9 +249,7 @@ def token_of(d: Daemon, scope: str) -> str | None:
     return f.read_text() if f.exists() else None
 
 
-def answer_tokens(
-    rv: escrow.Reviewer, d: Daemon, cmd: list[CmdScope], errors: list[str], old: dict[str, str]
-) -> int:
+def answer_tokens(rv: escrow.Reviewer, d: Daemon, cmd: list[CmdScope], errors: list[str], old: dict[str, str]) -> int:
     """Give the verdict of `oncall` by token for each `ops` scope waiting for it (the
     token pending before a kill, from `old`, first); returns how many command scopes are
     still held."""
@@ -269,9 +268,7 @@ def answer_tokens(
                 raise
             # A token read from the file may be one a newer run replaced; try again.
             if not fresh:
-                errors.append(
-                    f"{c.id}: a token pending before the kill was refused: {e.code().name}"
-                )
+                errors.append(f"{c.id}: a token pending before the kill was refused: {e.code().name}")
     return sum(1 for c in cmd if c.id in held)
 
 
@@ -310,9 +307,7 @@ def decide_all(
                     verdict = s.state.verdict
                 nxt = after_review(s.state, tier, verdict, over)
                 s.maybe = [s.state, nxt]
-                rv.review(
-                    s.id, tier, verdict, reasons=[f"r{s.state.reviews}"], override=over, timeout=60
-                )
+                rv.review(s.id, tier, verdict, reasons=[f"r{s.state.reviews}"], override=over, timeout=60)
                 s.state, s.maybe = nxt, []
     except escrow.EscrowRpcError:
         pass  # the kill
@@ -338,9 +333,7 @@ def observe(d: Daemon, scopes: list[Scope]) -> dict[str, State | str]:
                 outs = list(c.await_decision(s.id, token=s.token, timeout=10))
             except escrow.EscrowRpcError as e:
                 # Decided, or reopened, with no history entry: what the project shows.
-                applied = (
-                    "committed" if on_disk else "returned" if d.upper(s.id).exists() else "gone"
-                )
+                applied = "committed" if on_disk else "returned" if d.upper(s.id).exists() else "gone"
                 seen[s.id] = f"unrecorded {applied}: {e.code().name}"
                 continue
             status = {
@@ -384,10 +377,7 @@ def check(d: Daemon, scopes: list[Scope]) -> tuple[list[str], str]:
             blocking = [
                 s
                 for s in scopes
-                if s.session == session
-                and isinstance(seen[s.id], State)
-                and not seen[s.id].final
-                and seen[s.id].wait  # ty: ignore[possibly-missing-attribute]
+                if s.session == session and isinstance(st := seen[s.id], State) and not st.final and st.wait
             ]
             try:
                 o = c.open_scope(session=session, timeout=0.5)
@@ -424,9 +414,7 @@ def pending_tokens(d: Daemon, cmd: list[CmdScope]) -> dict[str, str]:
     return out
 
 
-def check_commands(
-    d: Daemon, cmd: list[CmdScope], before: dict[str, str], errors: list[str], kills: int
-) -> list[str]:
+def check_commands(d: Daemon, cmd: list[CmdScope], before: dict[str, str], errors: list[str], kills: int) -> list[str]:
     """Drain the command reviews after the restart, then check what they left."""
     bad = list(errors)
     old = dict(before)
@@ -489,9 +477,7 @@ def one(bin: Path, kill_after: float | None, double: bool, rng_seed: int):
     stop = threading.Event()
     errors: list[str] = []
     marks: list[float] = []
-    t = threading.Thread(
-        target=decide_all, args=(d, scopes, cmd, errors, random.Random(rng_seed), stop, marks)
-    )
+    t = threading.Thread(target=decide_all, args=(d, scopes, cmd, errors, random.Random(rng_seed), stop, marks))
     before: dict[str, str] = {}
     start = time.monotonic()
     t.start()
@@ -520,7 +506,7 @@ def one(bin: Path, kill_after: float | None, double: bool, rng_seed: int):
         bad = check_commands(d, cmd, before, errors, 0 if kill_after is None else 1 + double)
         more, inflight = check(d, scopes)
         bad += more
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001  any failure of the check fails the run and keeps its directory
         bad = [f"check failed: {e!r}"]
     d.stop()
     if not bad:
@@ -562,16 +548,12 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("runs", type=int, nargs="?", default=100)
     ap.add_argument("--seed", type=int, default=None)
-    ap.add_argument(
-        "--bin", default=os.environ.get("ESCROW_BIN", ROOT / "target" / "debug" / "escrow")
-    )
+    ap.add_argument("--bin", default=os.environ.get("ESCROW_BIN", ROOT / "target" / "debug" / "escrow"))
     a = ap.parse_args()
     seed_ = a.seed if a.seed is not None else random.randrange(1 << 30)
     random.seed(seed_)
     bin = Path(a.bin)
-    host = subprocess.run(
-        ["sh", "-c", ". /etc/os-release; echo $PRETTY_NAME"], capture_output=True, text=True
-    )
+    host = subprocess.run(["sh", "-c", ". /etc/os-release; echo $PRETTY_NAME"], capture_output=True, text=True)
     where = f"{host.stdout.strip()}, kernel {os.uname().release}"
     print(f"held soak: {a.runs} runs, {len(SCOPES)} scopes, seed {seed_}, {bin}, {where}")
     bad, (took, took_tiers), _, _, work = one(bin, None, False, random.randrange(1 << 30))

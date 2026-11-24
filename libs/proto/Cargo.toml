@@ -1,0 +1,32 @@
+[package]
+name = "escrowd-proto"
+description = "Generated escrow.v1 protocol types, gRPC stubs and pbjson serde impls"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Generator output only: the workspace lints (clippy pedantic) apply to hand-written code.
+# APP-SQ-9 exception, recorded in CLAUDE.md.
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = "allow"
+
+[dependencies]
+pbjson.workspace = true
+prost.workspace = true
+serde.workspace = true
+tonic.workspace = true
+tonic-prost.workspace = true
+
+[build-dependencies]
+pbjson-build.workspace = true
+protoc-bin-vendored.workspace = true
+tonic-prost-build.workspace = true
+
+# Used only by the include!d generator output, which cargo-machete cannot see.
+[package.metadata.cargo-machete]
+ignored = ["pbjson", "prost", "serde", "tonic-prost"]

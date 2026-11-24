@@ -1,33 +1,69 @@
 {
   "$schema": "node_modules/nx/schemas/project-schema.json",
-  "name": "protocol",
-  "projectType": "library",
+  "name": "@escrowd/root",
+  "tags": [
+    "type:root",
+    "lang:bash"
+  ],
   "targets": {
     "lint": {
       "executor": "nx:run-commands",
       "cache": true,
       "inputs": [
-        "{workspaceRoot}/proto/**",
-        "{workspaceRoot}/buf.yaml",
-        "{workspaceRoot}/mise.toml"
+        "{workspaceRoot}/**/*",
+        "!{workspaceRoot}/target/**",
+        "sharedGlobals"
       ],
       "outputs": [],
       "options": {
         "parallel": false,
-        "commands": ["buf lint", "buf format --diff --exit-code"]
+        "commands": [
+          "uv run --script scripts/check.py --tracked",
+          "git ls-files -z '*.sh' ':!spikes' | xargs -0 shellcheck",
+          "actionlint",
+          "uv run --no-sync ruff check tests/conformance/conftest.py tests/soak examples bench scripts",
+          "uv run --no-sync ty check tests/conformance/conftest.py tests/soak examples bench scripts"
+        ]
       }
     },
-    "test": {
+    "format": {
       "executor": "nx:run-commands",
       "cache": true,
       "inputs": [
-        "{workspaceRoot}/proto/**",
-        "{workspaceRoot}/buf.yaml",
-        "{workspaceRoot}/mise.toml"
+        "{workspaceRoot}/**/*.sh",
+        "{workspaceRoot}/**/*.py",
+        "{workspaceRoot}/.editorconfig",
+        "sharedGlobals"
       ],
       "outputs": [],
       "options": {
-        "commands": ["buf breaking --against '.git#tag=protocol-v1'"]
+        "parallel": false,
+        "commands": [
+          "git ls-files -z '*.sh' ':!spikes' | xargs -0 shfmt -d",
+          "uv run --no-sync ruff format --check tests/conformance/conftest.py tests/soak examples bench scripts"
+        ]
+      }
+    },
+    "format:fix": {
+      "executor": "nx:run-commands",
+      "options": {
+        "parallel": false,
+        "commands": [
+          "git ls-files -z '*.sh' ':!spikes' | xargs -0 shfmt -w",
+          "uv run --no-sync ruff format tests/conformance/conftest.py tests/soak examples bench scripts"
+        ]
+      }
+    },
+    "deps": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "inputs": [
+        "{workspaceRoot}/package.json",
+        "{workspaceRoot}/pnpm-lock.yaml"
+      ],
+      "outputs": [],
+      "options": {
+        "command": "pnpm exec sherif"
       }
     }
   }

@@ -8,6 +8,7 @@ lifecycle event lands in the ledger with its scope.
 import errno
 import os
 import subprocess
+from typing import cast
 
 import grpc
 import pytest
@@ -24,10 +25,7 @@ KIND = {
 
 
 def changes(cs) -> list[tuple]:
-    return [
-        (KIND[c.kind], c.path, c.from_path) if c.from_path else (KIND[c.kind], c.path)
-        for c in cs.changes
-    ]
+    return [(KIND[c.kind], c.path, c.from_path) if c.from_path else (KIND[c.kind], c.path) for c in cs.changes]
 
 
 def reads(cs) -> list[tuple]:
@@ -90,13 +88,13 @@ def test_closed_scope_refuses_new_io_with_erofs(scoped):
     with d.client() as c:
         c.close_scope(sid)
     attempts = [
-        lambda: open(root / "keep.txt").read(),
-        lambda: open(root / "keep.txt", "w"),
-        lambda: open(root / "fresh.txt", "w"),
+        lambda: (root / "keep.txt").read_text(),
+        lambda: (root / "keep.txt").open("w"),
+        lambda: (root / "fresh.txt").open("w"),
         lambda: (root / "newdir").mkdir(),
         lambda: (root / "edit.txt").unlink(),
-        lambda: os.rename(root / "edit.txt", root / "e2.txt"),
-        lambda: os.chmod(root / "edit.txt", 0o600),
+        lambda: (root / "edit.txt").rename(root / "e2.txt"),
+        lambda: (root / "edit.txt").chmod(0o600),
     ]
     for attempt in attempts:
         with pytest.raises(OSError) as err:
@@ -106,7 +104,7 @@ def test_closed_scope_refuses_new_io_with_erofs(scoped):
 
 def test_handle_opened_before_close_cannot_write_after(scoped):
     d, sid, root = scoped
-    f = open(root / "edit.txt", "w")
+    f = (root / "edit.txt").open("w")
     f.write("before close\n")
     f.flush()
     os.fsync(f.fileno())
@@ -138,13 +136,13 @@ def test_return_needs_a_closed_scope(scoped):
     d, sid, _ = scoped
     with d.client() as c, pytest.raises(grpc.RpcError) as err:
         c.decide(sid, pb.VERDICT_RETURN)
-    assert err.value.code() == grpc.StatusCode.FAILED_PRECONDITION
+    assert cast(grpc.Call, err.value).code() == grpc.StatusCode.FAILED_PRECONDITION
 
 
 def test_close_of_unknown_scope_is_not_found(daemon):
     with daemon.client() as c, pytest.raises(grpc.RpcError) as err:
         c.close_scope("s999")
-    assert err.value.code() == grpc.StatusCode.NOT_FOUND
+    assert cast(grpc.Call, err.value).code() == grpc.StatusCode.NOT_FOUND
 
 
 def test_closed_state_survives_a_daemon_restart(start_daemon):
@@ -219,7 +217,7 @@ def test_invalid_policy_stops_the_daemon(escrow_bin, runtime_dir):
 def test_ledger_records_lifecycle_events_and_escapes_paths(scoped):
     d, sid, root = scoped
     (root / "with space=sign%.txt").write_text("x\n")
-    os.listdir(root)
+    list(root.iterdir())
     with d.client() as c:
         c.close_scope(sid)
         c.discard(sid)

@@ -7,6 +7,7 @@ still show as `tiers`, beside `reviewers`.
 
 import os
 import subprocess
+from typing import cast
 
 import grpc
 import pytest
@@ -63,17 +64,13 @@ def review_as(rv, scope, reviewer="", tier=0, verdict=COMMIT, **kw):
 def code(fn):
     with pytest.raises(grpc.RpcError) as err:
         fn()
-    return err.value.code()
+    return cast(grpc.Call, err.value).code()
 
 
 def ledger_ops(d, scope):
     """The scope's hold, review and decide lines, without timestamp and scope."""
     ops = (" op=hold ", " op=review-", " op=decide ")
-    return [
-        " ".join(x.split()[2:])
-        for x in d.ledger
-        if f" scope={scope} " in x and any(op in x for op in ops)
-    ]
+    return [" ".join(x.split()[2:]) for x in d.ledger if f" scope={scope} " in x and any(op in x for op in ops)]
 
 
 def test_a_declared_socket_reviewer_holds_a_scope_and_commits_it_by_name(start_daemon):
@@ -96,9 +93,7 @@ def test_a_reviewer_the_scope_does_not_wait_for_is_a_state_error(start_daemon):
     with d.client() as c, d.reviewer() as rv:
         s = held_scope(d, c, "src/util.py")
         assert code(lambda: review_as(rv, s, reviewer="llm")) == grpc.StatusCode.FAILED_PRECONDITION
-        assert (
-            code(lambda: review_as(rv, s, reviewer="ghost")) == grpc.StatusCode.FAILED_PRECONDITION
-        )
+        assert code(lambda: review_as(rv, s, reviewer="ghost")) == grpc.StatusCode.FAILED_PRECONDITION
         assert [h.scope_id for h in rv.list_held()] == [s]
 
 

@@ -1,0 +1,16 @@
+# Python import boundaries (APP-SQ-7). The generated protocol layer imports nothing of ours;
+# the SDK sits on it; the testkit (test harness) may use the SDK, never the reverse.
+source_roots = ["libs/python-sdk/src", "libs/testkit"]
+exclude = ["**/tests", "**/__pycache__", "spikes"]
+
+[[modules]]
+path = "escrow.v1"
+depends_on = []
+
+[[modules]]
+path = "escrow"
+depends_on = ["escrow.v1"]
+
+[[modules]]
+path = "escrow_testkit"
+depends_on = ["escrow", "escrow.v1"]

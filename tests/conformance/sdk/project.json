@@ -1,13 +1,25 @@
 {
   "$schema": "../../../node_modules/nx/schemas/project-schema.json",
   "name": "conformance-sdk",
-  "projectType": "application",
-  "implicitDependencies": ["rust", "python-sdk"],
+  "tags": [
+    "type:e2e",
+    "lang:python"
+  ],
+  "implicitDependencies": [
+    "escrow-cli",
+    "python-sdk",
+    "testkit"
+  ],
   "targets": {
+    "lint": {},
+    "lint:fix": {},
+    "format": {},
+    "format:fix": {},
+    "typecheck": {},
     "conformance": {
       "executor": "nx:run-commands",
       "options": {
-        "command": "uv run --project sdk/python --frozen pytest -v --rootdir tests/conformance tests/conformance/sdk"
+        "command": "uv run --no-sync pytest -n 0 --rootdir tests/conformance tests/conformance/sdk"
       }
     }
   }

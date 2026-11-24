@@ -10,7 +10,7 @@ runs=${2:-100}
 root=$(cd "$(dirname "$0")/../.." && pwd)
 vm=escrow-$host
 uv=$(realpath "$(mise which uv)")
-py=$(realpath "$("$uv" python find --project "$root/sdk/python")")
+py=$(realpath "$("$uv" python find --project "$root")")
 [ -x "$root/target/debug/escrow" ] || {
   echo "build first: cargo build" >&2
   exit 1
@@ -19,5 +19,5 @@ limactl start "$vm" >/dev/null 2>&1 || true
 # Lima home mounts serve stale files after host edits.
 limactl shell "$vm" sudo sysctl -q vm.drop_caches=3
 limactl shell "$vm" env UV="$uv" UV_PYTHON="$py" ROOT="$root" \
-  sh "$root/tests/conformance/lima-guest.sh" tests/soak/crash.py "$runs" 2>&1 |
-  tee "$root/tests/soak/results/crash-$host.log"
+  sh "$root/tests/conformance/lima-guest.sh" tests/soak/crash.py "$runs" 2>&1 \
+  | tee "$root/tests/soak/results/crash-$host.log"

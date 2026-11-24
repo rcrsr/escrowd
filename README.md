@@ -47,7 +47,7 @@ There are no prebuilt binaries yet; you build escrowd from source.
 | Linux, kernel 6.8 or later | FUSE and namespace features escrowd relies on. macOS is not supported. |
 | `fuse3` (provides `fusermount3`) | Mounts the scope views without root. |
 | `bubblewrap` (`bwrap`) | Runs your program in a sandbox whose only way to the project is escrowd. |
-| Rust 1.93 or later | Builds escrowd. The repository pins its toolchain, which `rustup` installs for you. |
+| Rust 1.100 or later | Builds escrowd. The repository pins its toolchain (`rust-toolchain.toml`), which `rustup` installs for you. |
 | Python 3.11 or later | Only for the Python SDK. |
 
 Install the system packages:
@@ -64,7 +64,7 @@ sudo dnf install fuse3 bubblewrap     # Fedora
    ```bash
    git clone https://github.com/rcrsr/escrowd.git
    cd escrowd
-   cargo install --locked --path crates/escrow-cli
+   cargo install --locked --path apps/cli
    ```
 
    This puts `escrow` in `~/.cargo/bin`. Check that it is on your `PATH`:
@@ -84,9 +84,9 @@ sudo dnf install fuse3 bubblewrap     # Fedora
 3. **Python SDK (optional):** install it from the repository.
 
    ```bash
-   uv add "escrowd @ git+https://github.com/rcrsr/escrowd#subdirectory=sdk/python"
+   uv add "escrowd @ git+https://github.com/rcrsr/escrowd#subdirectory=libs/python-sdk"
    # or
-   pip install "escrowd @ git+https://github.com/rcrsr/escrowd#subdirectory=sdk/python"
+   pip install "escrowd @ git+https://github.com/rcrsr/escrowd#subdirectory=libs/python-sdk"
    ```
 
    The SDK runs the `escrow` binary. It finds it on `PATH`, or at the path in `ESCROW_EXE`.

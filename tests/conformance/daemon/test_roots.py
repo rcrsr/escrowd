@@ -6,7 +6,6 @@ decision, denied paths get EACCES (logged), passthrough paths are the host's own
 ephemeral paths never reach the change set. `roots.tmp` does the same for /tmp.
 """
 
-import os
 import subprocess
 import threading
 import uuid
@@ -62,9 +61,7 @@ def test_child_sees_the_scope_home_view(homed, home):
 def test_home_capture_commits_with_the_project_change(homed, home):
     d = homed
     sid = open_scope(d)
-    r = d.exec(
-        sid, "sh", "-c", "git config --global user.name Scope && echo x > f.txt", env=GIT_ENV
-    )
+    r = d.exec(sid, "sh", "-c", "git config --global user.name Scope && echo x > f.txt", env=GIT_ENV)
     assert r.returncode == 0, r.stderr
     assert "Base" in (home / ".gitconfig").read_text()  # held in escrow
     with d.client() as c:
@@ -78,15 +75,13 @@ def test_home_capture_commits_with_the_project_change(homed, home):
     assert sorted(out.paths) == ["f.txt", "~/.gitconfig"]
     assert "name = Scope" in (home / ".gitconfig").read_text()
     assert (d.project / "f.txt").read_text() == "x\n"
-    assert not [n for n in os.listdir(home) if n.startswith(".escrow-")]
+    assert not [e.name for e in home.iterdir() if e.name.startswith(".escrow-")]
 
 
 def test_home_capture_discards_with_the_project_change(homed, home):
     d = homed
     sid = open_scope(d)
-    r = d.exec(
-        sid, "sh", "-c", "git config --global user.name Scope && echo x > f.txt", env=GIT_ENV
-    )
+    r = d.exec(sid, "sh", "-c", "git config --global user.name Scope && echo x > f.txt", env=GIT_ENV)
     assert r.returncode == 0, r.stderr
     with d.client() as c:
         c.close_scope(sid)
@@ -149,7 +144,7 @@ def test_concurrent_scopes_share_a_passthrough_cache(homed, home):
     for t in threads:
         t.join()
     assert all(r.returncode == 0 for r in results.values()), results
-    assert len(os.listdir(home / ".npm")) == 100  # on the host at once: not escrowed
+    assert len(list((home / ".npm").iterdir())) == 100  # on the host at once: not escrowed
     with d.client() as c:
         for sid in (a, b):
             assert not c.close_scope(sid).changes
@@ -195,8 +190,7 @@ def test_git_commit_signs_with_a_listed_helper(start_daemon, home, listed):
     helper.write_text(SIGN)
     helper.chmod(0o755)
     (home / ".gitconfig").write_text(
-        f"[user]\n\tname = T\n\temail = t@example.com\n"
-        f"[gpg]\n\tprogram = {helper}\n[commit]\n\tgpgsign = true\n"
+        f"[user]\n\tname = T\n\temail = t@example.com\n[gpg]\n\tprogram = {helper}\n[commit]\n\tgpgsign = true\n"
     )
     capture = "['~/.gitconfig', '~/bin']" if listed else "['~/.gitconfig']"
     d = start_daemon(roots=f"  home:\n    capture: {capture}\n", env={"HOME": str(home)})
@@ -231,7 +225,7 @@ def test_tmp_is_a_per_scope_scratch_layer(tmp_rooted):
             assert c.commit(a).status == pb.OUTCOME_STATUS_COMMITTED
         assert Path(name).read_text() == "host\n"
     finally:
-        os.unlink(name)
+        Path(name).unlink()
 
 
 def test_passthrough_root_default_needs_no_lists(escrow_bin, runtime_dir):

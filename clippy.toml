@@ -1,0 +1,3 @@
+# APP-SQ-9 with clippy.unwrap_used = "deny": tests may unwrap.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

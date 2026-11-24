@@ -1,6 +1,6 @@
 """Crash soak (phase 2, check 1): SIGKILL the daemon at a random time inside a commit.
 
-    uv run --project sdk/python --frozen python tests/soak/crash.py [RUNS] [--files N]
+    uv run --frozen python tests/soak/crash.py [RUNS] [--files N]
 
 Each run seeds a project, stages a large change set in one scope (edits, creates,
 deletes, renames, mode changes, a directory replaced by a file), starts the commit and
@@ -10,6 +10,9 @@ must leave the project exactly as before the commit (byte-identical, no temporar
 files, no generations) or exactly as the commit makes it; any third state fails the
 run and keeps its directory. Run 0 calibrates: it commits without a kill.
 """
+
+# A CLI whose stdout is its report: print is the point.
+# ruff: noqa: T201
 
 import argparse
 import os
@@ -44,7 +47,7 @@ def seed(root: Path, files: int) -> None:
         (d / f"f{i % per:03}.txt").write_text(f"base {i}\n" * 4)
     (root / "tree" / "sub").mkdir(parents=True)
     (root / "tree" / "sub" / "x.txt").write_text("x\n")
-    os.symlink("d000/f000.txt", root / "link")
+    (root / "link").symlink_to("d000/f000.txt")
 
 
 def mutate(root: Path, files: int) -> None:
@@ -55,22 +58,22 @@ def mutate(root: Path, files: int) -> None:
         p = root / f"d{i // per:03}" / f"f{i % per:03}.txt"
         r = rng.random()
         if r < 0.4:
-            with open(p, "a") as f:
+            with p.open("a") as f:
                 f.write(f"edit {i}\n")
         elif r < 0.5:
             p.unlink()
         elif r < 0.6:
-            os.rename(p, root / f"d{(i // per + 1) % (files // per or 1):03}" / f"moved{i}.txt")
+            p.rename(root / f"d{(i // per + 1) % (files // per or 1):03}" / f"moved{i}.txt")
         elif r < 0.65:
-            os.chmod(p, 0o600)
+            p.chmod(0o600)
     new = root / "new"
     for i in range(files // 4):
         (new / f"n{i // 50:02}").mkdir(parents=True, exist_ok=True)
         (new / f"n{i // 50:02}" / f"{i}.txt").write_text(f"new {i}\n")
     shutil.rmtree(root / "tree")
     (root / "tree").write_text("tree is a file now\n")
-    os.unlink(root / "link")
-    os.symlink("new/n00/0.txt", root / "link")
+    (root / "link").unlink()
+    (root / "link").symlink_to("new/n00/0.txt")
 
 
 def one(bin: Path, files: int, kill_after: float | None, double: bool) -> tuple[str, float, Path]:
@@ -93,7 +96,7 @@ def one(bin: Path, files: int, kill_after: float | None, double: bool) -> tuple[
         try:
             with d.client() as c:
                 result["status"] = c.commit(sid, timeout=120).status
-        except Exception as e:  # the kill
+        except Exception as e:  # noqa: BLE001  the kill surfaces as any error; the run judges the outcome
             result["error"] = e
         result["took"] = time.monotonic() - start
 
@@ -129,16 +132,12 @@ def main() -> int:
     ap.add_argument("runs", type=int, nargs="?", default=100)
     ap.add_argument("--files", type=int, default=2000)
     ap.add_argument("--seed", type=int, default=None)
-    ap.add_argument(
-        "--bin", default=os.environ.get("ESCROW_BIN", ROOT / "target" / "debug" / "escrow")
-    )
+    ap.add_argument("--bin", default=os.environ.get("ESCROW_BIN", ROOT / "target" / "debug" / "escrow"))
     a = ap.parse_args()
     seed_ = a.seed if a.seed is not None else random.randrange(1 << 30)
     random.seed(seed_)
     bin = Path(a.bin)
-    host = subprocess.run(
-        ["sh", "-c", ". /etc/os-release; echo $PRETTY_NAME"], capture_output=True, text=True
-    )
+    host = subprocess.run(["sh", "-c", ". /etc/os-release; echo $PRETTY_NAME"], capture_output=True, text=True)
     where = f"{host.stdout.strip()}, kernel {os.uname().release}"
     print(f"crash soak: {a.runs} runs, {a.files} files, seed {seed_}, {bin}, {where}")
     state, took, _ = one(bin, a.files, None, False)

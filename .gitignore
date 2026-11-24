@@ -11,3 +11,15 @@ conduct
 node_modules/
 /.nx/
 /dist/
+
+# Agent worktrees
+.claude/worktrees/
+
+# Local env, loaded by mise (see .env.example)
+.env
+.env.local
+.hypothesis/
+
+# Coverage runs (scripts/coverage.sh)
+*.profraw
+.coverage

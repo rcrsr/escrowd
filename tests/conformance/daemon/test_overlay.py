@@ -5,6 +5,7 @@ mounted over the project in bwrap; trees, git status and git log must match, and
 the base must stay byte-identical.
 """
 
+import contextlib
 import hashlib
 import os
 import shutil
@@ -54,7 +55,7 @@ def listing(root: Path) -> list[str]:
             st = p.lstat()
             line = f"{p.relative_to(root)}|{stat.S_IFMT(st.st_mode):o}|{st.st_mode & 0o7777:o}"
             if stat.S_ISLNK(st.st_mode):
-                line += f"|{os.readlink(p)}"
+                line += f"|{os.readlink(p)}"  # noqa: PTH115  Path.readlink normalises the target; compare it raw
             elif stat.S_ISREG(st.st_mode):
                 line += f"|{hashlib.sha256(p.read_bytes()).hexdigest()}"
             out.append(line)
@@ -81,6 +82,13 @@ def sh(script: str, cwd: Path) -> subprocess.CompletedProcess:
 
 
 class Cow:
+    # Set by run_scenario.
+    ino_plain: str
+    ino_after_copy_up: str
+    ino_after_rename: str
+    native_run: subprocess.CompletedProcess
+    view_run: subprocess.CompletedProcess
+
     def __init__(self, escrow_bin, bwrap):
         self.work = make_runtime_dir()
         base = self.work / "proj"
@@ -183,7 +191,9 @@ def test_recreated_dir_hides_lower_contents(cow):
 
 
 def test_mv_of_lower_directory_falls_back_on_exdev(cow):
-    r = cow.run("mv dir dir-moved && test -f dir-moved/b2.txt && test ! -e dir")
+    # The view is shared by the whole module, so move the directory back: other checks compare
+    # the tree with the native copy and must not depend on test order.
+    r = cow.run("mv dir dir-moved && test -f dir-moved/b2.txt && test ! -e dir && mv dir-moved dir")
     assert r.returncode == 0, r.stderr
 
 
@@ -238,8 +248,6 @@ def test_commit_does_not_follow_a_swapped_base_dir(daemon, runtime_dir):
         (daemon.mount / sid / "d" / "new.txt").write_text("staged\n")
         c.close_scope(sid)
         swap_for_symlink(daemon.project, outside)
-        try:
+        with contextlib.suppress(lowlevel.EscrowRpcError):
             c.commit(sid)
-        except lowlevel.EscrowRpcError:
-            pass
     assert list(outside.iterdir()) == []

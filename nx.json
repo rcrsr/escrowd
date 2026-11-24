@@ -1,14 +1,380 @@
 {
   "$schema": "./node_modules/nx/schemas/nx-schema.json",
   "neverConnectToCloud": true,
+  "defaultBase": "main",
+  "namedInputs": {
+    "sharedGlobals": [
+      "{workspaceRoot}/mise.toml",
+      "{workspaceRoot}/mise.lock"
+    ],
+    "default": [
+      "{projectRoot}/**/*",
+      "sharedGlobals"
+    ],
+    "production": [
+      "default",
+      "!{projectRoot}/tests/**",
+      "!{projectRoot}/**/*.test.*"
+    ],
+    "pythonToolchainConfig": [
+      "{workspaceRoot}/pyproject.toml",
+      "{workspaceRoot}/uv.lock"
+    ],
+    "rustToolchainConfig": [
+      "{workspaceRoot}/Cargo.toml",
+      "{workspaceRoot}/Cargo.lock",
+      "{workspaceRoot}/rust-toolchain.toml",
+      "{workspaceRoot}/rustfmt.toml",
+      "{workspaceRoot}/clippy.toml",
+      "{workspaceRoot}/deny.toml",
+      {
+        "env": "RUSTUP_TOOLCHAIN"
+      }
+    ]
+  },
   "targetDefaults": {
-    "build": {
-      "cache": false
+    "lint": [
+      {
+        "cache": true,
+        "outputs": []
+      },
+      {
+        "filter": {
+          "projects": [
+            "tag:lang:python"
+          ]
+        },
+        "executor": "nx:run-commands",
+        "inputs": [
+          "default",
+          "pythonToolchainConfig"
+        ],
+        "options": {
+          "command": "uv run --no-sync ruff check {projectRoot}"
+        }
+      },
+      {
+        "filter": {
+          "projects": [
+            "tag:lang:rust"
+          ]
+        },
+        "executor": "nx:run-commands",
+        "inputs": [
+          "default",
+          "rustToolchainConfig",
+          "{workspaceRoot}/proto/**"
+        ],
+        "options": {
+          "command": "cargo clippy --all-targets --locked -p {projectName} -- -D warnings"
+        }
+      }
+    ],
+    "lint:fix": [
+      {
+        "cache": false
+      },
+      {
+        "filter": {
+          "projects": [
+            "tag:lang:python"
+          ]
+        },
+        "executor": "nx:run-commands",
+        "inputs": [
+          "default",
+          "pythonToolchainConfig"
+        ],
+        "options": {
+          "command": "uv run --no-sync ruff check --fix {projectRoot}"
+        }
+      },
+      {
+        "filter": {
+          "projects": [
+            "tag:lang:rust"
+          ]
+        },
+        "executor": "nx:run-commands",
+        "inputs": [
+          "default",
+          "rustToolchainConfig"
+        ],
+        "options": {
+          "command": "cargo clippy --fix --allow-dirty --allow-staged -p {projectName}"
+        }
+      }
+    ],
+    "format": [
+      {
+        "cache": true,
+        "outputs": []
+      },
+      {
+        "filter": {
+          "projects": [
+            "tag:lang:python"
+          ]
+        },
+        "executor": "nx:run-commands",
+        "inputs": [
+          "default",
+          "pythonToolchainConfig"
+        ],
+        "options": {
+          "command": "uv run --no-sync ruff format --check {projectRoot}"
+        }
+      },
+      {
+        "filter": {
+          "projects": [
+            "tag:lang:rust"
+          ]
+        },
+        "executor": "nx:run-commands",
+        "inputs": [
+          "default",
+          "rustToolchainConfig"
+        ],
+        "options": {
+          "command": "cargo fmt --check -p {projectName}"
+        }
+      }
+    ],
+    "format:fix": [
+      {
+        "cache": false
+      },
+      {
+        "filter": {
+          "projects": [
+            "tag:lang:python"
+          ]
+        },
+        "executor": "nx:run-commands",
+        "inputs": [
+          "default",
+          "pythonToolchainConfig"
+        ],
+        "options": {
+          "command": "uv run --no-sync ruff format {projectRoot}"
+        }
+      },
+      {
+        "filter": {
+          "projects": [
+            "tag:lang:rust"
+          ]
+        },
+        "executor": "nx:run-commands",
+        "inputs": [
+          "default",
+          "rustToolchainConfig"
+        ],
+        "options": {
+          "command": "cargo fmt -p {projectName}"
+        }
+      }
+    ],
+    "typecheck": [
+      {
+        "cache": true,
+        "outputs": []
+      },
+      {
+        "filter": {
+          "projects": [
+            "tag:lang:python"
+          ]
+        },
+        "executor": "nx:run-commands",
+        "inputs": [
+          "default",
+          "pythonToolchainConfig"
+        ],
+        "options": {
+          "command": "uv run --no-sync ty check {projectRoot}"
+        }
+      },
+      {
+        "filter": {
+          "projects": [
+            "tag:lang:rust"
+          ]
+        },
+        "executor": "nx:run-commands",
+        "inputs": [
+          "default",
+          "rustToolchainConfig",
+          "{workspaceRoot}/proto/**"
+        ],
+        "options": {
+          "command": "cargo check --all-targets --locked -p {projectName}"
+        }
+      }
+    ],
+    "test": [
+      {
+        "cache": true,
+        "outputs": []
+      },
+      {
+        "filter": {
+          "projects": [
+            "tag:lang:python"
+          ]
+        },
+        "executor": "nx:run-commands",
+        "inputs": [
+          "default",
+          "pythonToolchainConfig"
+        ],
+        "options": {
+          "command": "uv run --no-sync pytest {projectRoot}/tests"
+        }
+      },
+      {
+        "filter": {
+          "projects": [
+            "tag:lang:rust"
+          ]
+        },
+        "executor": "nx:run-commands",
+        "inputs": [
+          "default",
+          "rustToolchainConfig",
+          "{workspaceRoot}/proto/**"
+        ],
+        "options": {
+          "commands": [
+            "cargo nextest run --locked --no-tests=pass -p {projectName}",
+            "[ ! -f {projectRoot}/src/lib.rs ] || cargo test --doc --locked -p {projectName}"
+          ],
+          "parallel": false
+        }
+      }
+    ],
+    "test:coverage": [
+      {
+        "cache": true,
+        "outputs": [
+          "{workspaceRoot}/target/coverage/{projectName}.lcov"
+        ]
+      },
+      {
+        "filter": {
+          "projects": [
+            "tag:lang:python"
+          ]
+        },
+        "executor": "nx:run-commands",
+        "inputs": [
+          "default",
+          "pythonToolchainConfig"
+        ],
+        "options": {
+          "command": "uv run --no-sync pytest {projectRoot}/tests --cov={projectRoot}/src --cov-report=xml:target/coverage/{projectName}.xml"
+        }
+      },
+      {
+        "filter": {
+          "projects": [
+            "tag:lang:rust"
+          ]
+        },
+        "executor": "nx:run-commands",
+        "inputs": [
+          "default",
+          "rustToolchainConfig",
+          "{workspaceRoot}/proto/**"
+        ],
+        "options": {
+          "command": "cargo llvm-cov nextest --locked -p {projectName} --lcov --output-path target/coverage/{projectName}.lcov"
+        }
+      }
+    ],
+    "deps": [
+      {
+        "cache": true,
+        "outputs": []
+      },
+      {
+        "filter": {
+          "projects": [
+            "tag:lang:python"
+          ]
+        },
+        "executor": "nx:run-commands",
+        "inputs": [
+          "default",
+          "pythonToolchainConfig"
+        ],
+        "options": {
+          "command": "uv run --no-sync deptry {projectRoot} --config {projectRoot}/pyproject.toml"
+        }
+      },
+      {
+        "filter": {
+          "projects": [
+            "tag:lang:rust"
+          ]
+        },
+        "executor": "nx:run-commands",
+        "inputs": [
+          "default",
+          "rustToolchainConfig"
+        ],
+        "options": {
+          "commands": [
+            "cargo machete {projectRoot}",
+            "cargo deny --exclude-dev --locked check"
+          ],
+          "parallel": false
+        }
+      }
+    ],
+    "boundaries": {
+      "cache": true,
+      "outputs": [],
+      "inputs": [
+        "production",
+        "pythonToolchainConfig",
+        "{workspaceRoot}/tach.toml"
+      ],
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "uv run --no-sync tach check"
+      }
     },
+    "build": [
+      {
+        "cache": false,
+        "dependsOn": [
+          "^build"
+        ]
+      },
+      {
+        "filter": {
+          "projects": [
+            "tag:lang:rust"
+          ]
+        },
+        "executor": "nx:run-commands",
+        "inputs": [
+          "default",
+          "rustToolchainConfig"
+        ],
+        "options": {
+          "command": "cargo build --locked --release -p {projectName}"
+        }
+      }
+    ],
     "conformance": {
       "cache": false,
       "parallelism": false,
-      "dependsOn": ["rust:build"]
+      "dependsOn": [
+        "escrow-cli:build:debug"
+      ]
     }
   }
 }

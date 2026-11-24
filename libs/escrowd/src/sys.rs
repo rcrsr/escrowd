@@ -1,0 +1,443 @@
+//! fd-relative file operations on the pre-opened base and the scope uppers.
+//!
+//! Every path here is relative to a directory fd and never goes through
+//! `/proc/self/fd`. The FUSE kernel resolves symlinks itself and looks up one
+//! component at a time, so relative paths reaching the daemon never cross a
+//! symlink. A base that changes underneath (a directory swapped for a symlink by
+//! an editor or another user) must not lead outside the root: each operation
+//! resolves the path's parent with `openat2(RESOLVE_BENEATH | RESOLVE_NO_SYMLINKS)`
+//! and acts on the last component only (`beneath`).
+
+use std::ffi::{OsStr, OsString};
+use std::fs::File;
+use std::io;
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use fuser::{FileAttr, FileType, INodeNo};
+use rustix::fs::{self as rfs, AtFlags, Mode, OFlags, ResolveFlags, Stat, Timespec, Timestamps};
+
+/// `rel` as an fd-relative path; the empty path (the directory itself) is `.`.
+pub fn at(rel: &Path) -> &Path {
+    if rel.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        rel
+    }
+}
+
+/// Fill `buf` from the kernel's random source (getrandom(2)), blocking until it is seeded.
+pub fn random(buf: &mut [u8]) -> io::Result<()> {
+    let mut done = 0;
+    while done < buf.len() {
+        done += rustix::rand::getrandom(&mut buf[done..], rustix::rand::GetRandomFlags::empty())?;
+    }
+    Ok(())
+}
+
+/// Where an fd-relative operation on a path runs: the path's parent directory,
+/// resolved beneath the root fd, and its last component.
+struct Beneath<'a> {
+    dir: BorrowedFd<'a>,
+    parent: Option<OwnedFd>,
+    name: &'a Path,
+}
+
+impl Beneath<'_> {
+    fn fd(&self) -> BorrowedFd<'_> {
+        self.parent.as_ref().map_or(self.dir, |p| p.as_fd())
+    }
+}
+
+/// `rel`'s parent opened beneath `dir` with no symlink on the way (ELOOP), and its
+/// last component; `..` and absolute paths are refused (EXDEV), as openat2 does.
+/// A one-component path costs no syscall.
+fn beneath<'a>(dir: BorrowedFd<'a>, rel: &'a Path) -> io::Result<Beneath<'a>> {
+    use std::path::Component;
+    if rel
+        .components()
+        .any(|c| !matches!(c, Component::Normal(_) | Component::CurDir))
+    {
+        return Err(io::Error::from_raw_os_error(libc::EXDEV));
+    }
+    let rel = at(rel);
+    let (parent, name) = match (rel.parent(), rel.file_name()) {
+        (Some(p), Some(n)) if !p.as_os_str().is_empty() => (Some(p), Path::new(n)),
+        _ => (None, rel),
+    };
+    let parent = match parent {
+        None => None,
+        Some(p) => Some(open_beneath(dir, p, OFlags::PATH | OFlags::DIRECTORY)?),
+    };
+    Ok(Beneath { dir, parent, name })
+}
+
+/// openat2 confined to `dir`: no symlink in any component, no escape. EAGAIN (a
+/// concurrent rename seen mid-walk) is retried.
+fn open_beneath(dir: BorrowedFd, rel: &Path, flags: OFlags) -> io::Result<OwnedFd> {
+    let resolve = ResolveFlags::BENEATH | ResolveFlags::NO_SYMLINKS | ResolveFlags::NO_MAGICLINKS;
+    let mut tries = 0;
+    loop {
+        match rfs::openat2(dir, at(rel), flags | OFlags::CLOEXEC, Mode::empty(), resolve) {
+            Err(rustix::io::Errno::AGAIN) if tries < 8 => tries += 1,
+            r => return Ok(r?),
+        }
+    }
+}
+
+pub fn parent(rel: &Path) -> &Path {
+    rel.parent().unwrap_or(Path::new(""))
+}
+
+pub fn open_dir(path: &Path) -> io::Result<OwnedFd> {
+    Ok(rfs::open(
+        path,
+        OFlags::PATH | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?)
+}
+
+pub fn lstat(dir: BorrowedFd, rel: &Path) -> io::Result<Stat> {
+    let b = beneath(dir, rel)?;
+    Ok(rfs::statat(b.fd(), b.name, AtFlags::SYMLINK_NOFOLLOW)?)
+}
+
+pub fn is_dir(st: &Stat) -> bool {
+    st.st_mode & libc::S_IFMT == libc::S_IFDIR
+}
+
+pub fn open(dir: BorrowedFd, rel: &Path, flags: OFlags, mode: u32) -> io::Result<File> {
+    let b = beneath(dir, rel)?;
+    let fd = rfs::openat(
+        b.fd(),
+        b.name,
+        flags | OFlags::CLOEXEC | OFlags::NOFOLLOW,
+        Mode::from_raw_mode(mode),
+    )?;
+    Ok(File::from(fd))
+}
+
+pub fn mkdir(dir: BorrowedFd, rel: &Path, mode: u32) -> io::Result<()> {
+    let b = beneath(dir, rel)?;
+    Ok(rfs::mkdirat(b.fd(), b.name, Mode::from_raw_mode(mode))?)
+}
+
+pub fn unlink(dir: BorrowedFd, rel: &Path, is_dir: bool) -> io::Result<()> {
+    let b = beneath(dir, rel)?;
+    Ok(rfs::unlinkat(
+        b.fd(),
+        b.name,
+        if is_dir { AtFlags::REMOVEDIR } else { AtFlags::empty() },
+    )?)
+}
+
+pub fn rename(dir: BorrowedFd, from: &Path, to: &Path, flags: u32) -> io::Result<()> {
+    let (from, to) = (beneath(dir, from)?, beneath(dir, to)?);
+    Ok(rfs::renameat_with(
+        from.fd(),
+        from.name,
+        to.fd(),
+        to.name,
+        rfs::RenameFlags::from_bits_retain(flags),
+    )?)
+}
+
+pub fn symlink(target: &Path, dir: BorrowedFd, rel: &Path) -> io::Result<()> {
+    let b = beneath(dir, rel)?;
+    Ok(rfs::symlinkat(target, b.fd(), b.name)?)
+}
+
+pub fn readlink(dir: BorrowedFd, rel: &Path) -> io::Result<PathBuf> {
+    let b = beneath(dir, rel)?;
+    let c = rfs::readlinkat(b.fd(), b.name, Vec::new())?;
+    Ok(PathBuf::from(OsString::from_vec(c.into_bytes())))
+}
+
+pub fn link(dir: BorrowedFd, from: &Path, to: &Path) -> io::Result<()> {
+    link_across(dir, from, dir, to)
+}
+
+/// Hard link `src_dir/src` as `dst_dir/dst` (EXDEV across filesystems).
+pub fn link_across(src_dir: BorrowedFd, src: &Path, dst_dir: BorrowedFd, dst: &Path) -> io::Result<()> {
+    let (src, dst) = (beneath(src_dir, src)?, beneath(dst_dir, dst)?);
+    Ok(rfs::linkat(src.fd(), src.name, dst.fd(), dst.name, AtFlags::empty())?)
+}
+
+pub fn chmod(dir: BorrowedFd, rel: &Path, mode: u32) -> io::Result<()> {
+    let b = beneath(dir, rel)?;
+    Ok(rfs::chmodat(
+        b.fd(),
+        b.name,
+        Mode::from_raw_mode(mode & 0o7777),
+        AtFlags::empty(),
+    )?)
+}
+
+pub fn chown(dir: BorrowedFd, rel: &Path, uid: Option<u32>, gid: Option<u32>) -> io::Result<()> {
+    let uid = uid.map(rfs::Uid::from_raw);
+    let gid = gid.map(rfs::Gid::from_raw);
+    let b = beneath(dir, rel)?;
+    Ok(rfs::chownat(b.fd(), b.name, uid, gid, AtFlags::SYMLINK_NOFOLLOW)?)
+}
+
+pub const OMIT: Timespec = Timespec {
+    tv_sec: 0,
+    tv_nsec: rfs::UTIME_OMIT,
+};
+pub const NOW: Timespec = Timespec {
+    tv_sec: 0,
+    tv_nsec: rfs::UTIME_NOW,
+};
+
+pub fn set_times(dir: BorrowedFd, rel: &Path, atime: Timespec, mtime: Timespec) -> io::Result<()> {
+    let ts = Timestamps {
+        last_access: atime,
+        last_modification: mtime,
+    };
+    let b = beneath(dir, rel)?;
+    Ok(rfs::utimensat(b.fd(), b.name, &ts, AtFlags::SYMLINK_NOFOLLOW)?)
+}
+
+pub fn timespec(t: SystemTime) -> Timespec {
+    let d = t.duration_since(UNIX_EPOCH).unwrap_or_default();
+    Timespec {
+        tv_sec: wide(d.as_secs()),
+        tv_nsec: i64::from(d.subsec_nanos()),
+    }
+}
+
+/// Names and types in a directory, without `.` and `..`.
+pub fn read_dir(dir: BorrowedFd, rel: &Path) -> io::Result<Vec<(OsString, FileType)>> {
+    let fd = open_beneath(dir, rel, OFlags::RDONLY | OFlags::DIRECTORY)?;
+    let mut out = Vec::new();
+    for e in rfs::Dir::new(fd)? {
+        let e = e?;
+        let name = e.file_name().to_bytes();
+        if name == b"." || name == b".." {
+            continue;
+        }
+        let kind = match e.file_type() {
+            rfs::FileType::Directory => FileType::Directory,
+            rfs::FileType::Symlink => FileType::Symlink,
+            rfs::FileType::Fifo => FileType::NamedPipe,
+            rfs::FileType::Socket => FileType::Socket,
+            rfs::FileType::BlockDevice => FileType::BlockDevice,
+            rfs::FileType::CharacterDevice => FileType::CharDevice,
+            _ => FileType::RegularFile,
+        };
+        out.push((OsStr::from_bytes(name).to_os_string(), kind));
+    }
+    Ok(out)
+}
+
+/// Whole-file copy of a regular file, symlink or directory from `src_dir/src` to `dst_dir/dst`,
+/// keeping the exact mode (no umask) and times; `sync` fsyncs a copied file.
+pub fn copy_entry(
+    src_dir: BorrowedFd,
+    src: &Path,
+    dst_dir: BorrowedFd,
+    dst: &Path,
+    st: &Stat,
+    sync: bool,
+) -> io::Result<()> {
+    let mode = st.st_mode & 0o7777;
+    match st.st_mode & libc::S_IFMT {
+        libc::S_IFDIR => match mkdir(dst_dir, dst, mode) {
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
+            r => {
+                r?;
+                chmod(dst_dir, dst, mode)?;
+            }
+        },
+        libc::S_IFLNK => symlink(&readlink(src_dir, src)?, dst_dir, dst)?,
+        libc::S_IFREG => {
+            let mut from = open(src_dir, src, OFlags::RDONLY, 0)?;
+            let mut to = open(dst_dir, dst, OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL, mode)?;
+            io::copy(&mut from, &mut to)?;
+            rfs::fchmod(&to, Mode::from_raw_mode(mode))?;
+            if sync {
+                to.sync_all()?;
+            }
+        }
+        _ => return Err(io::Error::from_raw_os_error(libc::EPERM)),
+    }
+    let ts = |s: i64, ns: u64| Timespec {
+        tv_sec: s,
+        tv_nsec: wide(ns),
+    };
+    set_times(
+        dst_dir,
+        dst,
+        ts(st.st_atime, st.st_atime_nsec),
+        ts(st.st_mtime, st.st_mtime_nsec),
+    )
+}
+
+/// Flush the whole filesystem holding `dir` (the journal's barrier between steps).
+/// `dir` may be an `O_PATH` fd, which syncfs refuses, so it reopens the directory.
+pub fn syncfs(dir: BorrowedFd) -> io::Result<()> {
+    let fd = rfs::openat(
+        dir,
+        ".",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?;
+    Ok(rfs::syncfs(fd)?)
+}
+
+/// Start writing a file's dirty pages to disk without waiting for them.
+pub fn start_writeback(f: &File) {
+    use std::os::fd::AsRawFd;
+    // SAFETY: a valid open fd; the call only starts writeback.
+    unsafe { libc::sync_file_range(f.as_raw_fd(), 0, 0, libc::SYNC_FILE_RANGE_WRITE) };
+}
+
+/// `mkdir -p` below `dir`.
+pub fn mkdirs(dir: BorrowedFd, rel: &Path) -> io::Result<()> {
+    if rel.as_os_str().is_empty() || lstat(dir, rel).is_ok_and(|st| is_dir(&st)) {
+        return Ok(());
+    }
+    mkdirs(dir, parent(rel))?;
+    match mkdir(dir, rel, 0o755) {
+        Err(e) if e.kind() != io::ErrorKind::AlreadyExists => Err(e),
+        _ => Ok(()),
+    }
+}
+
+pub fn depth(rel: &Path) -> usize {
+    rel.components().count()
+}
+
+fn time(secs: i64, nsecs: i64) -> SystemTime {
+    if secs >= 0 {
+        UNIX_EPOCH + Duration::new(unsigned(secs), narrow(nsecs))
+    } else {
+        UNIX_EPOCH
+    }
+}
+
+pub fn kind(mode: u32) -> FileType {
+    match mode & libc::S_IFMT {
+        libc::S_IFDIR => FileType::Directory,
+        libc::S_IFLNK => FileType::Symlink,
+        libc::S_IFIFO => FileType::NamedPipe,
+        libc::S_IFSOCK => FileType::Socket,
+        libc::S_IFBLK => FileType::BlockDevice,
+        libc::S_IFCHR => FileType::CharDevice,
+        _ => FileType::RegularFile,
+    }
+}
+
+pub fn attr(ino: u64, st: &Stat) -> FileAttr {
+    FileAttr {
+        ino: INodeNo(ino),
+        size: unsigned(st.st_size),
+        blocks: unsigned(st.st_blocks),
+        atime: time(st.st_atime, wide(st.st_atime_nsec)),
+        mtime: time(st.st_mtime, wide(st.st_mtime_nsec)),
+        ctime: time(st.st_ctime, wide(st.st_ctime_nsec)),
+        crtime: time(st.st_ctime, wide(st.st_ctime_nsec)),
+        kind: kind(st.st_mode),
+        perm: (st.st_mode & 0o7777) as u16,
+        nlink: narrow(st.st_nlink),
+        uid: st.st_uid,
+        gid: st.st_gid,
+        rdev: narrow(st.st_rdev),
+        blksize: narrow(st.st_blksize),
+        flags: 0,
+    }
+}
+
+/// The attributes of a negative entry: inode 0 tells the kernel the name does not exist.
+pub fn absent() -> FileAttr {
+    FileAttr {
+        ino: INodeNo(0),
+        size: 0,
+        blocks: 0,
+        atime: UNIX_EPOCH,
+        mtime: UNIX_EPOCH,
+        ctime: UNIX_EPOCH,
+        crtime: UNIX_EPOCH,
+        kind: FileType::RegularFile,
+        perm: 0,
+        nlink: 0,
+        uid: 0,
+        gid: 0,
+        rdev: 0,
+        blksize: 0,
+        flags: 0,
+    }
+}
+
+/// The base version of a file: what the conflict check at commit compares (1.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct Version {
+    pub ino: u64,
+    pub size: i64,
+    pub mtime_ns: i64,
+    pub ctime_ns: i64,
+}
+
+/// A value as `i64`. The width of a `stat` field differs by target; a value past the
+/// range saturates.
+pub fn wide<T: TryInto<i64>>(v: T) -> i64 {
+    v.try_into().unwrap_or(i64::MAX)
+}
+
+/// A value as `u64`; one past the range (a negative size, say) saturates.
+pub fn unsigned<T: TryInto<u64>>(v: T) -> u64 {
+    v.try_into().unwrap_or(u64::MAX)
+}
+
+/// A value as `u32`; one past the range saturates.
+pub fn narrow<T: TryInto<u32>>(v: T) -> u32 {
+    v.try_into().unwrap_or(u32::MAX)
+}
+
+/// Seconds and nanoseconds since the epoch as nanoseconds, saturating at the `i64` range.
+pub fn ns(secs: i64, nsecs: i64) -> i64 {
+    secs.saturating_mul(1_000_000_000).saturating_add(nsecs)
+}
+
+impl Version {
+    pub fn of(st: &Stat) -> Self {
+        Version {
+            ino: st.st_ino,
+            size: st.st_size,
+            mtime_ns: ns(st.st_mtime, wide(st.st_mtime_nsec)),
+            ctime_ns: ns(st.st_ctime, wide(st.st_ctime_nsec)),
+        }
+    }
+
+    /// Same inode, size and mtime: what an editor's write or rename-over changes.
+    /// Ignores ctime, which escrowd's own unlink of a hard link changes too.
+    pub fn same_content(&self, other: &Version) -> bool {
+        (self.ino, self.size, self.mtime_ns) == (other.ino, other.size, other.mtime_ns)
+    }
+}
+
+pub fn statvfs(fd: impl AsFd) -> io::Result<rfs::StatVfs> {
+    Ok(rfs::fstatvfs(fd)?)
+}
+
+pub fn path_bytes(p: &Path) -> &[u8] {
+    p.as_os_str().as_bytes()
+}
+
+pub fn path_from(bytes: Vec<u8>) -> PathBuf {
+    PathBuf::from(OsString::from_vec(bytes))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ns;
+
+    #[test]
+    fn nanosecond_conversion_saturates_at_i64_max() {
+        assert_eq!(ns(i64::MAX, 999_999_999), i64::MAX);
+        assert_eq!(ns(i64::MAX / 1_000_000_000 + 1, 0), i64::MAX);
+        assert_eq!(ns(2, 5), 2_000_000_005);
+    }
+}

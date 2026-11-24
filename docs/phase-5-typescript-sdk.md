@@ -12,7 +12,7 @@ The suite is one pytest suite in two parts, decided Oct 19, 2026 (reversing the 
 
 ## Exit criteria
 
-1. **No daemon changes.** From the end of phase 4 (tag `protocol-8`) to the end of phase 5, `crates/escrowd/` and `proto/` are unchanged: a CI check fails any phase 5 PR that touches them. A daemon bug found by the TypeScript work is fixed in its own PR, which moves the tag and restarts this count.
+1. **No daemon changes.** From the PR #43 merge (tag `phase-5-daemon-base`) to the end of phase 5, `libs/escrowd/`, `libs/proto/` and `proto/` are unchanged: a CI check fails any phase 5 PR that touches them. A daemon bug found by the TypeScript work is fixed in its own PR, which moves the tag and restarts this count.
 2. **The suite, per SDK.** The pytest suite passes: `daemon/` once against the daemon, `sdk/` against the Python SDK and the TypeScript SDK (the test app parametrized over `app.py` and `app.ts`), held-decision checks included. `nx run-many -t conformance` runs it, 10 consecutive times on each CI runner (`ci:repeat`) and once on each Lima host.
 3. **pi's IO is covered.** Each call pi's built-in bash, read, write and edit tools make (an inventory taken in 5.2) is either captured in the scope or listed in `LIMITATIONS.md` with what it falls to.
 4. **No regression.** The daemon-level checks and the Python SDK pass as at the end of phase 4.
@@ -30,7 +30,7 @@ flowchart LR
 | # | Sub-phase | Goal (done when…) | Checks |
 | --- | --- | --- | --- |
 | 5.1 | Repo task runner | An nx workspace: build, lint, test and conformance targets for Rust, Python and TypeScript; CI and the git hooks run nx; the Python suite runs through it unchanged | 2 (Python), 4 |
-| 5.2 | TypeScript SDK: client, scopes, fs, held decisions | `sdk/typescript/`: gRPC client, `init` re-exec under `escrow run`, `scope()` in `AsyncLocalStorage`, decide callbacks, held outcomes and `AwaitDecision`, outcome, typed errors, path rewrite of `fs`, `fs/promises` and streams; pi's IO inventory | 3 (fs) |
+| 5.2 | TypeScript SDK: client, scopes, fs, held decisions | `libs/typescript-sdk/`: gRPC client, `init` re-exec under `escrow run`, `scope()` in `AsyncLocalStorage`, decide callbacks, held outcomes and `AwaitDecision`, outcome, typed errors, path rewrite of `fs`, `fs/promises` and streams; pi's IO inventory | 3 (fs) |
 | 5.3 | `child_process`, `chdir`, escapes | `spawn`, `exec`, `execFile` and their sync forms run through `escrow exec` with the scope's token; `process.chdir` into the view; unscoped count and warning; stale handles | 3 |
 | 5.4 | SDK conformance for TypeScript | The `sdk/` half of the pytest suite runs against the TypeScript SDK (the test app in TypeScript, `app.ts` beside `app.py`), passing on the dev host | 2 |
 | 5.5 | Exit runs | Checks 1–4 on the final commit: 10 consecutive CI runs per runner, the Lima matrix, the daemon unchanged since the tag | All |
@@ -43,9 +43,9 @@ With three languages (Rust, Python, TypeScript), each with its own build, lint a
 
 **As built, Oct 25, 2026.** Decisions D-DX-1 to D-DX-11:
 
-- **D-DX-1** Five nx projects, each with its own `project.json`: `rust` (`crates/`), `python-sdk` (`sdk/python/`), `protocol` (root `project.json`), `conformance-daemon` and `conformance-sdk` (`tests/conformance/{daemon,sdk}/`). Workspace settings in `nx.json`, with `neverConnectToCloud`.
+- **D-DX-1** Five nx projects, each with its own `project.json`: `rust` (`crates/`), `python-sdk` (`libs/python-sdk/`), `protocol` (root `project.json`), `conformance-daemon` and `conformance-sdk` (`tests/conformance/{daemon,sdk}/`). Workspace settings in `nx.json`, with `neverConnectToCloud`.
 - **D-DX-2** Commands live in `project.json` through `nx:run-commands`, run from the workspace root. The root `package.json` has no scripts; always `pnpm exec nx`.
-- **D-DX-3** nx `23.2.1` pinned exactly in root `devDependencies`; `packageManager` is `pnpm@12.7.0`, mirroring `mise.toml`; `"type": "module"`; nx is not in `mise.toml`. `pnpm-workspace.yaml` allows nx's build script.
+- **D-DX-3** nx `24.0.6` pinned exactly in root `devDependencies`; `packageManager` is `pnpm@12.23.0`, mirroring `mise.toml`; `"type": "module"`; nx is not in `mise.toml`. `pnpm-workspace.yaml` allows nx's build script.
 - **D-DX-4** Cached: `rust:lint`, `rust:test`, `python-sdk:lint`, `protocol:lint`, `protocol:test`, each with explicit `inputs` (including `mise.toml` and, for Rust, `rust-toolchain.toml` and `RUSTUP_TOOLCHAIN`; for Python, `.python-version`) and `outputs: []`. `cache: false` on `rust:build`, `python-sdk:build`, `python-sdk:test` and the conformance targets. `python-sdk:test` is the generated-stub diff (`gen.sh && git diff --exit-code`); `python-sdk:build` builds the wheel and checks it ships `py.typed`.
 - **D-DX-5** `targetDefaults.conformance`: `cache: false`, `parallelism: false`, `dependsOn: ["rust:build"]`. The suites run `pytest --rootdir tests/conformance` on `tests/conformance/daemon` and `tests/conformance/sdk`; both projects have `implicitDependencies` `rust` and `python-sdk`.
 - **D-DX-6** Deviation: CI keeps `dorny/paths-filter` in `ci.yml` and each job calls `pnpm exec nx run-many -t <targets> -p <project>`; no `nx affected`. `conformance.yml` calls `pnpm exec nx run-many -t conformance --outputStyle=stream`. `ci-gate` `needs:` is unchanged.
@@ -53,13 +53,22 @@ With three languages (Rust, Python, TypeScript), each with its own build, lint a
 - **D-DX-8** Deviation: `lefthook.yml` pre-commit is unchanged. Pre-push calls `nx run rust:lint`, `python-sdk:lint` and `protocol:lint` behind narrow globs, not `nx affected`; the `lockfiles` job also runs `pnpm install --frozen-lockfile`.
 - **D-DX-9** Deviation: `protocol:test` runs `buf breaking --against '.git#tag=protocol-v1'` unconditionally; the protocol-v1 guard is dropped.
 - **D-DX-10** Deviation: no placeholder build targets; `protocol` and the conformance projects have no `build`.
-- **D-DX-11** Nothing under `crates/escrowd/` or `proto/` changed; the daemon stays frozen for phase 5.
+- **D-DX-11** Nothing under `libs/escrowd/` or `proto/` changed; the daemon stays frozen for phase 5.
+
+**Revised Nov 23, 2026 (PR #43): the repo adopts `APP-MONOREPO-STANDARDS.md`** (Tier 1, Tier 2 and the Rust module; CLAUDE.md "Standards" lists the N/A elements and exceptions). This supersedes:
+
+- D-DX-1: projects are per package, tagged `type:*` and `lang:*`: `escrowd` (`libs/escrowd`), `escrowd-proto` (`libs/proto`), `escrow-cli` (`apps/cli`), `python-sdk`, `testkit`, `protocol` (`proto/`), `conformance-daemon`, `conformance-sdk`, `tools` (`scripts/`) and the root project `@escrowd/root`.
+- D-DX-2, D-DX-4: Rust and Python commands come from tag-filtered `targetDefaults` (lint, format, typecheck, test, test:coverage, deps, boundaries, build, plus `:fix` variants). The root `package.json` carries the standard pnpm scripts. The stub diff is `python-sdk:stubs`.
+- D-DX-5: conformance depends on `escrow-cli:build:debug`.
+- D-DX-6, D-DX-8: CI and pre-push use `nx affected` with `NX_BASE=origin/main`; no `paths-filter`.
+- D-DX-7: CI setup is `.github/actions/setup-toolchain` (mise from `mise.lock`, frozen pnpm install, locked uv sync).
+- D-DX-11: phase 5 changes the daemon after all. Dependency bumps (fuser 0.19), clippy pedantic fixes and the `escrowd-proto` split touch `libs/escrowd/`; behaviour is unchanged (conformance passes). Exit check 5.5 now measures from tag `phase-5-daemon-base` (decided below).
 
 Not verified in this change (ENV): the CI Gate and the `ci:repeat` runs run on PR #42. Open gap: `tests/conformance/lima-guest.sh` still runs pytest directly through `uv` (the Lima guest is not yet routed through nx).
 
 ### 5.2 TypeScript SDK: client, scopes, fs, held decisions
 
-`sdk/typescript/`, a pnpm package, TypeScript 7 compiled to ESM, Node 22 and 24, lint and format with oxlint and oxfmt, unit tests in Vitest (decided Oct 5, 2026):
+`libs/typescript-sdk/`, a pnpm package, TypeScript 7 compiled to ESM, Node 22 and 24, lint and format with oxlint and oxfmt, unit tests in Vitest (decided Oct 5, 2026):
 
 - **Client.** `@grpc/grpc-js` over `unix:` with `grpc.default_authority` set (tonic rejects the socket path as authority, as with grpcio). Stubs generated from `proto/` and committed; CI diffs them, as it does Python's.
 - **`init()`.** Without `ESCROW_SOCKET`, re-executes the process under `escrow run` (same arguments as Python: project, unscoped mode, policy, on-exit) and exits with the child's code.
@@ -67,7 +76,7 @@ Not verified in this change (ENV): the CI Gate and the `ci:repeat` runs run on P
 - **Held decisions.** The close carries the proposed verdict and whether the client can wait, as phase 3 defines it; a `held` outcome resolves through `AwaitDecision`, and the scope's promise settles with the verdict. The outcome names its pending reviewers (`Outcome.reviewers`, phase 4) as Python's does.
 - **fs.** Path rewrite (project, `$HOME` and `/tmp` roots from `OpenScopeResponse.roots`) in every path-taking function of `fs`, `fs/promises` and the stream constructors; `realpath`, `__filename`-style results and error paths mapped back. ESM imports of `node:fs` see the patched functions through `module.syncBuiltinESMExports()`. Flush before close: every handle opened in the scope is fsynced (`FileHandle.sync`, `fs.fsync`), as Python's `Scope.flush` does.
 - **Typed errors.** `EscrowUnscopedError` (code `EROFS`, a `deny`-mode write outside a scope), `EscrowStaleHandleError` (`EBADF` on a handle of a closed scope), `EscrowUnscopedWarning` through `process.emitWarning`; each keeps `code`, `errno`, `syscall` and `path`, so `err.code === 'EROFS'` checks keep working.
-- **nx project and hooks.** `sdk/typescript/project.json` defines `typescript-sdk` with `lint` (oxlint, `oxfmt --check`, `tsc --noEmit`), `test` (Vitest and the stub diff) and `build`. Hooks ship in the same PR, mirroring Rust and Python: pre-commit runs `pnpm exec oxfmt {staged_files}` on staged `*.{ts,mts}` with `stage_fixed`; pre-push runs `pnpm exec nx run typescript-sdk:lint`, gated on `{sdk/typescript/**,pnpm-lock.yaml}`. No Vitest in hooks: tests run in CI only (decided Oct 27, 2026).
+- **nx project and hooks.** `sdk/typescript/project.json` defines `typescript-sdk` with `lint` (oxlint, `oxfmt --check`, `tsc --noEmit`), `test` (Vitest and the stub diff) and `build`. Hooks ship in the same PR, mirroring Rust and Python: pre-commit runs `pnpm exec oxfmt {staged_files}` on staged `*.{ts,mts}` with `stage_fixed`; pre-push runs `pnpm exec nx run typescript-sdk:lint`, gated on `{libs/typescript-sdk/**,pnpm-lock.yaml}`. No Vitest in hooks: tests run in CI only (decided Oct 27, 2026).
 - **pi's IO inventory.** List the calls pi's bash, read, write and edit tools make (from pi's source at a pinned version), and mark each covered, covered in 5.3, or a limit. This is check 3's list.
 
 ### 5.3 `child_process`, `chdir`, escapes
@@ -85,7 +94,7 @@ The SDK's own unit tests (path rewrite tables, error mapping) run in Vitest in a
 
 ### 5.5 Exit runs
 
-Checks 1–4 on the final commit: the suite 10 consecutive times on each CI runner with both SDKs under `sdk/` (`ci:repeat`), once on each Lima host (the Lima guest gets the host's Node through the read-only home mount, as it gets uv and Python), and the daemon diff since the `protocol-8` tag empty. Logs go to `tests/conformance/results/`, and the status line gets the PR link.
+Checks 1–4 on the final commit: the suite 10 consecutive times on each CI runner with both SDKs under `sdk/` (`ci:repeat`), once on each Lima host (the Lima guest gets the host's Node through the read-only home mount, as it gets uv and Python), the daemon diff (`libs/escrowd/`, `libs/proto/`, `proto/`) since tag `phase-5-daemon-base` empty, and `buf breaking` against `protocol-v1` passing. Logs go to `tests/conformance/results/`, and the status line gets the PR link.
 
 ## Carried limits
 
@@ -97,6 +106,9 @@ All known limits are in [LIMITATIONS.md](../LIMITATIONS.md). Out of phase 5, by 
 - The pi adapter itself: phase 6.
 
 ## Open questions
+
+- [x] Exit check 5.5 baseline: PR #43 (dependency sweep and standards) changes `libs/escrowd/` without changing behaviour, so the baseline moves to its merge commit, tagged `phase-5-daemon-base`. The check stays mechanical: an empty daemon diff since that tag, plus `buf breaking` against `protocol-v1`. **To do on merge:** `git tag phase-5-daemon-base <merge-sha> && git push origin phase-5-daemon-base`. Decided Nov 23, 2026.
+- [x] Repository standards: adopt `APP-MONOREPO-STANDARDS.md` (Tier 1, Tier 2, Rust module), including the `apps/`/`libs/` layout, clippy pedantic and the `make`/pnpm/Nx command layers. The TypeScript SDK lands as `libs/typescript-sdk` and follows the TypeScript elements (oxlint, oxfmt, `tsconfig.base.json`, Vitest projects). Decided Nov 23, 2026.
 
 - [x] Node versions: 22 and 24 (both LTS; 22 leaves maintenance in Apr 2027), one extra conformance job on `ubuntu-24.04`, as Python covers 3.11 and 3.14. Decided Oct 5, 2026.
 - [x] Module format: ESM only; Node 22+ loads ESM from CommonJS with `require()`. Decided Oct 5, 2026.

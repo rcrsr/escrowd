@@ -1,0 +1,52 @@
+{
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "name": "python-sdk",
+  "tags": [
+    "type:lib",
+    "lang:python"
+  ],
+  "implicitDependencies": [
+    "protocol"
+  ],
+  "targets": {
+    "boundaries": {},
+    "build": {
+      "executor": "nx:run-commands",
+      "cache": false,
+      "options": {
+        "parallel": false,
+        "commands": [
+          "uv build --package escrowd --wheel --out-dir dist",
+          "python -m zipfile -l dist/*.whl | grep -q escrow/py.typed"
+        ]
+      }
+    },
+    "deps": {},
+    "format": {},
+    "format:fix": {},
+    "lint": {},
+    "lint:fix": {},
+    "stubs": {
+      "executor": "nx:run-commands",
+      "cache": true,
+      "inputs": [
+        "{workspaceRoot}/proto/**",
+        "{projectRoot}/src/escrow/v1/**",
+        "pythonToolchainConfig"
+      ],
+      "outputs": [],
+      "options": {
+        "command": "libs/python-sdk/gen.sh && git diff --exit-code libs/python-sdk/src"
+      }
+    },
+    "stubs:fix": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "libs/python-sdk/gen.sh"
+      }
+    },
+    "test": {},
+    "test:coverage": {},
+    "typecheck": {}
+  }
+}

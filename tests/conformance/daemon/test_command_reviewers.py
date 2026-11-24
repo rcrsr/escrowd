@@ -70,9 +70,7 @@ def alive(pid):
     return True
 
 
-def test_a_programs_return_with_a_reason_is_the_reviewers_verdict_and_pid_is_ledgered(
-    start_daemon, runtime_dir
-):
+def test_a_programs_return_with_a_reason_is_the_reviewers_verdict_and_pid_is_ledgered(start_daemon, runtime_dir):
     lint = stand_in(runtime_dir, "lint", verdict="return", reasons=["bad style"])
     d = start_daemon(policy=policy(("lint", lint, "")))
     with d.client() as c:
@@ -88,9 +86,7 @@ def test_a_programs_return_with_a_reason_is_the_reviewers_verdict_and_pid_is_led
     assert not (d.project / "src").exists()
 
 
-def test_the_program_reads_the_change_set_the_close_returned_and_the_sessions_history(
-    start_daemon, runtime_dir
-):
+def test_the_program_reads_the_change_set_the_close_returned_and_the_sessions_history(start_daemon, runtime_dir):
     lint = stand_in(runtime_dir, "lint", verdict="commit")
     d = start_daemon(policy=policy(("lint", lint, "")))
     with d.client() as c:
@@ -125,9 +121,7 @@ FAILURES = [
 
 
 @pytest.mark.parametrize(("cause", "behavior"), FAILURES, ids=[c for c, _ in FAILURES])
-def test_a_failed_run_gives_the_on_failure_verdict_with_the_cause(
-    start_daemon, runtime_dir, cause, behavior
-):
+def test_a_failed_run_gives_the_on_failure_verdict_with_the_cause(start_daemon, runtime_dir, cause, behavior):
     lint = stand_in(runtime_dir, "lint", **behavior)
     options = "on_failure: return" + (", timeout: 500ms" if "sleep" in behavior else "")
     d = start_daemon(policy=policy(("lint", lint, options)))
@@ -187,16 +181,10 @@ def test_a_programs_discard_removes_the_change_set_from_the_project(start_daemon
     assert not (d.project / "src").exists()
 
 
-def test_reviewers_run_in_order_and_a_later_verdict_never_loosens_an_earlier_one(
-    start_daemon, runtime_dir
-):
+def test_reviewers_run_in_order_and_a_later_verdict_never_loosens_an_earlier_one(start_daemon, runtime_dir):
     first = stand_in(runtime_dir, "first", verdict="return", reasons=["fix it"])
     second = stand_in(runtime_dir, "second", verdict="commit")
-    d = start_daemon(
-        policy=policy(
-            ("first", first, ""), ("second", second, ""), rules="reviewers: [first, second]"
-        )
-    )
+    d = start_daemon(policy=policy(("first", first, ""), ("second", second, ""), rules="reviewers: [first, second]"))
     with d.client() as c:
         s, _ = held_scope(d, c)
 
@@ -210,23 +198,15 @@ def test_reviewers_run_in_order_and_a_later_verdict_never_loosens_an_earlier_one
     assert [(r["reviewer"], r["verdict"], r["reasons"]) for r in b.stdin["reviews"]] == [
         ("first", "return", ["fix it"])
     ]
-    ops = [
-        w for x in d.ledger if f" scope={s} " in x for w in x.split() if w.startswith("op=review-")
-    ]
+    ops = [w for x in d.ledger if f" scope={s} " in x for w in x.split() if w.startswith("op=review-")]
     assert ops == ["op=review-first", "op=review-second"]
     assert "decision=commit" in lines(d, s, "review-second")[0]
 
 
-def test_a_discard_nobody_later_can_override_ends_the_review_without_running_the_rest(
-    start_daemon, runtime_dir
-):
+def test_a_discard_nobody_later_can_override_ends_the_review_without_running_the_rest(start_daemon, runtime_dir):
     first = stand_in(runtime_dir, "first", verdict="discard")
     second = stand_in(runtime_dir, "second", verdict="commit")
-    d = start_daemon(
-        policy=policy(
-            ("first", first, ""), ("second", second, ""), rules="reviewers: [first, second]"
-        )
-    )
+    d = start_daemon(policy=policy(("first", first, ""), ("second", second, ""), rules="reviewers: [first, second]"))
     with d.client() as c:
         s, _ = held_scope(d, c)
 
@@ -251,9 +231,7 @@ def test_a_discard_followed_by_a_reviewer_that_may_override_stays_held(start_dae
         assert c.discard(s).status == DISCARDED
 
 
-def test_withdrawing_a_held_scope_terminates_the_running_program_and_decides_once(
-    start_daemon, runtime_dir
-):
+def test_withdrawing_a_held_scope_terminates_the_running_program_and_decides_once(start_daemon, runtime_dir):
     lint = stand_in(runtime_dir, "lint", sleep=60)
     d = start_daemon(policy=policy(("lint", lint, "")))
     with d.client() as c:
@@ -285,9 +263,7 @@ def test_a_program_gets_only_the_allowlisted_environment(start_daemon, runtime_d
 
 def test_reviewers_parallel_1_runs_one_program_at_a_time(start_daemon, runtime_dir):
     lint = stand_in(runtime_dir, "lint", sleep=0.5)
-    d = start_daemon(
-        policy=policy(("lint", lint, ""), extra="reviewers_parallel: 1\n", paths="*.txt")
-    )
+    d = start_daemon(policy=policy(("lint", lint, ""), extra="reviewers_parallel: 1\n", paths="*.txt"))
     with d.client() as c:
         one, _ = held_scope(d, c, path="one.txt")
         two, _ = held_scope(d, c, path="two.txt")

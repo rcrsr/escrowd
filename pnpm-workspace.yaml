@@ -1,2 +1,13 @@
+packages:
+  - apps/*
+  - libs/*
+  - infra/*
+autoInstallPeers: true
+minimumReleaseAge: 10080 # 7 days, in minutes (APP-SUP-1)
+minimumReleaseAgeExclude: # APP-SUP-2: exact entries; prune drops each after 7 days
+  - '@nx/nx-*' # glob allowed: exact optional native deps of the pinned nx
+minimumReleaseAgeExcludePrune: true
+trustPolicy: no-downgrade
+trustPolicyExcludePrune: true
 allowBuilds:
-  nx@23.2.1: true
+  nx: true

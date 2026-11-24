@@ -9,6 +9,7 @@ up to the client's deadline. The hold survives a daemon restart.
 
 import threading
 import time
+from typing import cast
 
 import grpc
 import pytest
@@ -36,7 +37,8 @@ def held_scope(d, c, path="src/util.py", session="agent-1", wait=False):
 def code(fn):
     with pytest.raises(grpc.RpcError) as err:
         fn()
-    return err.value.code(), err.value.details()
+    call = cast(grpc.Call, err.value)
+    return call.code(), call.details()
 
 
 def test_a_commit_that_needs_review_is_held(start_daemon):
@@ -107,11 +109,9 @@ def test_an_optional_wait_blocks_only_when_the_client_waits(start_daemon):
         _, out = held_scope(d, c, "docs/guide.md")
         assert (out.status, out.wait) == (pb.OUTCOME_STATUS_HELD, False)
         c.open_scope(session="agent-1", timeout=2)  # the agent continues
-        s, out = held_scope(d, c, "docs/more.md", session="agent-3", wait=True)
+        _s, out = held_scope(d, c, "docs/more.md", session="agent-3", wait=True)
         assert out.wait
-        assert code(lambda: c.open_scope(session="agent-3", timeout=0.5))[0] == (
-            grpc.StatusCode.FAILED_PRECONDITION
-        )
+        assert code(lambda: c.open_scope(session="agent-3", timeout=0.5))[0] == (grpc.StatusCode.FAILED_PRECONDITION)
 
 
 def test_a_hold_survives_a_daemon_restart(start_daemon):
@@ -121,9 +121,7 @@ def test_a_hold_survives_a_daemon_restart(start_daemon):
         token = c.tokens[s]
     d.restart()
     with d.client() as c:
-        assert code(lambda: c.open_scope(session="agent-1", timeout=0.5))[0] == (
-            grpc.StatusCode.FAILED_PRECONDITION
-        )
+        assert code(lambda: c.open_scope(session="agent-1", timeout=0.5))[0] == (grpc.StatusCode.FAILED_PRECONDITION)
         assert code(lambda: c.commit(s, token=token))[0] == grpc.StatusCode.PERMISSION_DENIED
         assert c.discard(s, token=token).status == pb.OUTCOME_STATUS_DISCARDED
         c.open_scope(session="agent-1", timeout=2)
@@ -163,13 +161,13 @@ def test_sigterm_ends_waiting_calls(start_daemon):
                 for _ in c.await_decision(s):
                     pass
             except grpc.RpcError as e:
-                errors.append(e.code())
+                errors.append(cast(grpc.Call, e).code())
 
         def blocked_open():
             try:
                 c.open_scope(session="agent-1", timeout=None)
             except grpc.RpcError as e:
-                errors.append(e.code())
+                errors.append(cast(grpc.Call, e).code())
 
         threads = [threading.Thread(target=f) for f in (follow, blocked_open)]
         for t in threads:

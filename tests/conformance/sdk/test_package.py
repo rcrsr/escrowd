@@ -21,7 +21,7 @@ def test_only_lowlevel_and_model_import_the_generated_protocol_code():
     assert importing == {"lowlevel", "_model"}
 
 
-PYPROJECT = Path(__file__).resolve().parents[3] / "sdk" / "python" / "pyproject.toml"
+PYPROJECT = Path(__file__).resolve().parents[3] / "libs" / "python-sdk" / "pyproject.toml"
 GENERATED = Path(escrow.__file__).parent / "v1"
 
 
